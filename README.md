@@ -32,9 +32,12 @@ its spell should be cast, in combat, correctly. See the [design notes](#how-it-w
 ## Install
 
 1. Have a working Forever install and the Battle.net app running.
-2. Copy the built addon folders (`EverAuras`, `EverAurasOptions`, `EverAurasArchive`,
-   `EverAurasModelPaths`, `EverAurasTemplates`) plus `addons/!ForeverCompat` into
-   `_classic_beta_\Interface\AddOns`.
+2. Download the latest `EverAuras-<version>.zip` from
+   [Releases](https://github.com/Hackblarvest/EverAuras/releases) and unzip it into
+   `_classic_beta_\Interface\AddOns`. It holds `EverAuras`, `EverAurasOptions`, `EverAurasArchive`,
+   `EverAurasModelPaths`, `EverAurasTemplates`, the two settings-migration stubs (`M33Auras`,
+   `WeakAuras`, the latter with the Media folder so texture paths in imported auras still resolve)
+   and `!ForeverCompat`.
 3. **Beta client bug:** the Forever beta writes SavedVariables on logout but never reads them back,
    so your auras vanish after `/reload`. Until Blizzard fixes it, run `start_sv_bridge.cmd`
    (see `tools/sv_bridge.py`) and keep it open while you play. It regenerates a tiny
@@ -43,7 +46,8 @@ its spell should be cast, in combat, correctly. See the [design notes](#how-it-w
    to replace a seed that holds auras with one that holds none.
 4. In game: `/ea` (or `/everauras`, `/wa`).
 
-Releases are not published yet; build from source (below).
+Every release is built by `tools/rebuild_everauras.sh` from the upstream commit pinned in
+`tools/UPSTREAM` and packed by `tools/make_release_zip.py`; build from source (below) to get the same thing.
 
 ## Build from source
 

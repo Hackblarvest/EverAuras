@@ -47,7 +47,11 @@ echo "== upstream source (for the Forever fixes): ${UPSTREAM_REF:-latest main}"
 if [ -z "$UPSTREAM_REF" ]; then
   git clone -q --depth 1 --branch main "https://github.com/$REPO.git" src
 else
-  # a shallow fetch of exactly the pinned ref, whether it is a commit, a tag or a branch
+  # a shallow fetch of exactly the pinned ref, whether it is a commit, a tag or a branch.
+  # A commit must be fetched by its FULL sha (git refuses abbreviated ones); expand it via the API.
+  if [[ "$UPSTREAM_REF" =~ ^[0-9a-f]{4,39}$ ]]; then
+    UPSTREAM_REF="$(gh api "repos/$REPO/commits/$UPSTREAM_REF" --jq .sha)"
+  fi
   git init -q src && git -C src remote add origin "https://github.com/$REPO.git"
   git -C src fetch -q --depth 1 origin "$UPSTREAM_REF"
   git -C src checkout -q FETCH_HEAD
