@@ -91,6 +91,46 @@ PROTOTYPES_HUNKS = [
      "      end\n"),
 ]
 
+# Options addon. (a) Cache.lua: upstream disables the spell-name cache on test builds (Forever's beta
+# IS a test build), so typing a spell name stored an empty string. Seed the cache from the player's
+# spellbook instead - cheap, and it covers the spells rotation auras are about. (b) BuffTrigger2.lua:
+# when the cache has no match, keep the typed name instead of blanking the entry.
+OPTIONS_HUNKS = {
+    "M33kAurasOptions/Cache.lua": [
+        ("  if IsTestBuild() then -- disable for 12.0.7\n    return\n  end\n",
+         "  if IsTestBuild() then -- disable for 12.0.7\n"
+         "    -- Forever (a test build): the full id scan stays off, but the cache is seeded from the\n"
+         "    -- spellbook so typed names resolve and the autocomplete list works for your own spells.\n"
+         "    if M33kAuras.IsForever and M33kAuras.IsForever() then\n"
+         "      wipe(cache)\n"
+         "      pcall(function()\n"
+         "        local bank = (Enum.SpellBookSpellBank and Enum.SpellBookSpellBank.Player) or 0\n"
+         "        for i = 1, (C_SpellBook.GetNumSpellBookSkillLines() or 0) do\n"
+         "          local line = C_SpellBook.GetSpellBookSkillLineInfo(i)\n"
+         "          if line then\n"
+         "            for j = line.itemIndexOffset + 1, line.itemIndexOffset + (line.numSpellBookItems or 0) do\n"
+         "              local info = C_SpellBook.GetSpellBookItemInfo(j, bank)\n"
+         "              if info and info.spellID and info.name and info.name ~= \"\" and not info.isPassive then\n"
+         "                spellCache.AddIcon(info.name, info.spellID, info.iconID or 134400)\n"
+         "              end\n"
+         "            end\n"
+         "          end\n"
+         "        end\n"
+         "      end)\n"
+         "      metaData.needsRebuild = true   -- re-seed whenever the options open: new spells, new ranks\n"
+         "    end\n"
+         "    return\n  end\n"),
+    ],
+    "M33kAurasOptions/BuffTrigger2.lua": [
+        ("            else\n              trigger[optionKey][i] = spellCache.BestKeyMatch(v)\n            end\n",
+         "            else\n"
+         "              local best = spellCache.BestKeyMatch(v)\n"
+         "              -- Forever: without the full cache a name may have no match; keep what was typed\n"
+         "              trigger[optionKey][i] = (best and best ~= \"\") and best or strtrim(v)\n"
+         "            end\n"),
+    ],
+}
+
 # TOC line insertions: (relative toc path, anchor, replacement)
 TOC_HUNKS = [
     ("M33kAuras/M33kAuras.toc", "DiscordList.lua\n", "DiscordList.lua\nForeverEngineAura.lua\n"),
@@ -113,6 +153,8 @@ CHECKS = {
         "if unitExists or unitExistScanFunc[unit] then",
     ],
     "M33kAuras/Prototypes.lua": ["Private.SecretDurationFormatter(progressPrecision)"],
+    "M33kAurasOptions/Cache.lua": ["spellCache.AddIcon(info.name, info.spellID"],
+    "M33kAurasOptions/BuffTrigger2.lua": ["(best and best ~= \"\") and best or strtrim(v)"],
     "M33kAuras/M33kAuras.toc": ["\nForeverEngineAura.lua\n"],
     "M33kAurasOptions/M33kAurasOptions.toc": ["\nForeverEngineAuraOptions.lua\n"],
     "M33kAuras/ForeverEngineAura.lua": ["Private.ForeverEngine = Engine"],

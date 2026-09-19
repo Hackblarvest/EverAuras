@@ -164,9 +164,21 @@ end
 
 -- Adds every id an aura-name entry stands for into `into`.
 -- Returns found (anything at all), seen (at least one id came from a real aura sighting).
-local function ResolveAuraName(entry, into)
+local ResolveAuraName
+ResolveAuraName = function(entry, into, nameMode)
   local n = tonumber(entry)
-  if n then into[n] = true; return true, true end
+  if n then
+    into[n] = true
+    -- The options panel canonicalises a typed name to ONE spell id. In name mode that id stands for
+    -- the spell, not the rank: pull in every rank of the same name too.
+    if nameMode and C_Spell and C_Spell.GetSpellName then
+      local ok, nm = pcall(C_Spell.GetSpellName, n)
+      if ok and type(nm) == "string" and nm ~= "" and not issecretvalue(nm) then
+        ResolveAuraName(nm, into, false)
+      end
+    end
+    return true, true
+  end
   if type(entry) ~= "string" or entry == "" then return false, false end
   if not spellbookMap then RefreshSpellbook() end
   local key, found, seen = entry:lower(), false, false
@@ -222,7 +234,7 @@ function Engine.Classify(data)
     for _, nm in ipairs(t.auranames or {}) do
       nm = Trim(nm)
       if nm ~= "" then
-        local found, seen = ResolveAuraName(nm, ids)
+        local found, seen = ResolveAuraName(nm, ids, true)
         if not found then unresolved[#unresolved + 1] = nm
         elseif not seen then unseen[#unseen + 1] = nm end
       end
@@ -301,7 +313,12 @@ function Engine.PrepareTriggerInfo(info, trigger, data)
     nameWatch[data.uid] = true
     for _, nm in ipairs(trigger.auranames or {}) do
       nm = Trim(nm)
-      if nm ~= "" and not tonumber(nm) then watchNames[nm:lower()] = true end
+      local id = tonumber(nm)
+      if id and C_Spell and C_Spell.GetSpellName then
+        local ok, real = pcall(C_Spell.GetSpellName, id)
+        if ok and type(real) == "string" and real ~= "" and not issecretvalue(real) then nm = real else nm = "" end
+      end
+      if nm ~= "" then watchNames[nm:lower()] = true end
     end
   else
     nameWatch[data.uid] = nil
