@@ -15,6 +15,9 @@
 --                    The "cast this" icon lives inside it. Present = clipped away = nothing drawn.
 --                    Pure geometry driven by a value we cannot read.
 --
+-- Triggers may use spell NAMES: they resolve to every known rank's id (classic ranks are separate
+-- spells) and follow the spellbook as you level. Exact ids stay exact.
+--
 -- Brand-free on purpose: works in the upstream tree and after the rename step.
 ---@type string
 local AddonName = ...
@@ -35,7 +38,7 @@ local WARN = "forever_engine"
 local UNIT_OK = { player = true, target = true, focus = true, pet = true }
 local MODE = { showOnActive = "active", showOnMissing = "missing", showAlways = "always" }
 local UNSUPPORTED = {
-  "useName", "useNamePattern", "useIgnoreName", "useIgnoreExactSpellId", "use_debuffClass",
+  "useNamePattern", "useIgnoreName", "useIgnoreExactSpellId", "use_debuffClass",
   "useRem", "useStacks", "useTotal", "use_tooltip", "fetchTooltip", "use_unitName", "use_npcId",
   "use_stealable", "use_isBossDebuff", "use_castByPlayer", "useAffected", "showClones", "useGroup_count",
 }
@@ -43,7 +46,10 @@ local UNSUPPORTED = {
 local attachments = setmetatable({}, { __mode = "k" })   -- region -> att
 local pending = setmetatable({}, { __mode = "k" })       -- region -> true
 local decided = {}                                       -- uid -> plan | false (written by the trigger side)
+local nameWatch = {}                                     -- uid -> true for aura2 triggers written with spell NAMES
+local readd = {}                                         -- uid -> true: re-add when safe (spell learned, eligibility changed)
 local available                                          -- nil = not probed yet
+local FlushReadds                                        -- defined after Apply
 
 local function SV() return _G[AddonName .. "Saved"] end
 local function GloballyEnabled()
@@ -98,8 +104,93 @@ function Private.SecretDurationFormatter(precision)
   return fmt or f
 end
 
+---------------------------------------------------------------------------- spellbook (rank-aware names)
+-- Classic-era spells have one spell id PER RANK, and a new rank is a new aura id on the target.
+-- A trigger written with a spell NAME is resolved here to every id of that name the player
+-- knows (all known ranks, so downranked casts match too) and re-resolved whenever the spellbook
+-- changes. Names and ids from the spellbook are plain data.
+local spellbookGen = 0
+local spellbookMap = nil         -- lower(name) -> { [spellID] = true }, castable spells only
+local watchNames = {}            -- lower(name) -> true, every name any aura2 trigger uses
+local spellbookWarned = false
+
+-- Auras SEEN on a unit while auras were plain (out of combat), persisted per account:
+-- lower(name) -> { [auraSpellId] = true }. Needed because many classic buffs carry a different id
+-- than the castable spell (Bloodrage 2687 -> buff 29131, Last Stand, Vanish, procs), and the engine
+-- filters by exact aura id. Hostile DoTs are the exception: their aura id is the cast id.
+local function Learned()
+  local sv = SV()
+  if not sv then return nil end
+  sv.foreverEngine = sv.foreverEngine or {}
+  sv.foreverEngine.learned = sv.foreverEngine.learned or {}
+  return sv.foreverEngine.learned
+end
+
+local function RefreshSpellbook()
+  local map = {}
+  local ok, err = pcall(function()
+    local bank = (Enum.SpellBookSpellBank and Enum.SpellBookSpellBank.Player) or 0
+    local IT = Enum.SpellBookItemType or {}
+    local SPELL, FUTURE = IT.Spell or 1, IT.FutureSpell or 2
+    for i = 1, (C_SpellBook.GetNumSpellBookSkillLines() or 0) do
+      local line = C_SpellBook.GetSpellBookSkillLineInfo(i)
+      if line then
+        for j = line.itemIndexOffset + 1, line.itemIndexOffset + (line.numSpellBookItems or 0) do
+          local info = C_SpellBook.GetSpellBookItemInfo(j, bank)
+          -- passives (talents that share a proc buff's name) and off-spec entries are never the aura
+          if info and not info.isPassive and not info.isOffSpec
+             and (info.itemType == SPELL or info.itemType == FUTURE) then
+            local id, name = info.spellID, info.name
+            if id and name and not issecretvalue(id) and not issecretvalue(name) then
+              local key = name:lower()
+              map[key] = map[key] or {}
+              map[key][id] = true
+            end
+          end
+        end
+      end
+    end
+  end)
+  if not ok then
+    if not spellbookWarned then
+      spellbookWarned = true
+      WA.prettyPrint("engine: spellbook scan failed: " .. tostring(err))
+    end
+    spellbookMap = nil        -- never trust a partial map; the next resolve retries
+    return
+  end
+  spellbookMap = map
+end
+
+-- Adds every id an aura-name entry stands for into `into`.
+-- Returns found (anything at all), seen (at least one id came from a real aura sighting).
+local function ResolveAuraName(entry, into)
+  local n = tonumber(entry)
+  if n then into[n] = true; return true, true end
+  if type(entry) ~= "string" or entry == "" then return false, false end
+  if not spellbookMap then RefreshSpellbook() end
+  local key, found, seen = entry:lower(), false, false
+  local ids = spellbookMap and spellbookMap[key]
+  if ids then
+    for id in pairs(ids) do into[id] = true; found = true end
+  end
+  local learned = Learned()
+  learned = learned and learned[key]
+  if learned then
+    for id in pairs(learned) do into[id] = true; found = true; seen = true end
+  end
+  if not found and C_Spell and C_Spell.GetSpellInfo then
+    local ok, info = pcall(C_Spell.GetSpellInfo, entry)
+    local id = ok and type(info) == "table" and info.spellID
+    if id and not issecretvalue(id) and not (C_Spell.IsSpellPassive and C_Spell.IsSpellPassive(id)) then
+      into[id] = true; found = true
+    end
+  end
+  return found, seen
+end
+
 ---------------------------------------------------------------------------- eligibility
--- Pure function of data. Returns plan | nil, reasons(list).
+-- Pure function of data (and of the spellbook, for name-based triggers). Returns plan | nil, reasons.
 function Engine.Classify(data)
   local r = {}
   local function no(msg) r[#r + 1] = msg end
@@ -118,13 +209,42 @@ function Engine.Classify(data)
   local mode = MODE[t.matchesShowOn or "showOnActive"]
   if not mode then no(T("'Show On: Match Count' cannot be expressed by the engine")) end
   local ids, sorted = {}, {}
+  local byName, unresolved = false, {}
   if t.useExactSpellId then
     for _, s in ipairs(t.auraspellids or {}) do
       local n = tonumber(s)
-      if n and not ids[n] then ids[n] = true; sorted[#sorted + 1] = n end
+      if n then ids[n] = true end
     end
   end
-  if #sorted == 0 then no(T("use 'Exact Spell ID(s)' with at least one numeric id")) end
+  local unseen = {}
+  if t.useName then
+    byName = true
+    for _, nm in ipairs(t.auranames or {}) do
+      nm = Trim(nm)
+      if nm ~= "" then
+        local found, seen = ResolveAuraName(nm, ids)
+        if not found then unresolved[#unresolved + 1] = nm
+        elseif not seen then unseen[#unseen + 1] = nm end
+      end
+    end
+  end
+  for id in pairs(ids) do sorted[#sorted + 1] = id end
+  if #sorted == 0 then
+    if #unresolved > 0 then
+      no(T("'%s' is not one of your spells; the engine takes over once this aura has been seen once out of combat"):format(table.concat(unresolved, ", ")))
+    else
+      no(T("use 'Exact Spell ID(s)' or a spell Name with at least one entry"))
+    end
+  elseif byName then
+    -- Hostile debuffs carry the cast's id, so the spellbook is enough. Everything else waits until
+    -- the aura has been seen: self and friendly buffs often carry a different id than the spell.
+    local hostileDebuff = (filter == "HARMFUL") and (unit == "target" or unit == "focus")
+    if #unresolved > 0 then
+      no(T("'%s' is not one of your spells; the engine takes over once this aura has been seen once out of combat"):format(table.concat(unresolved, ", ")))
+    elseif #unseen > 0 and not hostileDebuff then
+      no(T("'%s' has not been seen as a real aura yet; the engine takes over the first time it is seen out of combat"):format(table.concat(unseen, ", ")))
+    end
+  end
   for _, k in ipairs(UNSUPPORTED) do
     if t[k] then no(T("option '%s' cannot be expressed by the engine"):format(k)) end
   end
@@ -133,7 +253,8 @@ function Engine.Classify(data)
   local candidate = { includeSpellIDs = ids }
   if t.ownOnly ~= nil then candidate.isFromPlayerOrPlayerPet = (t.ownOnly == true) end
   local key = table.concat({ unit, filter, mode, tostring(t.ownOnly), table.concat(sorted, ",") }, ";")
-  return { unit = unit, filter = filter, mode = mode, candidate = candidate, firstId = sorted[1], key = key }
+  return { unit = unit, filter = filter, mode = mode, candidate = candidate, firstId = sorted[1], key = key,
+           ids = sorted, byName = byName, gen = spellbookGen, unresolved = unresolved, unseen = unseen }
 end
 
 local function InertConditions(data)
@@ -155,11 +276,14 @@ local MODE_TEXT = {
   always = "shows your icon while the aura is absent and the live aura while it is present",
 }
 
-function Engine.Explain(data)
-  local plan, reasons = Engine.Classify(data)
+function Engine.Explain(data, plan, reasons)
+  if plan == nil and reasons == nil then plan, reasons = Engine.Classify(data) end
   if plan then
     local txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It %s. Kept: position, size, groups, %%n/%%i texts, static colour/desaturate/zoom, border and glow. Not available: conditions and texts that read aura state (stacks, remaining, active), show/hide animations and actions on aura gain/loss.")
       :format(plan.unit, plan.filter, T(MODE_TEXT[plan.mode]))
+    if plan.byName then
+      txt = txt .. " " .. T("Spell name resolved to id(s) %s (your spellbook ranks and auras seen so far); re-resolved as you learn spells and see auras."):format(table.concat(plan.ids, ", "))
+    end
     if InertConditions(data) then
       txt = txt .. " " .. T("|cffff9933Note:|r a condition reads trigger data other than 'Buffed'; it never fires on this display.")
     end
@@ -173,6 +297,15 @@ end
 function Engine.PrepareTriggerInfo(info, trigger, data)
   local plan = Engine.Classify(data)
   decided[data.uid] = plan or false
+  if trigger.useName then
+    nameWatch[data.uid] = true
+    for _, nm in ipairs(trigger.auranames or {}) do
+      nm = Trim(nm)
+      if nm ~= "" and not tonumber(nm) then watchNames[nm:lower()] = true end
+    end
+  else
+    nameWatch[data.uid] = nil
+  end
   info.engineDelegated = plan ~= nil
   if plan then
     info.matchCountFunc, info.remainingFunc, info.remainingCheck = nil, nil, 0
@@ -481,9 +614,21 @@ local function Schedule(region)
   if Engine.IsSafe() then pending[region] = nil; Apply(region) else pending[region] = true end
 end
 
+-- A display whose spell was unknown at load is not engine-driven; once the spell is learned only a
+-- full re-add lets the trigger side re-classify it. Done at safe time, like everything else.
+FlushReadds = function()
+  if not Engine.IsSafe() then return end
+  for uid in pairs(readd) do
+    readd[uid] = nil
+    local data = Private.GetDataByUID and Private.GetDataByUID(uid)
+    if data then xpcall(WA.Add, Private.GetErrorHandlerUid(uid, "ForeverEngine re-add"), data) end
+  end
+end
+
 function Engine.Flush()
   if not Engine.IsSafe() then return end
   for region in pairs(pending) do pending[region] = nil; Apply(region) end
+  FlushReadds()
 end
 
 local function ScheduleAll()
@@ -525,10 +670,21 @@ function Engine.Sync(region, data)
   local att = attachments[region]
   if not att then att = { region = region, shadows = {} }; attachments[region] = att end
   local plan = decided[data.uid]
+  local t = data.triggers and #data.triggers == 1 and data.triggers[1] and data.triggers[1].trigger
+  local isAura2 = t and t.type == "aura2"
+  if plan and not isAura2 then
+    -- the trigger side only re-classifies aura2 triggers; a display whose only trigger changed type
+    -- would otherwise keep yesterday's plan
+    plan = false; decided[data.uid] = false; nameWatch[data.uid] = nil
+  end
   if plan == nil then plan = Engine.Classify(data) or false end   -- no Add seen yet (should not happen)
+  if plan and plan.byName and plan.gen ~= spellbookGen then
+    local fresh = Engine.Classify(data)
+    if fresh then plan = fresh; decided[data.uid] = fresh          -- new ranks / sightings -> new filters
+    else plan.gen = spellbookGen end                               -- eligibility is the trigger side's call
+  end
   if not plan then
     if att.want or att.active then att.want = nil; Schedule(region) end
-    local isAura2 = data.triggers and data.triggers[1] and data.triggers[1].trigger and data.triggers[1].trigger.type == "aura2"
     if isAura2 and data.regionType == "icon" then
       SetWarning(att, data.uid, "info", (Engine.Explain(data)))
     else
@@ -538,7 +694,7 @@ function Engine.Sync(region, data)
   end
   local sig = ComputeSig(region, data, plan)
   att.want, att.wantSig = plan, sig
-  SetWarning(att, data.uid, "info", (Engine.Explain(data)))
+  SetWarning(att, data.uid, "info", (Engine.Explain(data, plan)))
   if att.active and att.sig == sig and not pending[region] then return end
   Schedule(region)
 end
@@ -576,12 +732,71 @@ function Private.Pause(...)  origPause(...);  ScheduleAll() end
 function Private.Resume(...) origResume(...); ScheduleAll() end
 
 Private.callbacks:RegisterCallback("AboutToDelete", function(_, uid, id)
-  decided[uid] = nil
+  decided[uid], nameWatch[uid], readd[uid] = nil, nil, nil
   for region, att in pairs(attachments) do
     if region.id == id and att.want then att.want = nil; Schedule(region) end
   end
 end)
 Private.callbacks:RegisterCallback("WA_SECRET_STATE_UPDATE", function() Engine.Flush() end)
+
+---------------------------------------------------------------------------- learning + spellbook events
+local QueueSpellbookRefresh   -- defined below
+
+-- Walk a unit's auras while they are plain and remember the ids behind the names our triggers use.
+local function LearnFromUnit(unit)
+  if not UNIT_OK[unit] or not Engine.IsSafe() or not next(watchNames) then return end
+  if not (C_UnitAuras and C_UnitAuras.GetAuraDataByIndex) then return end
+  local learned = Learned()
+  if not learned then return end
+  local changed = false
+  for _, filter in ipairs({ "HELPFUL", "HARMFUL" }) do
+    local i = 1
+    while i < 200 do
+      local ok, a = pcall(C_UnitAuras.GetAuraDataByIndex, unit, i, filter)
+      if not ok or type(a) ~= "table" then break end
+      local nm, id = a.name, a.spellId
+      if type(nm) == "string" and type(id) == "number" and not issecretvalue(nm) and not issecretvalue(id) then
+        local key = nm:lower()
+        if watchNames[key] then
+          learned[key] = learned[key] or {}
+          if not learned[key][id] then learned[key][id] = true; changed = true end
+        end
+      end
+      i = i + 1
+    end
+  end
+  if changed then QueueSpellbookRefresh() end   -- bumps the generation: re-classify, re-add, refilter
+end
+
+local function LearnFromAllUnits()
+  for unit in pairs(UNIT_OK) do LearnFromUnit(unit) end
+end
+
+local spellbookDirty = false
+local function OnSpellbookChanged()
+  spellbookDirty = false
+  spellbookGen = spellbookGen + 1
+  RefreshSpellbook()
+  for uid in pairs(nameWatch) do
+    if decided[uid] == false then
+      local data = Private.GetDataByUID and Private.GetDataByUID(uid)
+      if data and Engine.Classify(data) then readd[uid] = true end
+    end
+  end
+  for region, att in pairs(attachments) do
+    if att.want and att.want.byName then
+      local data = WA.GetData(region.id)
+      if data then Engine.Sync(region, data) end
+    end
+  end
+  FlushReadds()
+end
+
+QueueSpellbookRefresh = function()
+  if spellbookDirty then return end
+  spellbookDirty = true
+  C_Timer.After(0.3, OnSpellbookChanged)     -- SPELLS_CHANGED bursts at login; coalesce
+end
 
 ---------------------------------------------------------------------------- events
 local REFRESH = { PLAYER_TARGET_CHANGED = "target", PLAYER_FOCUS_CHANGED = "focus", UNIT_PET = "pet" }
@@ -592,9 +807,26 @@ ev:RegisterEvent("PLAYER_FOCUS_CHANGED")
 ev:RegisterUnitEvent("UNIT_PET", "player")
 ev:RegisterEvent("PLAYER_REGEN_ENABLED")
 ev:RegisterEvent("PLAYER_ENTERING_WORLD")
-ev:SetScript("OnEvent", function(_, event)
-  if event == "PLAYER_REGEN_ENABLED" or event == "PLAYER_ENTERING_WORLD" then Engine.Flush() end
+ev:RegisterEvent("SPELLS_CHANGED")
+ev:RegisterEvent("LEARNED_SPELL_IN_SKILL_LINE")
+ev:RegisterEvent("PLAYER_LEVEL_UP")
+ev:RegisterUnitEvent("UNIT_AURA", "player", "target", "focus", "pet")
+ev:SetScript("OnEvent", function(_, event, arg1)
+  if event == "UNIT_AURA" then
+    LearnFromUnit(arg1)      -- plain data out of combat; a no-op while auras are secret
+    return
+  end
+  if event == "SPELLS_CHANGED" or event == "LEARNED_SPELL_IN_SKILL_LINE" or event == "PLAYER_LEVEL_UP" then
+    QueueSpellbookRefresh()
+    return
+  end
+  if event == "PLAYER_ENTERING_WORLD" then QueueSpellbookRefresh() end   -- spellbook may not exist at Add time
+  if event == "PLAYER_REGEN_ENABLED" or event == "PLAYER_ENTERING_WORLD" then
+    LearnFromAllUnits()      -- buffs that procced in combat and are still up become readable now
+    Engine.Flush()
+  end
   local unit = REFRESH[event]
+  if unit then LearnFromUnit(unit) end
   for _, att in pairs(attachments) do
     -- Inbound secure delegate, PoC-verified in combat. The container refreshes itself only on
     -- UNIT_AURA/UNIT_FACTION/UNIT_FLAGS/PLAYER_REGEN_*; unit swaps are our job.

@@ -15,6 +15,10 @@
 #
 # Usage (Git Bash):   bash tools/rebuild_everauras.sh
 #   EVERAURAS_ADDONS=<path to Interface/AddOns>   overrides the install location
+#   EVERAURAS_UPSTREAM=<commit|tag|branch>         pins the upstream source (default: latest main).
+#                                                  A file tools/UPSTREAM with the same content does the
+#                                                  same without the variable - commit it to freeze a
+#                                                  known-good upstream for everyone building the repo.
 set -euo pipefail
 
 REPO="m33shoq/M33kAuras"
@@ -35,8 +39,19 @@ echo "   $url"
 curl -sL --max-time 600 -o release.zip "$url"
 mkdir release && (cd release && unzip -q ../release.zip)
 
-echo "== upstream main (for the Forever fixes)"
-git clone -q --depth 1 --branch main "https://github.com/$REPO.git" src
+UPSTREAM_REF="${EVERAURAS_UPSTREAM:-}"
+if [ -z "$UPSTREAM_REF" ] && [ -f "$TOOLS/UPSTREAM" ]; then
+  UPSTREAM_REF="$(tr -d '[:space:]' < "$TOOLS/UPSTREAM")"
+fi
+echo "== upstream source (for the Forever fixes): ${UPSTREAM_REF:-latest main}"
+if [ -z "$UPSTREAM_REF" ]; then
+  git clone -q --depth 1 --branch main "https://github.com/$REPO.git" src
+else
+  # a shallow fetch of exactly the pinned ref, whether it is a commit, a tag or a branch
+  git init -q src && git -C src remote add origin "https://github.com/$REPO.git"
+  git -C src fetch -q --depth 1 origin "$UPSTREAM_REF"
+  git -C src checkout -q FETCH_HEAD
+fi
 upstream="$(git -C src rev-parse --short HEAD)"
 echo "   $upstream  ($(git -C src log -1 --format='%ci %s'))"
 

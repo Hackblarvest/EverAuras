@@ -18,7 +18,7 @@ and lets the client draw it.
 
 | Display | How |
 |---|---|
-| **Your own auras** on player / target / focus / pet, by exact spell ID — *show when present*, *show when missing*, or both | The engine draws them through Blizzard's `CustomAuraContainerTemplate`. "Missing" is rendered by geometry the engine controls, so the icon genuinely disappears while the aura is up. |
+| **Your own auras** on player / target / focus / pet, by spell **name** (every rank you know, re-resolved as you level) or exact spell ID — *show when present*, *show when missing*, or both | The engine draws them through Blizzard's `CustomAuraContainerTemplate`. "Missing" is rendered by geometry the engine controls, so the icon genuinely disappears while the aura is up. |
 | **Cooldown icons** with swipe and countdown, **progress bars**, and `%p` remaining-time text | Duration objects: the engine formats and animates values the addon cannot read. |
 | **Show On: Ready / On Cooldown** | Exact, from fields Blizzard left readable. |
 | **Conditions on secret state** — e.g. *Is Ready (Secret)* → *Alpha (Boolean)* | The secret boolean goes straight to the engine via `SetAlphaFromBoolean`; the addon never sees it. |
@@ -50,7 +50,9 @@ release and `main` branch, applies our patches, renames everything to EverAuras 
 
 ```bash
 bash tools/rebuild_everauras.sh
-# EVERAURAS_ADDONS="<path to Interface/AddOns>" overrides the install location
+# EVERAURAS_ADDONS="<path to Interface/AddOns>"  overrides the install location
+# EVERAURAS_UPSTREAM="<commit|tag|branch>"       pins the upstream source (default: latest main);
+#                                                 a tools/UPSTREAM file does the same for everyone
 ```
 
 Requirements: Git Bash, `git`, `gh` (logged in), `curl`, `unzip`, Python 3.
