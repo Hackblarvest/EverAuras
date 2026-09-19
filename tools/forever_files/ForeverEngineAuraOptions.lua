@@ -49,9 +49,11 @@ table.insert(OptionsPrivate.registerRegions, function()
             WA.Add(data)
             if WA.ClearAndUpdateOptions then WA.ClearAndUpdateOptions(data.id) end
           end,
+          hidden = function() return Engine.HasNoAuraTrigger and Engine.HasNoAuraTrigger(data) end,
         }
         local function gateHidden(needToggle)
           if data.foreverEngine == false then return true end
+          if Engine.HasNoAuraTrigger and Engine.HasNoAuraTrigger(data) then return true end
           if needToggle and data.foreverEngineRange ~= true then return true end
           local plan = Engine.Classify(data)
           return not plan or plan.unit == "player"

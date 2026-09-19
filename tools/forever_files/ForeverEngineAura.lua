@@ -331,8 +331,22 @@ local MODE_TEXT = {
   always = "shows your icon while the aura is absent and the live aura while it is present",
 }
 
+-- True when no trigger of this display reads auras (cooldown / usable / range / resource triggers
+-- are plain data on Forever, in combat too): the engine has nothing to take over.
+function Engine.HasNoAuraTrigger(data)
+  if not data or type(data.triggers) ~= "table" or #data.triggers == 0 then return false end
+  for _, tr in ipairs(data.triggers) do
+    local t = tr and tr.trigger
+    if t and t.type == "aura2" then return false end
+  end
+  return true
+end
+
 function Engine.Explain(data, plan, reasons)
   if plan == nil and reasons == nil then plan, reasons = Engine.Classify(data) end
+  if not plan and Engine.HasNoAuraTrigger(data) then
+    return T("|cff33ff99Nothing to delegate:|r this display has no Aura trigger. Cooldowns, spell usable / in range, casts and resources are readable in combat on Forever, so it works as it is. The engine only takes over aura displays, which are blind while auras are secret."), false
+  end
   if plan then
     local txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It %s. Kept: position, size, groups, %%n/%%i texts, static colour/desaturate/zoom, border and glow. Not available: conditions and texts that read aura state (stacks, remaining, active), show/hide animations and actions on aura gain/loss.")
       :format(plan.unit, plan.filter, T(MODE_TEXT[plan.mode]))
