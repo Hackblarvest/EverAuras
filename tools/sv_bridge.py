@@ -14,6 +14,11 @@ Usage:
   python sv_bridge.py --list     # show what would be bridged
 
 Run it AFTER exiting the game (that is when WoW writes the files), BEFORE launching again.
+
+RESTART THE WATCHER after any rename of the addon: the file list lives in memory, and a stale
+watcher regenerates the seed without the renamed files (that is exactly what wiped the auras
+once on 2026-09-19). The safety net below refuses to replace a seed block that holds auras
+with one that holds none.
 """
 import argparse
 import os
@@ -66,6 +71,20 @@ end
 """
 
 
+def count_displays(text):
+    return len(re.findall(r'\["regionType"\]', text))
+
+
+def previous_block(guard):
+    """The block for `guard` in the seed currently on disk, or None."""
+    try:
+        seed = open(os.path.join(BRIDGE, "seed.lua"), encoding="utf-8").read()
+    except OSError:
+        return None
+    m = re.search(r"(?ms)^-- ==== [^\n]*\nif " + re.escape(guard) + r" == nil then\n.*?\nend\n", seed)
+    return m.group(0) if m else None
+
+
 def globals_in(text):
     """Top-level global names assigned in a SavedVariables file."""
     return re.findall(r'^(\w+)\s*=', text, re.M)
@@ -93,12 +112,20 @@ def build_seed(verbose=True):
             f"-- ==== {name} ({', '.join(names)}) ====\n"
             f"if {guard} == nil then\n{text}\nnote(\"{guard}\", true)\nelse\nnote(\"{guard}\", false)\nend\n"
         )
-        # how many auras, if this is the aura DB
+        # how many displays, if this is the aura DB (one ["regionType"] per display)
         auras = ""
         if name == "EverAuras.lua":
-            m = re.search(r'\["displays"\] = \{(.*?)\n\t?\},', text, re.S)
-            n = len(re.findall(r'^\t\t\["([^"]+)"\]', m.group(1), re.M)) if m else 0
-            auras = f"{n} auras"
+            n = count_displays(text)
+            auras = f"{n} displays"
+            # SAFETY NET: the client writes an EMPTY aura DB whenever it started without the seed
+            # (a stale watcher, a wiped seed, ...). Never let that overwrite a seed that still holds
+            # auras - keep the previous block instead and shout.
+            prev = previous_block(guard)
+            if n == 0 and prev is not None and count_displays(prev) > 0:
+                print(f"  !! {name} on disk has 0 displays but the current seed has "
+                      f"{count_displays(prev)} - keeping the previous seed block (delete seed.lua to override)")
+                parts[-1] = prev
+                auras = f"kept {count_displays(prev)} displays from the previous seed"
         summary.append((name, meaningful, len(text), auras))
 
     os.makedirs(BRIDGE, exist_ok=True)

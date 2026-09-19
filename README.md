@@ -38,7 +38,8 @@ its spell should be cast, in combat, correctly. See the [design notes](#how-it-w
    so your auras vanish after `/reload`. Until Blizzard fixes it, run `start_sv_bridge.cmd`
    (see `tools/sv_bridge.py`) and keep it open while you play. It regenerates a tiny
    `!ForeverSVBridge` addon that restores your settings on every load, and switches itself off the
-   day the client behaves.
+   day the client behaves. Restart the watcher whenever the addon folders are renamed; it refuses
+   to replace a seed that holds auras with one that holds none.
 4. In game: `/ea` (or `/everauras`, `/wa`).
 
 Releases are not published yet; build from source (below).
