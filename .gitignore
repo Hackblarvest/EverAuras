@@ -2,6 +2,7 @@
 # extracted game assets, third-party tools and build output that do not belong in the repository.
 *
 !.gitignore
+!.gitattributes
 !README.md
 !LICENSE
 !start_sv_bridge.cmd

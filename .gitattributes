@@ -1,0 +1,13 @@
+# Keep LF everywhere: the build script runs under Git Bash, Lua/TOC files are read by the game
+# client, and CRLF would break the former and litter the latter.
+* text=auto eol=lf
+*.sh text eol=lf
+*.py text eol=lf
+*.lua text eol=lf
+*.toc text eol=lf
+*.md text eol=lf
+*.cmd text eol=crlf
+*.tga binary
+*.blp binary
+*.png binary
+*.jpg binary

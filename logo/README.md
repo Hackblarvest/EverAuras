@@ -1,36 +1,26 @@
-# ForeverAuras logo files
+# EverAuras artwork
 
-Originals copied from the addon. TGA opens directly in Photoshop, GIMP, Paint.NET and Krita.
-PNG copies are here only so they can be previewed in chat; edit the TGA or export back to TGA.
+`EVERAURAS.jpg` is the master badge (2048x2048, dark disc on white). `tools/forever_patches.py`
+installs the rendered set from `build/` into the addon on every rebuild, replacing upstream's logo
+files by name, and points `## IconTexture` at `icon.tga`.
 
-| File | Size | Format | Where it shows up |
-|---|---|---|---|
-| `logo_256_round.tga` | 256x256 | 32-bit RGBA, transparent | **The round badge in the top-left corner of the options window.** The main one to redesign. |
-| `logo_256.tga` | 256x256 | 24-bit RGB, no alpha | Square version, selectable as an aura texture |
-| `logo_64.tga` | 64x64 | 24-bit RGB | Small square version |
-| `logo_64_nobg.tga` | 64x64 | 32-bit RGBA, transparent | Small version without background |
-| `icon.blp` | 32x32 | BLP2, DXT5 | Addon-list icon (`## IconTexture` in the TOC) |
-| `waheart.tga` | 80x80 | 32-bit RGBA | The heart on the "Thanks" button |
+| File (build/) | Size | Used for |
+|---|---|---|
+| `logo_256_round.tga` | 256x256 RGBA | the badge in the top-left corner of the options window |
+| `logo_256.tga`, `logo_64.tga`, `logo_64_nobg.tga` | 256 / 64 | upstream's other logo slots (selectable textures) |
+| `icon.tga` | 32x32 RGBA | addon-list icon (`## IconTexture`) |
 
-## Putting a new logo back in
+Re-render after changing the master (Python with Pillow):
 
-1. Export as **32-bit TGA with alpha**, uncompressed or RLE, same pixel size as the original.
-2. Drop it into
-   `D:\World of Warcraft\World of Warcraft\_classic_beta_\Interface\AddOns\ForeverAuras\Media\Textures\`
-3. `/reload` in game.
-
-Keep the dimensions a power of two (32, 64, 128, 256). WoW silently refuses textures that are not.
-
-For the addon-list icon you do **not** need BLP: WoW accepts TGA there too. Save it as
-`icon.tga` and point the TOC at it:
-
-```
-## IconTexture: Interface\AddOns\ForeverAuras\Media\Textures\icon.tga
+```python
+from PIL import Image, ImageDraw
+src = Image.open("logo/EVERAURAS.jpg").convert("RGBA"); W, H = src.size; S = 4
+mask = Image.new("L", (W*S, H*S), 0); r = (min(W, H)//2 - 6)*S
+ImageDraw.Draw(mask).ellipse((W*S//2-r, H*S//2-r, W*S//2+r, H*S//2+r), fill=255)
+src.putalpha(mask.resize((W, H), Image.LANCZOS))
+for name, size in [("logo_256_round.tga",256),("logo_256.tga",256),("logo_64.tga",64),("logo_64_nobg.tga",64),("icon.tga",32)]:
+    src.resize((size, size), Image.LANCZOS).save("logo/build/" + name, format="TGA")
 ```
 
-## Making it survive a rebuild
-
-`tools/rebuild_foreverauras.sh` wipes the addon folder and reinstalls from upstream, which
-would overwrite a hand-placed logo. Once the new art is final, keep the master copies in this
-folder and add a copy step to the build script so branding is re-applied automatically, the
-same way the rename is.
+The original WeakAuras/M33kAuras files are kept next to this README (`logo_*.tga`, `icon.blp`,
+`waheart.tga`) for reference; `waheart.tga` (the Thanks button) is still upstream's.
