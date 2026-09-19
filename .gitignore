@@ -1,0 +1,23 @@
+# Everything is ignored unless whitelisted below. The workspace also holds client data dumps,
+# extracted game assets, third-party tools and build output that do not belong in the repository.
+*
+!.gitignore
+!README.md
+!LICENSE
+!start_sv_bridge.cmd
+
+!tools/
+!tools/*.py
+!tools/*.sh
+!tools/forever_files/
+!tools/forever_files/*.lua
+
+!addons/
+!addons/**
+
+!docs/
+!docs/*.md
+!docs/*.txt
+
+!logo/
+!logo/**

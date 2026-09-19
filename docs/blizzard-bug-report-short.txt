@@ -1,0 +1,31 @@
+SavedVariables are written on exit but never read back on login (all addons)
+
+Build: 1.60.1.69913 (also reproduced on 1.60.1.69893)
+
+The client writes WTF\Account\<id>\SavedVariables\<AddOn>.lua correctly on /reload and on
+exit, but never executes those files again on the next login. Every addon starts each
+session with its saved variables nil, so all addon configuration is silently lost. This
+affects every addon that declares ## SavedVariables, not one specific addon.
+
+Repro:
+1. Use any addon declaring "## SavedVariables: FooDB".
+2. On PLAYER_LOGIN do FooDB.counter = (FooDB.counter or 0) + 1.
+3. Log in, /reload a few times, exit, inspect the saved file.
+
+Expected: counter increments 1, 2, 3...
+Actual: the file is written correctly every time, but always contains counter = 1.
+
+A diagnostic on the first line of the addon main chunk sees the global as nil on every load,
+even when the file on disk demonstrably held data written seconds earlier. Timestamped log
+entries written by that diagnostic never accumulate across loads, which confirms the file is
+never restored.
+
+Ruled out: file validity (well-formed Lua, no BOM or NUL bytes), filename/folder mismatch,
+read-only attributes, duplicate saved-variable names, and Lua errors (a global seterrorhandler
+hook plus BugGrabber captured zero errors). Config.wtf in the same tree IS read correctly and
+CVar changes persist, so the directory is readable. Reproduced with and without
+## LoadSavedVariablesFirst, across /reload and full restarts, and with a minimal purpose-built
+addon whose only job is to increment a counter.
+
+Impact: no addon settings survive a session, and addon authors cannot test anything that
+depends on persisted state.

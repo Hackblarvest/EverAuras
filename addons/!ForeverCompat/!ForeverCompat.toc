@@ -1,0 +1,7 @@
+## Interface: 16001
+## Title: |cff33ff99!|r Forever Compat
+## Notes: Re-adds a few FrameXML globals that WoW: Forever's mainline engine removed but old addon libraries still call (e.g. idTip's bundled AceGUI-3.0). Loads first.
+## Author: Hackblarvest
+## Version: 0.1.0
+
+compat.lua

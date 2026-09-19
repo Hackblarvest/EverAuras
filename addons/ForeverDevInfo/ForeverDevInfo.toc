@@ -1,0 +1,8 @@
+## Interface: 16001
+## Title: Forever Dev Info
+## Notes: Dumps build info, interface version and API availability for WoW: Forever addon development.
+## Author: Hackblarvest
+## Version: 1.0
+## SavedVariables: ForeverDevInfoDB
+
+ForeverDevInfo.lua
