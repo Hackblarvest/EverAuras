@@ -128,6 +128,23 @@ OPTIONS_HUNKS = {
          "              -- Forever: without the full cache a name may have no match; keep what was typed\n"
          "              trigger[optionKey][i] = (best and best ~= \"\") and best or strtrim(v)\n"
          "            end\n"),
+        ("        elseif input and input ~= \"\" then\n"
+         "          icon = \"Interface\\\\AddOns\\\\M33kAuras\\\\Media\\\\Textures\\\\info\"\n"
+         "        end\n"
+         "        return icon and tostring(icon) or \"\", 18, 18\n",
+         "        elseif input and input ~= \"\" then\n"
+         "          -- Forever: a name shows the spell's own icon (the cache is seeded from the spellbook);\n"
+         "          -- the generic info glyph only when nothing matches. Tooltip and click are unchanged.\n"
+         "          if M33kAuras.IsForever and M33kAuras.IsForever() then\n"
+         "            local ok, tex = pcall(spellCache.GetIcon, input)\n"
+         "            if not (ok and tex) then\n"
+         "              ok, tex = pcall(OptionsPrivate.Private.ExecEnv.GetSpellIcon, input)\n"
+         "            end\n"
+         "            if ok and tex and not issecretvalue(tex) then icon = tex end\n"
+         "          end\n"
+         "          icon = icon or \"Interface\\\\AddOns\\\\M33kAuras\\\\Media\\\\Textures\\\\info\"\n"
+         "        end\n"
+         "        return icon and tostring(icon) or \"\", 18, 18\n"),
     ],
 }
 
@@ -154,7 +171,8 @@ CHECKS = {
     ],
     "M33kAuras/Prototypes.lua": ["Private.SecretDurationFormatter(progressPrecision)"],
     "M33kAurasOptions/Cache.lua": ["spellCache.AddIcon(info.name, info.spellID"],
-    "M33kAurasOptions/BuffTrigger2.lua": ["(best and best ~= \"\") and best or strtrim(v)"],
+    "M33kAurasOptions/BuffTrigger2.lua": ["(best and best ~= \"\") and best or strtrim(v)",
+                                          "pcall(spellCache.GetIcon, input)"],
     "M33kAuras/M33kAuras.toc": ["\nForeverEngineAura.lua\n"],
     "M33kAurasOptions/M33kAurasOptions.toc": ["\nForeverEngineAuraOptions.lua\n"],
     "M33kAuras/ForeverEngineAura.lua": ["Private.ForeverEngine = Engine"],
