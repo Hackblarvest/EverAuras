@@ -18,7 +18,7 @@ import sys
 
 OLD, NEW = "M33kAuras", "EverAuras"
 AUTHOR = "Hackblarvest"
-VERSION = "0.3.0-alpha"
+VERSION = "0.3.1-alpha"
 
 # Links. The footer buttons and the TOC website point at OUR project; anything else that
 # mentions upstream (Discord invite, CurseForge page, GitHub credits) must keep pointing

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.1-alpha (2026-09-20)
+
+- **Spell Usable trigger works in combat.** Cooldown, charges and cast count are secret in combat on Forever
+  and the trigger's generated code compared them directly ("attempt to compare local 'spellCount'"). It now
+  mirrors the Cooldown Progress trigger: ready-ness from `IsSpellReady`, stacks from the secret-aware helpers.
+- Displays without an Aura trigger now say *Nothing to delegate* instead of *Not engine-driven (blind while
+  auras are secret)*; the engine and range-gate toggles are hidden there since they have no effect.
+- Release tooling: `tools/make_release_zip.py`, full upstream hash in `tools/UPSTREAM`, README points at Releases.
+
 ## 0.3.0-alpha (2026-09-20)
 
 - **Range gate** for engine-driven displays: *Only while the spell is in range of the unit*, with an optional
