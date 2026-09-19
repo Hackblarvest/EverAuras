@@ -819,3 +819,111 @@ SlashCmdList["FOREVERDEVSECRET3"] = function(msg)
 	buildCooldownProbe(tonumber(msg) or 348)
 	cd3.apply("initial")
 end
+
+---------------------------------------------------------------------------- /fdrange
+-- Can tainted code check spell range in combat on Forever?  The API docs list
+-- C_Spell.IsSpellInRange WITHOUT SecretReturns (unlike UnitInRange), so it should answer
+-- with a plain boolean. This probe logs the raw return, whether it is secret, and drives a
+-- box on screen from it through SetAlphaFromBoolean - the one sink that also accepts a
+-- secret boolean. Bright box = in range, dim box = out of range / no target.
+--   /fdrange                 Serpent Sting on target, samples for 30 s
+--   /fdrange <id or name>    another spell, e.g. /fdrange 1978 or /fdrange Arcane Shot
+--   /fdrange stop            stop sampling and hide the box
+local rng = {}
+
+local function rlog(fmt, ...)
+	local line = select("#", ...) > 0 and fmt:format(...) or fmt
+	ForeverDevInfoDB = ForeverDevInfoDB or {}
+	ForeverDevInfoDB.rangeProbe = ForeverDevInfoDB.rangeProbe or {}
+	local l = ForeverDevInfoDB.rangeProbe
+	l[#l + 1] = date("%H:%M:%S") .. " " .. line
+	while #l > 150 do table.remove(l, 1) end
+	print("|cff33ff99FDI range|r " .. line)
+end
+
+local function buildRangeBox()
+	if rng.frame then return end
+	local fr = CreateFrame("Frame", nil, UIParent)
+	fr:SetSize(48, 48)
+	fr:SetPoint("CENTER", UIParent, "CENTER", 120, -120)
+	fr:SetFrameStrata("HIGH")
+	local bg = fr:CreateTexture(nil, "BACKGROUND")
+	bg:SetAllPoints(fr)
+	bg:SetColorTexture(0.1, 0.9, 0.2, 1)
+	local fs = fr:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	fs:SetPoint("CENTER")
+	fs:SetText("RANGE")
+	rng.frame = fr
+end
+
+-- One sample. Returns the log line, the raw result (or nil) and whether it was secret.
+local function rangeSample(spell, verbose)
+	local parts = {}
+	local okR, r = pcall(C_Spell.IsSpellInRange, spell, "target")
+	local secretR = okR and issecretvalue(r) or false
+	parts[#parts + 1] = "IsSpellInRange=" .. (okR and show(r) or ("ERROR " .. show(r)))
+	parts[#parts + 1] = "combat=" .. tostring(InCombatLockdown())
+	if verbose then
+		parts[#parts + 1] = "type=" .. ((okR and not secretR) and type(r) or "secret")
+		parts[#parts + 1] = "UnitInRange=" .. ask(UnitInRange, "target")
+		parts[#parts + 1] = "DistSq=" .. ask(UnitDistanceSquared, "target")
+		parts[#parts + 1] = "Interact4=" .. ask(CheckInteractDistance, "target", 4)
+		parts[#parts + 1] = "exists=" .. ask(UnitExists, "target")
+		parts[#parts + 1] = "canAttack=" .. ask(UnitCanAttack, "player", "target")
+		local okI, info = pcall(C_Spell.GetSpellInfo, spell)
+		if okI and type(info) == "table" then
+			parts[#parts + 1] = ("spell=%s id=%s min=%s max=%s"):format(
+				show(info.name), show(info.spellID), show(info.minRange), show(info.maxRange))
+		else
+			parts[#parts + 1] = "spell=<unknown: " .. show(spell) .. ">"
+		end
+	end
+	-- the sink: a plain OR secret boolean may drive alpha; nil means "no valid check"
+	if rng.frame then
+		if okR and (secretR or r ~= nil) then
+			local okA, err = pcall(rng.frame.SetAlphaFromBoolean, rng.frame, r, 1, 0.15)
+			if not okA then parts[#parts + 1] = "SetAlphaFromBoolean ERROR " .. show(err) end
+		else
+			rng.frame:SetAlpha(0.15)
+		end
+	end
+	return table.concat(parts, " "), okR and r or nil, secretR
+end
+
+local function stopRangeProbe()
+	if rng.ticker then rng.ticker:Cancel(); rng.ticker = nil end
+	if rng.frame then rng.frame:Hide() end
+end
+
+SLASH_FOREVERDEVRANGE1 = "/fdrange"
+SlashCmdList["FOREVERDEVRANGE"] = function(msg)
+	msg = strtrim(msg or "")
+	if msg:lower() == "stop" or msg:lower() == "hide" then
+		stopRangeProbe()
+		rlog("stopped")
+		return
+	end
+	local spell = tonumber(msg) or (msg ~= "" and msg) or "Serpent Sting"
+	stopRangeProbe()
+	buildRangeBox()
+	rng.frame:Show()
+	local line, _, secret = rangeSample(spell, true)
+	rlog("[start] %s", line)
+	-- 30 s at 0.5 s: log every change; when the value is secret (uncomparable) log a heartbeat
+	local last, n = nil, 0
+	rng.ticker = C_Timer.NewTicker(0.5, function()
+		n = n + 1
+		local l, _, s = rangeSample(spell, false)
+		if s then
+			if n % 10 == 0 then rlog("[secret] %s (box alpha tracks it? look at the box)", l) end
+		elseif l ~= last then
+			rlog("[change] %s", l)
+			last = l
+		end
+		if n >= 60 then
+			rlog("[done] %d samples", n)
+			rng.ticker = nil
+			if rng.frame then rng.frame:Hide() end
+		end
+	end, 60)   -- 60 iterations: the ticker stops itself
+end
