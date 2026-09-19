@@ -74,6 +74,9 @@ BUFFTRIGGER2_HUNKS = [
 # secret number, which renders as e.g. "114.5" in combat. The engine can format the duration object
 # itself; Private.SecretDurationFormatter lives in ForeverEngineAura.lua. Brand-free anchor.
 PROTOTYPES_HUNKS = [
+    # Spell Usable trigger: secret-safe in combat (see Cooldown Progress upstream for the same idea)
+    ("        local charges, maxCharges, spellCount, chargeGainTime, chargeLostTime = M33kAuras.GetSpellCharges(effectiveSpellId, nil)\n        local stacks = maxCharges and maxCharges > 1 and charges\n                       or spellCount and spellCount > 0 and spellCount\n                       or nil\n        if (charges == nil) then\n          charges = (duration == 0 or gcdCooldown) and 1 or 0;\n        end\n        local ready = (startTime == 0 and not paused) or charges > 0\n        local active = Private.ExecEnv.IsUsableSpell(spellName or \"\") and ready\n",
+     "        local charges, maxCharges, spellCount, chargeGainTime, chargeLostTime = M33kAuras.GetSpellCharges(effectiveSpellId, nil)\n        -- Forever: cooldown, charges and cast count are secret in combat (SecretWhenCooldownsRestricted);\n        -- a comparison would throw. Ready-ness is exact (IsSpellReady reads NeverSecret fields) and\n        -- usability is plain data, so the trigger keeps working; stacks follow the cooldown trigger.\n        local isSecret = issecretvalue(startTime) or issecretvalue(duration) or issecretvalue(charges)\n                      or issecretvalue(maxCharges) or issecretvalue(spellCount)\n        local stacks, ready\n        if isSecret then\n          stacks = maxCharges and maxCharges ~= 1 and charges or (spellCount and C_StringUtil.TruncateWhenZero(spellCount)) or C_Spell.GetSpellDisplayCount(effectiveSpellId)\n          ready = M33kAuras.IsSpellReady(effectiveSpellId)\n        else\n          stacks = maxCharges and maxCharges > 1 and charges\n                   or spellCount and spellCount > 0 and spellCount\n                   or nil\n          if (charges == nil) then\n            charges = (duration == 0 or gcdCooldown) and 1 or 0;\n          end\n          ready = (startTime == 0 and not paused) or charges > 0\n        end\n        local active = Private.ExecEnv.IsUsableSpell(spellName or \"\") and ready\n"),
     ("      if issecretvalue(remaining) then\n"
      "        -- todo when secret duration formatting is a thing\n"
      "        return string.format(\"%.1f\", remaining)\n"
@@ -169,7 +172,8 @@ CHECKS = {
         "return UpdateDelegatedState(time, triggerInfo, triggerStates)",
         "if unitExists or unitExistScanFunc[unit] then",
     ],
-    "M33kAuras/Prototypes.lua": ["Private.SecretDurationFormatter(progressPrecision)"],
+    "M33kAuras/Prototypes.lua": ["Private.SecretDurationFormatter(progressPrecision)",
+                                 "ready = M33kAuras.IsSpellReady(effectiveSpellId)"],
     "M33kAurasOptions/Cache.lua": ["spellCache.AddIcon(info.name, info.spellID"],
     "M33kAurasOptions/BuffTrigger2.lua": ["(best and best ~= \"\") and best or strtrim(v)",
                                           "pcall(spellCache.GetIcon, input)"],
