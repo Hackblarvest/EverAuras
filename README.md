@@ -22,6 +22,7 @@ and lets the client draw it.
 | **Cooldown icons** with swipe and countdown, **progress bars**, and `%p` remaining-time text | Duration objects: the engine formats and animates values the addon cannot read. |
 | **Show On: Ready / On Cooldown** | Exact, from fields Blizzard left readable. |
 | **Conditions on secret state** — e.g. *Is Ready (Secret)* → *Alpha (Boolean)* | The secret boolean goes straight to the engine via `SetAlphaFromBoolean`; the addon never sees it. |
+| **Range gate** on engine-driven displays — *only while the spell is in range of the unit* (e.g. Serpent Sting missing **and** target within 8–35 yd) | `C_Spell.IsSpellInRange` answers with a plain boolean on Forever, in combat too, and honours the spell's own min/max range. Sampled 5x per second; the display's own alpha, conditions and animations still apply on top. |
 | Spell usable, in range, resources, item cooldowns, casts, swing timers | Plain readable data. |
 
 Together these are the building blocks of a rotation display: a row of icons, each showing when

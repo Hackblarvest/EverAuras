@@ -17,8 +17,8 @@ table.insert(OptionsPrivate.registerRegions, function()
   local Engine = Private and Private.ForeverEngine
   if not Engine then return end
 
-  -- Icon region options: a status line and a per-display opt-out. Entries without 'set' get the
-  -- framework setter, exactly like 'cooldown' in RegionOptions/Icon.lua.
+  -- Icon region options: a status line, a per-display opt-out and the range gate. Entries without
+  -- 'set' get the framework setter, exactly like 'cooldown' in RegionOptions/Icon.lua.
   local iconOptions = Private.regionOptions and Private.regionOptions.icon
   if iconOptions and iconOptions.create and not iconOptions.foreverEngineWrapped then
     iconOptions.foreverEngineWrapped = true
@@ -49,6 +49,36 @@ table.insert(OptionsPrivate.registerRegions, function()
             WA.Add(data)
             if WA.ClearAndUpdateOptions then WA.ClearAndUpdateOptions(data.id) end
           end,
+        }
+        local function gateHidden(needToggle)
+          if data.foreverEngine == false then return true end
+          if needToggle and data.foreverEngineRange ~= true then return true end
+          local plan = Engine.Classify(data)
+          return not plan or plan.unit == "player"
+        end
+        group.foreverEngineRange = {
+          type = "toggle", order = 100.4, width = WA.doubleWidth,
+          name = T("Only while the spell is in range of the unit"),
+          desc = T("Hides the display unless the trigger's spell can reach the unit right now (C_Spell.IsSpellInRange: the spell's own minimum and maximum range, sampled 5x per second, also in combat). Hidden while there is no valid unit. The display's own alpha, conditions and animations still apply on top. The spell must be one you know that has a range; the status line above says when it is not."),
+          get = function() return data.foreverEngineRange == true end,
+          set = function(_, v)
+            data.foreverEngineRange = v and true or false
+            WA.Add(data)
+            if WA.ClearAndUpdateOptions then WA.ClearAndUpdateOptions(data.id) end
+          end,
+          hidden = function() return gateHidden(false) end,
+        }
+        group.foreverEngineRangeSpell = {
+          type = "input", order = 100.5, width = WA.doubleWidth,
+          name = T("Range check spell (blank = the trigger's spell)"),
+          desc = T("Name or id of the spell whose range is checked, for example Auto Shot for a hunter's 8-35 yd window. Blank uses the name of the lowest tracked spell id, i.e. the rank you know."),
+          get = function() return data.foreverEngineRangeSpell or "" end,
+          set = function(_, v)
+            data.foreverEngineRangeSpell = strtrim(v or "")
+            WA.Add(data)
+            if WA.ClearAndUpdateOptions then WA.ClearAndUpdateOptions(data.id) end
+          end,
+          hidden = function() return gateHidden(true) end,
         }
       end
       return options

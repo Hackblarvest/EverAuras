@@ -18,6 +18,10 @@
 -- Triggers may use spell NAMES: they resolve to every known rank's id (classic ranks are separate
 -- spells) and follow the spellbook as you level. Exact ids stay exact.
 --
+-- Range gate (per display): 'Only while the spell is in range of the unit' hides the display unless
+-- C_Spell.IsSpellInRange says the spell can reach the unit. That call answers with a plain boolean on
+-- Forever, in combat too (probe 2026-09-19), and honours the spell's own min/max range.
+--
 -- Brand-free on purpose: works in the upstream tree and after the rename step.
 ---@type string
 local AddonName = ...
@@ -282,6 +286,45 @@ local function InertConditions(data)
   return false
 end
 
+-- The spell whose range gates a display: the user's override, else the NAME of the first tracked id
+-- (a name resolves to the rank you know; every rank shares the same range).
+local function RangeSpell(data, plan)
+  local o = Trim(data.foreverEngineRangeSpell)
+  if o ~= "" then return tonumber(o) or o end
+  if C_Spell and C_Spell.GetSpellName then
+    local ok, nm = pcall(C_Spell.GetSpellName, plan.firstId)
+    if ok and type(nm) == "string" and nm ~= "" and not issecretvalue(nm) then return nm end
+  end
+  return plan.firstId
+end
+
+local function WantsRangeGate(data, plan)
+  return data.foreverEngineRange == true and plan.unit ~= "player"
+end
+
+-- A gate that can never answer is worse than none (IsSpellInRange is nil for a spell you do not
+-- know, and a rangeless spell is never "in range"). Safe-time plain data. Returns ok, reason.
+local function ValidateRangeSpell(spell)
+  local ok, id = pcall(C_Spell.GetSpellIDForSpellIdentifier, spell)
+  if not ok or type(id) ~= "number" or issecretvalue(id) then
+    return false, T("'%s' is not a spell"):format(tostring(spell))
+  end
+  local known = false
+  pcall(function()
+    local bank = (Enum.SpellBookSpellBank and Enum.SpellBookSpellBank.Player) or 0
+    if C_SpellBook and C_SpellBook.IsSpellKnown then
+      if C_SpellBook.IsSpellKnown(id, bank) then known = true end
+    elseif IsSpellKnown and IsSpellKnown(id) then
+      known = true
+    end
+    if not known and C_SpellBook and C_SpellBook.IsSpellInSpellBook and C_SpellBook.IsSpellInSpellBook(id, bank) then known = true end
+  end)
+  if not known then return false, T("'%s' is not one of your spells"):format(tostring(spell)) end
+  local okR, hasRange = pcall(C_Spell.SpellHasRange, spell)
+  if not okR or hasRange ~= true then return false, T("'%s' has no range"):format(tostring(spell)) end
+  return true
+end
+
 local MODE_TEXT = {
   active = "shows the live aura while it is present, nothing while it is absent",
   missing = "shows your icon while the aura is absent and disappears completely while it is present",
@@ -295,6 +338,15 @@ function Engine.Explain(data, plan, reasons)
       :format(plan.unit, plan.filter, T(MODE_TEXT[plan.mode]))
     if plan.byName then
       txt = txt .. " " .. T("Spell name resolved to id(s) %s (your spellbook ranks and auras seen so far); re-resolved as you learn spells and see auras."):format(table.concat(plan.ids, ", "))
+    end
+    if WantsRangeGate(data, plan) then
+      local spell = RangeSpell(data, plan)
+      local okV, why = ValidateRangeSpell(spell)
+      if okV then
+        txt = txt .. " " .. T("|cff33ff99Range gate:|r hidden unless '%s' is in range of the unit (the spell's own min/max range, sampled 5x per second, also in combat)."):format(tostring(spell))
+      else
+        txt = txt .. " " .. T("|cffff9933Range gate off:|r %s. Enter a 'Range check spell' you know that has a range, e.g. Auto Shot."):format(why)
+      end
     end
     if InertConditions(data) then
       txt = txt .. " " .. T("|cffff9933Note:|r a condition reads trigger data other than 'Buffed'; it never fires on this display.")
@@ -557,6 +609,85 @@ local function DisableKind(att, kind)
   end
 end
 
+---------------------------------------------------------------------------- range gate
+-- Gated at the one choke point every WA alpha path ends in: the region's SetAlpha (data.alpha and
+-- 'Alpha' conditions arrive via SetRegionAlpha, fade/pulse animations via SetAnimAlpha; both call
+-- self:SetAlpha). The wrapper remembers what WA asked for, applies asked x inRange, and answers
+-- GetAlpha with the asked value so animation seeds never see the gated one. A secret answer is folded
+-- through C_CurveUtil.EvaluateColorValueFromBoolean (upstream's 'Alpha (Boolean)' path); nil (no valid
+-- unit) hides. Shadowing a widget method on the instance has precedent: RegionPrototype.lua keeps
+-- RealClearAllPoints the same way.
+local rangeTicker
+
+local function GateAlpha(att)
+  if not att.gateInstalled then return end
+  local base = att.baseAlpha
+  if type(base) ~= "number" then base = 1 end        -- type() is fine on a secret; == nil is not
+  local r, value = att.inRange, 0
+  if issecretvalue(r) then
+    local ok, v = pcall(C_CurveUtil.EvaluateColorValueFromBoolean, r, base, 0)
+    if ok then value = v end
+  elseif r then
+    value = base
+  end
+  att.realSetAlpha(att.region, value)
+end
+
+local function SampleRange(att)
+  local ok, r = pcall(C_Spell.IsSpellInRange, att.rangeSpell, att.unit)
+  att.inRange = nil
+  if ok then att.inRange = r end                     -- true / false / nil, untested: a secret must reach GateAlpha
+  GateAlpha(att)
+end
+
+local function InstallGate(att)
+  if att.gateInstalled then return true end
+  local region = att.region
+  local realSet, realGet = region.SetAlpha, region.GetAlpha
+  if type(realSet) ~= "function" or type(realGet) ~= "function" then return false end
+  att.shadowedSetAlpha, att.shadowedGetAlpha = rawget(region, "SetAlpha"), rawget(region, "GetAlpha")
+  att.realSetAlpha, att.realGetAlpha = realSet, realGet
+  local ok, cur = pcall(realGet, region)
+  if ok then att.baseAlpha = cur else att.baseAlpha = 1 end   -- cur may be a secret number
+  region.SetAlpha = function(_, alpha) att.baseAlpha = alpha; GateAlpha(att) end
+  region.GetAlpha = function() return att.baseAlpha end
+  att.gateInstalled = true
+  return true
+end
+
+local function RemoveGate(att)
+  if not att.gateInstalled then return end
+  local region = att.region
+  region.SetAlpha, region.GetAlpha = att.shadowedSetAlpha, att.shadowedGetAlpha   -- nil: back to the widget methods
+  att.gateInstalled, att.inRange = false, nil
+  local base = att.baseAlpha
+  if type(base) ~= "number" then base = region.animAlpha or region.alpha or 1 end
+  pcall(att.realSetAlpha, region, base)               -- hand the plain alpha back to WA
+end
+
+local function RangeTick()
+  local any = false
+  for _, att in pairs(attachments) do
+    if att.active and att.gateInstalled and att.rangeSpell then any = true; SampleRange(att) end
+  end
+  if not any and rangeTicker then rangeTicker:Cancel(); rangeTicker = nil end
+end
+
+local function EnsureRangeTicker()
+  if not rangeTicker then rangeTicker = C_Timer.NewTicker(0.2, RangeTick) end   -- upstream's range cadence
+end
+
+-- Every way out of "on" (off, preview, a failed engine build) hands the region back the same way.
+local function TurnOff(att, region, data, mode)
+  if att.host then att.host:Hide() end
+  DisableKind(att, "slot"); DisableKind(att, "group")
+  RemoveGate(att)
+  if region.icon then region.icon:Show() end
+  SetMirroredShown(att, true)
+  if region.tooltipFrame and data then region.tooltipFrame:EnableMouseMotion(data.useTooltip and true or false) end
+  att.mode, att.active, att.sig, att.kind = mode, false, nil, nil
+end
+
 local function Apply(region)
   local att = attachments[region]
   if not att then return end
@@ -567,12 +698,7 @@ local function Apply(region)
 
   if mode ~= "on" then
     if att.mode == mode then return end
-    if att.host then att.host:Hide() end
-    DisableKind(att, "slot"); DisableKind(att, "group")
-    if region.icon then region.icon:Show() end
-    SetMirroredShown(att, true)
-    if region.tooltipFrame and data then region.tooltipFrame:EnableMouseMotion(data.useTooltip and true or false) end
-    att.mode, att.active, att.sig, att.kind = mode, false, nil, nil
+    TurnOff(att, region, data, mode)
     return
   end
 
@@ -583,7 +709,7 @@ local function Apply(region)
 
   if kind == "slot" then
     if not att.slotBuilt then
-      if not BuildSlot(att, region, plan) then att.mode = "off"; att.host:Hide(); return end
+      if not BuildSlot(att, region, plan) then TurnOff(att, region, data, "off"); return end
       att.slotFilter, att.slotKey = plan.filter, plan.key
     else
       if att.slotFilter ~= plan.filter then c:SetAuraSlotFilterString(KEY, plan.filter); att.slotFilter = plan.filter end
@@ -592,7 +718,7 @@ local function Apply(region)
     end
   else
     if not att.groupBuilt then
-      if not BuildGroup(att, region, plan) then att.mode = "off"; att.host:Hide(); return end
+      if not BuildGroup(att, region, plan) then TurnOff(att, region, data, "off"); return end
       att.groupFilter, att.groupKey = plan.filter, plan.key
     else
       if att.groupFilter ~= plan.filter then c:SetAuraGroupFilterString(KEY, plan.filter); att.groupFilter = plan.filter end
@@ -623,6 +749,19 @@ local function Apply(region)
   if kind == "slot" then pcall(att.button.SetFrameLevel, att.button, c:GetFrameLevel()) end
   att.host:Show()
   att.mode, att.active, att.sig = "on", true, att.wantSig
+  att.rangeSpell = nil
+  if WantsRangeGate(data, plan) then
+    local spell = RangeSpell(data, plan)
+    if ValidateRangeSpell(spell) and InstallGate(att) then
+      att.rangeSpell = spell
+      SampleRange(att)               -- right answer now, not 0.2 s from now
+      EnsureRangeTicker()
+    else
+      RemoveGate(att)                -- Explain tells the user why (status line + aura warning)
+    end
+  else
+    RemoveGate(att)
+  end
   Engine.OnLayout(region)
   pcall(c.UpdateAllAuras, c)
 end
@@ -657,6 +796,7 @@ local function ComputeSig(region, data, plan)
   local parts = { plan.key, w, h, tostring(data.cooldown), tostring(data.cooldownSwipe), tostring(data.cooldownEdge),
     tostring(data.cooldownTextDisabled), tostring(data.inverse), tostring(data.desaturate), tostring(data.useTooltip),
     tostring(data.iconSource), tostring(data.displayIcon),
+    tostring(data.foreverEngineRange), tostring(data.foreverEngineRangeSpell),
     table.concat(data.color or {}, ","), table.concat({ region.icon:GetTexCoord() }, ",") }
   for _, sub in ipairs(data.subRegions or {}) do
     if sub.type == "subtext" then
@@ -720,6 +860,8 @@ end
 local icon = Private.regionTypes and Private.regionTypes.icon
 if not icon then return end
 icon.default.foreverEngine = true            -- per-display opt-out (false); Private.validate fills it in
+icon.default.foreverEngineRange = false      -- 'only while the spell is in range of the unit'
+icon.default.foreverEngineRangeSpell = ""    -- override for the range-check spell (blank = trigger's spell)
 
 local origModify = icon.modify
 icon.modify = function(parent, region, data)
@@ -801,9 +943,10 @@ local function OnSpellbookChanged()
     end
   end
   for region, att in pairs(attachments) do
-    if att.want and att.want.byName then
+    if att.want then
       local data = WA.GetData(region.id)
-      if data then Engine.Sync(region, data) end
+      if data and data.foreverEngineRange == true then att.sig = nil end   -- re-validate the range spell
+      if data and (att.want.byName or att.sig == nil) then Engine.Sync(region, data) end
     end
   end
   FlushReadds()
