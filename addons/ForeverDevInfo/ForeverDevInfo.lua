@@ -927,3 +927,40 @@ SlashCmdList["FOREVERDEVRANGE"] = function(msg)
 		end
 	end, 60)   -- 60 iterations: the ticker stops itself
 end
+
+---------------------------------------------------------------------------- /fdload
+-- Which flavour does EverAuras think this client is, and is each class-filtered display loaded?
+--   /fdload          log flavour facts + every display that has a Player Class load condition
+local function llog(fmt, ...)
+	local line = select("#", ...) > 0 and fmt:format(...) or fmt
+	ForeverDevInfoDB = ForeverDevInfoDB or {}
+	ForeverDevInfoDB.loadProbe = ForeverDevInfoDB.loadProbe or {}
+	local l = ForeverDevInfoDB.loadProbe
+	l[#l + 1] = date("%H:%M:%S") .. " " .. line
+	while #l > 80 do table.remove(l, 1) end
+	print("|cff33ff99FDI load|r " .. line)
+end
+
+SLASH_FOREVERDEVLOAD1 = "/fdload"
+SlashCmdList["FOREVERDEVLOAD"] = function()
+	local EA = _G.EverAuras
+	if not EA then llog("EverAuras not loaded"); return end
+	local _, class = UnitClass("player")
+	llog("[flavour] BuildInfo=%s IsRetail=%s IsClassicEra=%s IsForever=%s X-Flavor=%s class=%s",
+		show(EA.BuildInfo), ask(EA.IsRetail), ask(EA.IsClassicEra), ask(EA.IsForever),
+		show(C_AddOns.GetAddOnMetadata("EverAuras", "X-Flavor")), show(class))
+	local db = _G.EverAurasSaved
+	local n = 0
+	for id, data in pairs(db and db.displays or {}) do
+		local load = data.load
+		if load and load.use_class ~= nil then
+			n = n + 1
+			local multi = {}
+			for k, v in pairs(load.class and load.class.multi or {}) do if v then multi[#multi + 1] = k end end
+			llog("[display] %s: use_class=%s single=%s multi=[%s] loaded=%s",
+				id, show(load.use_class), show(load.class and load.class.single), table.concat(multi, ","),
+				ask(EA.IsAuraLoaded, id))
+		end
+	end
+	llog("[done] %d display(s) with a Player Class condition", n)
+end

@@ -269,7 +269,7 @@ patch_missing_is_unknowable(root)
 #     would install a silently inert feature.
 import shutil
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from engine_hunks import BUFFTRIGGER2_HUNKS, PROTOTYPES_HUNKS, OPTIONS_HUNKS, TOC_HUNKS, NEW_FILES, CHECKS
+from engine_hunks import BUFFTRIGGER2_HUNKS, PROTOTYPES_HUNKS, OPTIONS_HUNKS, CORE_HUNKS, TOC_HUNKS, NEW_FILES, CHECKS
 FILES_SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "forever_files")
 
 def install_engine_aura(root):
@@ -281,6 +281,8 @@ def install_engine_aura(root):
     patch("M33kAuras/BuffTrigger2.lua", BUFFTRIGGER2_HUNKS)
     patch("M33kAuras/Prototypes.lua", PROTOTYPES_HUNKS)
     for rel, hunks in OPTIONS_HUNKS.items():
+        patch(rel, hunks)
+    for rel, hunks in CORE_HUNKS.items():
         patch(rel, hunks)
     for rel, old, new in TOC_HUNKS:
         patch(rel, [(old, new)])

@@ -8,7 +8,7 @@ import io, os, shutil, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from engine_hunks import BUFFTRIGGER2_HUNKS, PROTOTYPES_HUNKS, OPTIONS_HUNKS, TOC_HUNKS, NEW_FILES, CHECKS, rename
+from engine_hunks import BUFFTRIGGER2_HUNKS, PROTOTYPES_HUNKS, OPTIONS_HUNKS, CORE_HUNKS, TOC_HUNKS, NEW_FILES, CHECKS, rename
 
 ADDONS = r"D:\World of Warcraft\World of Warcraft\_classic_beta_\Interface\AddOns"
 FILES_SRC = os.path.join(HERE, "forever_files")
@@ -51,6 +51,8 @@ def main():
     apply_hunks(os.path.join(ADDONS, rename("M33kAuras/Prototypes.lua")), PROTOTYPES_HUNKS, "Prototypes.lua")
     for rel, hunks in OPTIONS_HUNKS.items():
         apply_hunks(os.path.join(ADDONS, rename(rel)), hunks, rename(rel))
+    for rel, hunks in CORE_HUNKS.items():
+        apply_hunks(os.path.join(ADDONS, rename(rel)), hunks, rename(rel))
     for rel, old, new in TOC_HUNKS:
         apply_hunks(os.path.join(ADDONS, rename(rel)), [(old, new)], rename(rel))
 
@@ -68,7 +70,8 @@ def main():
         print("  (luaparser not available - syntax not verified)")
         return
     for rel in ("M33kAuras/BuffTrigger2.lua", "M33kAuras/Prototypes.lua", "M33kAuras/ForeverEngineAura.lua",
-                "M33kAurasOptions/ForeverEngineAuraOptions.lua", "M33kAurasOptions/Cache.lua", "M33kAurasOptions/BuffTrigger2.lua"):
+                "M33kAurasOptions/ForeverEngineAuraOptions.lua", "M33kAurasOptions/Cache.lua", "M33kAurasOptions/BuffTrigger2.lua",
+                "M33kAuras/M33kAuras.lua"):
         p = os.path.join(ADDONS, rename(rel))
         try:
             ast.parse(io.open(p, encoding="utf-8", errors="replace").read())

@@ -151,6 +151,17 @@ OPTIONS_HUNKS = {
     ],
 }
 
+# Core (M33kAuras.lua): the load scanner's argument list is generated from the load prototype so
+# it can never drift from the parameter list on Forever (Player Class, Mounted, Zone ... loads).
+CORE_HUNKS = {
+    "M33kAuras/M33kAuras.lua": [
+        ("local function scanForLoadsImpl(toCheck, event, arg1, ...)\n",
+         "-- Forever: the load function's parameter list is built from Private.load_prototype (only the\n-- args whose init is \"arg\" for THIS flavour), but upstream keeps one retail-shaped call below.\n-- Forever is neither retail (BuildInfo 16001) nor classic, so the two lists differ and every value\n-- after 'encounter' lands in the wrong parameter: Player Class, Mounted, Zone ... all broken.\n-- Build the argument list from the prototype instead, so they can never disagree.\nlocal function BuildLoadArgs(values)\n  local args, n = {}, 0\n  for _, arg in ipairs(Private.load_prototype.args) do\n    if arg.init == \"arg\" then\n      n = n + 1\n      args[n] = values[arg.name]\n    end\n  end\n  args.n = n\n  return args\nend\n\nlocal function scanForLoadsImpl(toCheck, event, arg1, ...)\n"),
+        ("      shouldBeLoaded = loadFunc and loadFunc(\"ScanForLoads_Auras\", inCombat, alive, inEncounter, warmodeActive, inPetBattle, vehicle, vehicleUi, dragonriding, mounted, addonRestrictionsActive, specId, player, realm, guild, race, faction, playerLevel, effectiveLevel, role, position, group, groupSize, raidMemberType, zone, zoneId, zonegroupId, instanceId, minimapText, encounter_id, size, difficulty, difficultyIndex, affixes)\n      couldBeLoaded =  loadOpt and loadOpt(\"ScanForLoads_Auras\",   inCombat, alive, inEncounter, warmodeActive, inPetBattle, vehicle, vehicleUi, dragonriding, mounted, addonRestrictionsActive, specId, player, realm, guild, race, faction, playerLevel, effectiveLevel, role, position, group, groupSize, raidMemberType, zone, zoneId, zonegroupId, instanceId, minimapText, encounter_id, size, difficulty, difficultyIndex, affixes)\n",
+         "      -- Forever: arguments in prototype order (see BuildLoadArgs above); names are the prototype's\n      local loadArgs = BuildLoadArgs({\n        combat = inCombat, alive = alive, encounter = inEncounter, warmode = warmodeActive, pvpmode = pvp,\n        petbattle = inPetBattle, vehicle = vehicle, vehicleUi = vehicleUi, dragonriding = dragonriding,\n        mounted = mounted, addonRestrictionsActive = addonRestrictionsActive, hardcore = hardcore,\n        engraving = runeEngraving, class = class, class_and_spec = specId, player = player, realm = realm,\n        guild = guild, race = race, faction = faction, level = playerLevel, effectiveLevel = effectiveLevel,\n        role = role, spec_position = position, raid_role = raidRole, ingroup = group, groupSize = groupSize,\n        group_leader = raidMemberType, zone = zone, zoneId = zoneId, zonegroupId = zonegroupId,\n        instanceId = instanceId, minimapZoneText = minimapText, encounterid = encounter_id, size = size,\n        difficulty = difficulty, instance_type = difficultyIndex, affixes = affixes,\n      })\n      shouldBeLoaded = loadFunc and loadFunc(\"ScanForLoads_Auras\", unpack(loadArgs, 1, loadArgs.n))\n      couldBeLoaded =  loadOpt and loadOpt(\"ScanForLoads_Auras\", unpack(loadArgs, 1, loadArgs.n))\n"),
+    ],
+}
+
 # TOC line insertions: (relative toc path, anchor, replacement)
 TOC_HUNKS = [
     ("M33kAuras/M33kAuras.toc", "DiscordList.lua\n", "DiscordList.lua\nForeverEngineAura.lua\n"),
@@ -174,6 +185,7 @@ CHECKS = {
     ],
     "M33kAuras/Prototypes.lua": ["Private.SecretDurationFormatter(progressPrecision)",
                                  "ready = M33kAuras.IsSpellReady(effectiveSpellId)"],
+    "M33kAuras/M33kAuras.lua": ["unpack(loadArgs, 1, loadArgs.n)"],
     "M33kAurasOptions/Cache.lua": ["spellCache.AddIcon(info.name, info.spellID"],
     "M33kAurasOptions/BuffTrigger2.lua": ["(best and best ~= \"\") and best or strtrim(v)",
                                           "pcall(spellCache.GetIcon, input)"],
