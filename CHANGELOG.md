@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.2-alpha (2026-09-21)
+
+- **Load conditions work on Forever.** The load scanner called the load function with a retail-shaped
+  argument list while the prototype builds a different parameter list for Forever, so every condition after
+  *In Combat* / *Alive* (Player Class, Mounted, Zone, Level, ...) was evaluated against the wrong value. The
+  argument list is now generated from the load prototype, so the two can never disagree.
+- `/fdload` probe in ForeverDevInfo (flavour facts + loaded state of class-filtered displays).
+
 ## 0.3.1-alpha (2026-09-20)
 
 - **Spell Usable trigger works in combat.** Cooldown, charges and cast count are secret in combat on Forever
