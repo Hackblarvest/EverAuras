@@ -3,7 +3,8 @@
 The bridge cannot answer this: it assigns every global BEFORE the client restores anything, so
 it looks the same whether the client works or not. Two independent tests, no real data touched:
 
-  1. Token   tools/ wrote ForeverSVCanaryDB (with a token) to disk while the client was closed.
+  1. File    tools/ wrote ForeverSVCanaryDB (with a token) to disk while the client was closed;
+             after that, every logout writes a login count. Either one present at load = read back.
              The bridge does not cover this file. Token present at ADDON_LOADED = the client read
              a SavedVariables file itself.
   2. Identity !ForeverSVBridge assigns EverAurasSaved before EverAuras loads. If the client
@@ -27,7 +28,8 @@ f:RegisterEvent("PLAYER_LOGIN")
 f:SetScript("OnEvent", function(_, event, name)
 	if event == "ADDON_LOADED" and name == ADDON then
 		local db, cdb = rawget(_G, "ForeverSVCanaryDB"), rawget(_G, "ForeverSVCanaryCharDB")
-		r.token = type(db) == "table" and db.token == TOKEN
+		-- the tools token, or anything the client itself wrote at an earlier logout, proves a read-back
+		r.token = type(db) == "table" and (db.token == TOKEN or (tonumber(db.logins) or 0) > 0)
 		r.accountLogins = type(db) == "table" and db.logins or 0
 		r.charLogins = type(cdb) == "table" and cdb.logins or 0
 		ForeverSVCanaryDB = type(db) == "table" and db or {}
@@ -50,7 +52,7 @@ f:SetScript("OnEvent", function(_, event, name)
 		local lines = {
 			("build %s (%s), interface %s%s"):format(tostring(build), tostring(version), tostring(toc),
 				toc == 16001 and "" or no("  <- NOT 16001: EverAuras' Forever checks need updating")),
-			"test 1, token file:   " .. (r.token and yes("READ BACK - the client reads SavedVariables")
+			"test 1, own SV file:  " .. (r.token and yes("READ BACK - the client reads SavedVariables")
 				or no("NOT read back")),
 			"test 2, EverAuras:    " .. (r.identityOk and yes(r.identity) or no(r.identity or "EverAuras not loaded")),
 			("logins seen by this file: account %d, this character %d (a working client counts up)")
