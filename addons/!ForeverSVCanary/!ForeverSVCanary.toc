@@ -1,0 +1,9 @@
+## Interface: 120100, 16001
+## Title: |cff33ff99!|r Forever SV Canary
+## Notes: Tells whether the WoW: Forever client reads SavedVariables back. Touches no real addon data.
+## Author: Hackblarvest
+## Version: 1
+## SavedVariables: ForeverSVCanaryDB
+## SavedVariablesPerCharacter: ForeverSVCanaryCharDB
+
+canary.lua
