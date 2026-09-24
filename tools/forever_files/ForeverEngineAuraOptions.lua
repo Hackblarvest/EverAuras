@@ -17,6 +17,80 @@ table.insert(OptionsPrivate.registerRegions, function()
   local Engine = Private and Private.ForeverEngine
   if not Engine then return end
 
+  -- Power gates (ForeverGate.lua): hide while full / colour below a threshold, for Icons and Progress
+  -- Bars, engine-driven or not. The values are secret on Forever; Blizzard evaluates them for us.
+  local POWER_UNITS = { player = T("Player"), target = T("Target"), focus = T("Focus"), pet = T("Pet") }
+  local POWER_TYPES = { [0] = T("Mana"), [1] = T("Rage"), [3] = T("Energy"), [2] = T("Focus") }
+  local function AddPowerOptions(group, data, base)
+    local function redo()
+      WA.Add(data)
+      if WA.ClearAndUpdateOptions then WA.ClearAndUpdateOptions(data.id) end
+    end
+    local function any() return data.foreverPowerHide or data.foreverPowerColor end
+    group.foreverPowerHeader = { type = "header", order = base, name = T("Power (WoW: Forever)") }
+    group.foreverPowerNote = {
+      type = "description", order = base + 0.01, width = WA.doubleWidth, fontSize = "medium",
+      name = T("Resource values are secret to addons on Forever (your mana even out of combat). These options let the game compare them for you, so they also work in combat."),
+    }
+    group.foreverPowerHide = {
+      type = "toggle", order = base + 0.02, width = WA.normalWidth,
+      name = T("Hide while full"),
+      desc = T("Hides the display while the chosen resource is full. Shown again as soon as any is missing."),
+      get = function() return data.foreverPowerHide == true end,
+      set = function(_, v) data.foreverPowerHide = v and true or false; redo() end,
+    }
+    group.foreverPowerColor = {
+      type = "toggle", order = base + 0.03, width = WA.normalWidth,
+      name = T("Colour below a threshold"),
+      desc = T("Colours the icon or the bar with the low colour while the resource is below the threshold. Applies to the display's own icon or bar texture (not to an engine-drawn aura icon, and not to a gradient bar)."),
+      get = function() return data.foreverPowerColor == true end,
+      set = function(_, v) data.foreverPowerColor = v and true or false; redo() end,
+    }
+    group.foreverPowerUnit = {
+      type = "select", order = base + 0.04, width = WA.normalWidth,
+      name = T("Unit"), values = POWER_UNITS,
+      get = function() return data.foreverPowerUnit or "player" end,
+      set = function(_, v) data.foreverPowerUnit = v; WA.Add(data) end,
+      hidden = function() return not any() end,
+    }
+    group.foreverPowerType = {
+      type = "select", order = base + 0.05, width = WA.normalWidth,
+      name = T("Resource"), values = POWER_TYPES,
+      get = function() return tonumber(data.foreverPowerType) or 0 end,
+      set = function(_, v) data.foreverPowerType = tonumber(v) or 0; WA.Add(data) end,
+      hidden = function() return not any() end,
+    }
+    group.foreverPowerThreshold = {
+      type = "range", order = base + 0.06, width = WA.normalWidth,
+      name = T("Threshold (%)"), min = 1, max = 99, step = 1,
+      get = function() return tonumber(data.foreverPowerThreshold) or 30 end,
+      set = function(_, v) data.foreverPowerThreshold = v; WA.Add(data) end,
+      hidden = function() return not data.foreverPowerColor end,
+    }
+    group.foreverPowerLowColor = {
+      type = "color", order = base + 0.07, width = WA.normalWidth, hasAlpha = true,
+      name = T("Low colour"),
+      get = function()
+        local c = data.foreverPowerLowColor or { 1, 0.25, 0.25, 1 }
+        return c[1], c[2], c[3], c[4]
+      end,
+      set = function(_, r, g, b, a) data.foreverPowerLowColor = { r, g, b, a }; WA.Add(data) end,
+      hidden = function() return not data.foreverPowerColor end,
+    }
+  end
+
+  local barOptions = Private.regionOptions and Private.regionOptions.aurabar
+  if barOptions and barOptions.create and not barOptions.foreverPowerWrapped then
+    barOptions.foreverPowerWrapped = true
+    local origBarCreate = barOptions.create
+    barOptions.create = function(id, data)
+      local options = origBarCreate(id, data)
+      local group = type(options) == "table" and options.aurabar
+      if type(group) == "table" then AddPowerOptions(group, data, 101) end
+      return options
+    end
+  end
+
   -- Icon region options: a status line, a per-display opt-out and the range gate. Entries without
   -- 'set' get the framework setter, exactly like 'cooldown' in RegionOptions/Icon.lua.
   local iconOptions = Private.regionOptions and Private.regionOptions.icon
@@ -82,6 +156,7 @@ table.insert(OptionsPrivate.registerRegions, function()
           end,
           hidden = function() return gateHidden(true) end,
         }
+        AddPowerOptions(group, data, 101)
       end
       return options
     end

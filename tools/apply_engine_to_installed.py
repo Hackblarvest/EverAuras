@@ -70,7 +70,7 @@ def main():
         print("  (luaparser not available - syntax not verified)")
         return
     for rel in ("M33kAuras/BuffTrigger2.lua", "M33kAuras/Prototypes.lua", "M33kAuras/ForeverEngineAura.lua",
-                "M33kAuras/ForeverManaRegen.lua",
+                "M33kAuras/ForeverManaRegen.lua", "M33kAuras/ForeverGate.lua",
                 "M33kAurasOptions/ForeverEngineAuraOptions.lua", "M33kAurasOptions/Cache.lua", "M33kAurasOptions/BuffTrigger2.lua",
                 "M33kAuras/M33kAuras.lua", "M33kAuras/Compatibility.lua", "M33kAuras/GenericTrigger.lua"):
         p = os.path.join(ADDONS, rename(rel))

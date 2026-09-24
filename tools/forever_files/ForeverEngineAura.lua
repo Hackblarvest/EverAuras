@@ -624,59 +624,30 @@ local function DisableKind(att, kind)
 end
 
 ---------------------------------------------------------------------------- range gate
--- Gated at the one choke point every WA alpha path ends in: the region's SetAlpha (data.alpha and
--- 'Alpha' conditions arrive via SetRegionAlpha, fade/pulse animations via SetAnimAlpha; both call
--- self:SetAlpha). The wrapper remembers what WA asked for, applies asked x inRange, and answers
--- GetAlpha with the asked value so animation seeds never see the gated one. A secret answer is folded
--- through C_CurveUtil.EvaluateColorValueFromBoolean (upstream's 'Alpha (Boolean)' path); nil (no valid
--- unit) hides. Shadowing a widget method on the instance has precedent: RegionPrototype.lua keeps
--- RealClearAllPoints the same way.
+-- The alpha itself is owned by ForeverGate.lua (Private.ForeverGate), which also serves the power
+-- gates: one wrapper on the region's SetAlpha, so range and "hide while full" combine instead of
+-- fighting over the same widget method. Here: sample the range and hand the answer over.
 local rangeTicker
-
-local function GateAlpha(att)
-  if not att.gateInstalled then return end
-  local base = att.baseAlpha
-  if type(base) ~= "number" then base = 1 end        -- type() is fine on a secret; == nil is not
-  local r, value = att.inRange, 0
-  if issecretvalue(r) then
-    local ok, v = pcall(C_CurveUtil.EvaluateColorValueFromBoolean, r, base, 0)
-    if ok then value = v end
-  elseif r then
-    value = base
-  end
-  att.realSetAlpha(att.region, value)
-end
+local function Gate() return Private.ForeverGate end   -- ForeverGate.lua loads after this file
 
 local function SampleRange(att)
   local ok, r = pcall(C_Spell.IsSpellInRange, att.rangeSpell, att.unit)
   att.inRange = nil
-  if ok then att.inRange = r end                     -- true / false / nil, untested: a secret must reach GateAlpha
-  GateAlpha(att)
+  if ok then att.inRange = r end                     -- true / false / nil, untested: a secret must reach the gate
+  if att.gateInstalled then Gate().SetRange(att.region, att.inRange) end
 end
 
 local function InstallGate(att)
   if att.gateInstalled then return true end
-  local region = att.region
-  local realSet, realGet = region.SetAlpha, region.GetAlpha
-  if type(realSet) ~= "function" or type(realGet) ~= "function" then return false end
-  att.shadowedSetAlpha, att.shadowedGetAlpha = rawget(region, "SetAlpha"), rawget(region, "GetAlpha")
-  att.realSetAlpha, att.realGetAlpha = realSet, realGet
-  local ok, cur = pcall(realGet, region)
-  if ok then att.baseAlpha = cur else att.baseAlpha = 1 end   -- cur may be a secret number
-  region.SetAlpha = function(_, alpha) att.baseAlpha = alpha; GateAlpha(att) end
-  region.GetAlpha = function() return att.baseAlpha end
+  if not (Gate() and Gate().SetRange(att.region, nil)) then return false end
   att.gateInstalled = true
   return true
 end
 
 local function RemoveGate(att)
   if not att.gateInstalled then return end
-  local region = att.region
-  region.SetAlpha, region.GetAlpha = att.shadowedSetAlpha, att.shadowedGetAlpha   -- nil: back to the widget methods
   att.gateInstalled, att.inRange = false, nil
-  local base = att.baseAlpha
-  if type(base) ~= "number" then base = region.animAlpha or region.alpha or 1 end
-  pcall(att.realSetAlpha, region, base)               -- hand the plain alpha back to WA
+  if Gate() then Gate().ClearRange(att.region) end
 end
 
 local function RangeTick()

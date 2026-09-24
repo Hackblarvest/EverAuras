@@ -196,6 +196,7 @@ CORE_HUNKS = {
 TOC_HUNKS = [
     ("M33kAuras/M33kAuras.toc", "DiscordList.lua\n", "DiscordList.lua\nForeverEngineAura.lua\n"),
     ("M33kAuras/M33kAuras.toc", "ForeverEngineAura.lua\n", "ForeverEngineAura.lua\nForeverManaRegen.lua\n"),
+    ("M33kAuras/M33kAuras.toc", "ForeverManaRegen.lua\n", "ForeverManaRegen.lua\nForeverGate.lua\n"),
     ("M33kAurasOptions/M33kAurasOptions.toc", "\nRegionOptions\\ProgressTexture.lua\n",
      "\nRegionOptions\\ProgressTexture.lua\nForeverEngineAuraOptions.lua\n"),
 ]
@@ -203,6 +204,7 @@ TOC_HUNKS = [
 # New files: (source basename in tools/forever_files, relative destination)
 NEW_FILES = [
     ("ForeverEngineAura.lua", "M33kAuras/ForeverEngineAura.lua"),
+    ("ForeverGate.lua", "M33kAuras/ForeverGate.lua"),
     ("ForeverManaRegen.lua", "M33kAuras/ForeverManaRegen.lua"),
     ("ForeverEngineAuraOptions.lua", "M33kAurasOptions/ForeverEngineAuraOptions.lua"),
 ]
