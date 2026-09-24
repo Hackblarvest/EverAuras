@@ -122,6 +122,8 @@ def classify(d):
     for k in UNSUPPORTED:
         if t.get(k):
             r.append("option %s" % k)
+    if t.get("ownOnly") is False:
+        r.append("Own Only set to 'others only'")
     return ("ENGINE" if not r else "BLIND"), r
 
 

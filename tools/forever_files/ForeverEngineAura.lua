@@ -271,12 +271,16 @@ function Engine.Classify(data)
   for _, k in ipairs(UNSUPPORTED) do
     if t[k] then no(T("option '%s' cannot be expressed by the engine"):format(k)) end
   end
+  if t.ownOnly == false then no(T("'Own Only' set to 'others only' cannot be expressed by the engine")) end
   if #r > 0 then return nil, r end
   table.sort(sorted)
   local candidate = { includeSpellIDs = ids }
-  if t.ownOnly ~= nil then candidate.isFromPlayerOrPlayerPet = (t.ownOnly == true) end
-  local key = table.concat({ unit, filter, mode, tostring(t.ownOnly), table.concat(sorted, ",") }, ";")
-  return { unit = unit, filter = filter, mode = mode, candidate = candidate, firstId = sorted[1], key = key,
+  -- Own Only = the filter's PLAYER token ("cast by you"). AuraData.isFromPlayerOrPlayerPet is true for
+  -- any player's aura, so another hunter's Serpent Sting passed it.
+  local filterString = (t.ownOnly == true) and (filter .. "|PLAYER") or filter
+  local key = table.concat({ unit, filterString, mode, table.concat(sorted, ",") }, ";")
+  return { unit = unit, filter = filter, filterString = filterString, mode = mode, candidate = candidate,
+           firstId = sorted[1], key = key,
            ids = sorted, byName = byName, gen = spellbookGen, unresolved = unresolved, unseen = unseen }
 end
 
@@ -356,7 +360,7 @@ function Engine.Explain(data, plan, reasons)
   end
   if plan then
     local txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It %s. Kept: position, size, groups, %%n/%%i texts, static colour/desaturate/zoom, border and glow. Not available: conditions and texts that read aura state (stacks, remaining, active), show/hide animations and actions on aura gain/loss.")
-      :format(plan.unit, plan.filter, T(MODE_TEXT[plan.mode]))
+      :format(plan.unit, plan.filterString, T(MODE_TEXT[plan.mode]))
     if plan.byName then
       txt = txt .. " " .. T("Spell name resolved to id(s) %s (your spellbook ranks and auras seen so far); re-resolved as you learn spells and see auras."):format(table.concat(plan.ids, ", "))
     end
@@ -430,7 +434,7 @@ end
 -- Found / Always: a slot whose button draws the live aura on top of the region.
 local function BuildSlot(att, region, plan)
   local host, c, s = att.host, att.container, att.shadows
-  local ok, button = pcall(c.AddAuraSlot, c, KEY, plan.filter, {
+  local ok, button = pcall(c.AddAuraSlot, c, KEY, plan.filterString, {
     candidateFilters = plan.candidate,
     initializeFrame = function(button)
       -- Runs synchronously inside AddAuraSlot, BEFORE DenyTaintedAccessWhenAurasAreSecret is applied.
@@ -504,7 +508,7 @@ end
 local function BuildGroup(att, region, plan)
   local host, c, s = att.host, att.container, att.shadows
   local w, h = RegionSize(region)
-  local ok, err = pcall(c.AddAuraGroup, c, KEY, plan.filter, {
+  local ok, err = pcall(c.AddAuraGroup, c, KEY, plan.filterString, {
     candidateFilters = plan.candidate,
     maxFrameCount = 1,
     layout = GroupLayout(w, h),
@@ -789,18 +793,18 @@ local function Apply(region)
   if kind == "slot" then
     if not att.slotBuilt then
       if not BuildSlot(att, region, plan) then TurnOff(att, region, data, "off"); return end
-      att.slotFilter, att.slotKey = plan.filter, plan.key
+      att.slotFilter, att.slotKey = plan.filterString, plan.key
     else
-      if att.slotFilter ~= plan.filter then c:SetAuraSlotFilterString(KEY, plan.filter); att.slotFilter = plan.filter end
+      if att.slotFilter ~= plan.filterString then c:SetAuraSlotFilterString(KEY, plan.filterString); att.slotFilter = plan.filterString end
       if att.slotKey ~= plan.key then c:SetAuraSlotCandidateFilters(KEY, plan.candidate); att.slotKey = plan.key end
       c:SetAuraSlotEnabled(KEY, true)
     end
   else
     if not att.groupBuilt then
       if not BuildGroup(att, region, plan) then TurnOff(att, region, data, "off"); return end
-      att.groupFilter, att.groupKey = plan.filter, plan.key
+      att.groupFilter, att.groupKey = plan.filterString, plan.key
     else
-      if att.groupFilter ~= plan.filter then c:SetAuraGroupFilterString(KEY, plan.filter); att.groupFilter = plan.filter end
+      if att.groupFilter ~= plan.filterString then c:SetAuraGroupFilterString(KEY, plan.filterString); att.groupFilter = plan.filterString end
       if att.groupKey ~= plan.key then c:SetAuraGroupCandidateFilters(KEY, plan.candidate); att.groupKey = plan.key end
       local w, h = RegionSize(region)
       if w ~= att.groupW or h ~= att.groupH then
