@@ -78,6 +78,14 @@ BUFFTRIGGER2_HUNKS = [
 # secret number, which renders as e.g. "114.5" in combat. The engine can format the duration object
 # itself; Private.SecretDurationFormatter lives in ForeverEngineAura.lua. Brand-free anchor.
 PROTOTYPES_HUNKS = [
+    # Spell Known helper: IsSpellKnown moved to C_SpellBook on Forever
+    ("local function IsSpellKnownOrOverridesAndBaseIsKnown(spell, pet)\n  if spell == 0 then return false end\n  if IsSpellKnown(spell, pet) then\n",
+     "local function IsSpellKnownOrOverridesAndBaseIsKnown(spell, pet)\n  if spell == 0 then return false end\n  if Private.ExecEnv.IsSpellKnown(spell, pet) then\n"),
+    ("      return IsSpellKnown(baseSpell, pet)\n",
+     "      return Private.ExecEnv.IsSpellKnown(baseSpell, pet)\n"),
+    # Queued Action trigger: IsCurrentSpell global is gone on Forever
+    ("        test = \"spellname and IsCurrentSpell(spellname)\";\n",
+     "        test = \"spellname and Private.ExecEnv.IsCurrentSpell(spellname)\";\n"),
     # Spell Usable trigger: secret-safe in combat (see Cooldown Progress upstream for the same idea)
     ("        local charges, maxCharges, spellCount, chargeGainTime, chargeLostTime = M33kAuras.GetSpellCharges(effectiveSpellId, nil)\n        local stacks = maxCharges and maxCharges > 1 and charges\n                       or spellCount and spellCount > 0 and spellCount\n                       or nil\n        if (charges == nil) then\n          charges = (duration == 0 or gcdCooldown) and 1 or 0;\n        end\n        local ready = (startTime == 0 and not paused) or charges > 0\n        local active = Private.ExecEnv.IsUsableSpell(spellName or \"\") and ready\n",
      "        local charges, maxCharges, spellCount, chargeGainTime, chargeLostTime = M33kAuras.GetSpellCharges(effectiveSpellId, nil)\n        -- Forever: cooldown, charges and cast count are secret in combat (SecretWhenCooldownsRestricted);\n        -- a comparison would throw. Ready-ness is exact (IsSpellReady reads NeverSecret fields) and\n        -- usability is plain data, so the trigger keeps working; stacks follow the cooldown trigger.\n        local isSecret = issecretvalue(startTime) or issecretvalue(duration) or issecretvalue(charges)\n                      or issecretvalue(maxCharges) or issecretvalue(spellCount)\n        local stacks, ready\n        if isSecret then\n          stacks = maxCharges and maxCharges ~= 1 and charges or (spellCount and C_StringUtil.TruncateWhenZero(spellCount)) or C_Spell.GetSpellDisplayCount(effectiveSpellId)\n          ready = M33kAuras.IsSpellReady(effectiveSpellId)\n        else\n          stacks = maxCharges and maxCharges > 1 and charges\n                   or spellCount and spellCount > 0 and spellCount\n                   or nil\n          if (charges == nil) then\n            charges = (duration == 0 or gcdCooldown) and 1 or 0;\n          end\n          ready = (startTime == 0 and not paused) or charges > 0\n        end\n        local active = Private.ExecEnv.IsUsableSpell(spellName or \"\") and ready\n"),
@@ -158,6 +166,18 @@ OPTIONS_HUNKS = {
 # Core (M33kAuras.lua): the load scanner's argument list is generated from the load prototype so
 # it can never drift from the parameter list on Forever (Player Class, Mounted, Zone ... loads).
 CORE_HUNKS = {
+    "M33kAuras/Compatibility.lua": [
+        ("if IsUsableSpell then\n  Private.ExecEnv.IsUsableSpell = IsUsableSpell\nelse\n  Private.ExecEnv.IsUsableSpell = C_Spell.IsSpellUsable\nend\n",
+         "if IsUsableSpell then\n  Private.ExecEnv.IsUsableSpell = IsUsableSpell\nelse\n  Private.ExecEnv.IsUsableSpell = C_Spell.IsSpellUsable\nend\n\n-- Forever: the IsCurrentSpell global is gone (mainline engine); the Queued Action trigger\n-- and the queued-spell watcher called it directly and errored.\nif IsCurrentSpell then\n  Private.ExecEnv.IsCurrentSpell = IsCurrentSpell\nelse\n  Private.ExecEnv.IsCurrentSpell = C_Spell.IsCurrentSpell\nend\n"),
+        ("if IsCurrentSpell then\n  Private.ExecEnv.IsCurrentSpell = IsCurrentSpell\nelse\n  Private.ExecEnv.IsCurrentSpell = C_Spell.IsCurrentSpell\nend\n",
+         "if IsCurrentSpell then\n  Private.ExecEnv.IsCurrentSpell = IsCurrentSpell\nelse\n  Private.ExecEnv.IsCurrentSpell = C_Spell.IsCurrentSpell\nend\n\n-- Forever: IsSpellKnown(spellID, isPet) now lives in C_SpellBook with a spell-bank enum\nif IsSpellKnown then\n  Private.ExecEnv.IsSpellKnown = IsSpellKnown\nelse\n  Private.ExecEnv.IsSpellKnown = function(spellID, isPet)\n    local banks = Enum.SpellBookSpellBank\n    return C_SpellBook.IsSpellKnown(spellID, banks and (isPet and banks.Pet or banks.Player) or nil)\n  end\nend\n"),
+    ],
+    "M33kAuras/GenericTrigger.lua": [
+        ("            if IsCurrentSpell(maxRank) then\n",
+         "            if maxRank and Private.ExecEnv.IsCurrentSpell(maxRank) then\n"),
+        ("    if M33kAuras.IsTWW() then\n      return C_Spell.GetSpellLossOfControlCooldown(identifier)\n    else\n      return GetSpellLossOfControlCooldown(identifier)\n    end\n",
+         "    -- Forever has neither API: answer 'no loss of control' instead of erroring\n    local getLoC = (C_Spell and C_Spell.GetSpellLossOfControlCooldown) or GetSpellLossOfControlCooldown\n    if getLoC then\n      return getLoC(identifier)\n    end\n"),
+    ],
     "M33kAuras/M33kAuras.lua": [
         ("local function scanForLoadsImpl(toCheck, event, arg1, ...)\n",
          "-- Forever: the load function's parameter list is built from Private.load_prototype (only the\n-- args whose init is \"arg\" for THIS flavour), but upstream keeps one retail-shaped call below.\n-- Forever is neither retail (BuildInfo 16001) nor classic, so the two lists differ and every value\n-- after 'encounter' lands in the wrong parameter: Player Class, Mounted, Zone ... all broken.\n-- Build the argument list from the prototype instead, so they can never disagree.\nlocal function BuildLoadArgs(values)\n  local args, n = {}, 0\n  for _, arg in ipairs(Private.load_prototype.args) do\n    if arg.init == \"arg\" then\n      n = n + 1\n      args[n] = values[arg.name]\n    end\n  end\n  args.n = n\n  return args\nend\n\nlocal function scanForLoadsImpl(toCheck, event, arg1, ...)\n"),
@@ -188,8 +208,14 @@ CHECKS = {
         "if unitExists or unitExistScanFunc[unit] then",
     ],
     "M33kAuras/Prototypes.lua": ["Private.SecretDurationFormatter(progressPrecision)",
+                                 "spellname and Private.ExecEnv.IsCurrentSpell(spellname)",
+                                 "return Private.ExecEnv.IsSpellKnown(baseSpell, pet)",
                                  "ready = M33kAuras.IsSpellReady(effectiveSpellId)"],
     "M33kAuras/M33kAuras.lua": ["unpack(loadArgs, 1, loadArgs.n)"],
+    "M33kAuras/Compatibility.lua": ["Private.ExecEnv.IsCurrentSpell = C_Spell.IsCurrentSpell",
+                                    "Private.ExecEnv.IsSpellKnown = function(spellID, isPet)"],
+    "M33kAuras/GenericTrigger.lua": ["if maxRank and Private.ExecEnv.IsCurrentSpell(maxRank) then",
+                                     "local getLoC = (C_Spell and C_Spell.GetSpellLossOfControlCooldown)"],
     "M33kAurasOptions/Cache.lua": ["spellCache.AddIcon(info.name, info.spellID"],
     "M33kAurasOptions/BuffTrigger2.lua": ["(best and best ~= \"\") and best or strtrim(v)",
                                           "pcall(spellCache.GetIcon, input)"],
