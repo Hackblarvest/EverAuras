@@ -79,6 +79,63 @@ table.insert(OptionsPrivate.registerRegions, function()
     }
   end
 
+  -- Engine section (status, opt-out, range gate) for Icons and Progress Bars alike.
+  local function AddEngineOptions(group, data)
+    group.foreverEngineHeader = {
+      type = "header", order = 100.1,
+      name = T("Engine-driven aura (WoW: Forever)"),
+    }
+    group.foreverEngineStatus = {
+      type = "description", order = 100.2, width = WA.doubleWidth, fontSize = "medium",
+      name = function() return (Engine.Explain(data)) end,
+    }
+    group.foreverEngine = {
+      type = "toggle", order = 100.3, width = WA.doubleWidth,
+      name = T("Let the game engine draw this aura"),
+      desc = T("Needs exactly one Aura trigger (spell names or Exact Spell IDs) on Player, Target, Focus or Pet, Buff or Debuff (not Both). Icons: Show On Found / Missing / Always. Progress Bars: Show On Found. Off = the classic scanner, which is blind while auras are secret (combat)."),
+      get = function() return data.foreverEngine ~= false end,
+      -- A full (non-simple) re-add so BuffTrigger.Add re-classifies the trigger; the plain
+      -- framework setter would only re-run the region modify and leave the trigger side stale.
+      set = function(_, v)
+        data.foreverEngine = v and true or false
+        WA.Add(data)
+        if WA.ClearAndUpdateOptions then WA.ClearAndUpdateOptions(data.id) end
+      end,
+      hidden = function() return Engine.HasNoAuraTrigger and Engine.HasNoAuraTrigger(data) end,
+    }
+    local function gateHidden(needToggle)
+      if data.foreverEngine == false then return true end
+      if Engine.HasNoAuraTrigger and Engine.HasNoAuraTrigger(data) then return true end
+      if needToggle and data.foreverEngineRange ~= true then return true end
+      local plan = Engine.Classify(data)
+      return not plan or plan.unit == "player"
+    end
+    group.foreverEngineRange = {
+      type = "toggle", order = 100.4, width = WA.doubleWidth,
+      name = T("Only while the spell is in range of the unit"),
+      desc = T("Hides the display unless the trigger's spell can reach the unit right now (C_Spell.IsSpellInRange: the spell's own minimum and maximum range, sampled 5x per second, also in combat). Hidden while there is no valid unit. The display's own alpha, conditions and animations still apply on top. The spell must be one you know that has a range; the status line above says when it is not."),
+      get = function() return data.foreverEngineRange == true end,
+      set = function(_, v)
+        data.foreverEngineRange = v and true or false
+        WA.Add(data)
+        if WA.ClearAndUpdateOptions then WA.ClearAndUpdateOptions(data.id) end
+      end,
+      hidden = function() return gateHidden(false) end,
+    }
+    group.foreverEngineRangeSpell = {
+      type = "input", order = 100.5, width = WA.doubleWidth,
+      name = T("Range check spell (blank = the trigger's spell)"),
+      desc = T("Name or id of the spell whose range is checked, for example Auto Shot for a hunter's 8-35 yd window. Blank uses the name of the lowest tracked spell id, i.e. the rank you know."),
+      get = function() return data.foreverEngineRangeSpell or "" end,
+      set = function(_, v)
+        data.foreverEngineRangeSpell = strtrim(v or "")
+        WA.Add(data)
+        if WA.ClearAndUpdateOptions then WA.ClearAndUpdateOptions(data.id) end
+      end,
+      hidden = function() return gateHidden(true) end,
+    }
+  end
+
   local barOptions = Private.regionOptions and Private.regionOptions.aurabar
   if barOptions and barOptions.create and not barOptions.foreverPowerWrapped then
     barOptions.foreverPowerWrapped = true
@@ -86,7 +143,10 @@ table.insert(OptionsPrivate.registerRegions, function()
     barOptions.create = function(id, data)
       local options = origBarCreate(id, data)
       local group = type(options) == "table" and options.aurabar
-      if type(group) == "table" then AddPowerOptions(group, data, 101) end
+      if type(group) == "table" then
+        AddEngineOptions(group, data)
+        AddPowerOptions(group, data, 101)
+      end
       return options
     end
   end
@@ -103,59 +163,7 @@ table.insert(OptionsPrivate.registerRegions, function()
       -- entries must live inside a group, or CommonOptions' flattener trips on a missing __order.
       local group = type(options) == "table" and options.icon
       if type(group) == "table" then
-        group.foreverEngineHeader = {
-          type = "header", order = 100.1,
-          name = T("Engine-driven aura (WoW: Forever)"),
-        }
-        group.foreverEngineStatus = {
-          type = "description", order = 100.2, width = WA.doubleWidth, fontSize = "medium",
-          name = function() return (Engine.Explain(data)) end,
-        }
-        group.foreverEngine = {
-          type = "toggle", order = 100.3, width = WA.doubleWidth,
-          name = T("Let the game engine draw this aura"),
-          desc = T("Needs exactly one Aura trigger with Exact Spell ID(s) on Player, Target, Focus or Pet, Buff or Debuff (not Both), and Show On: Found / Missing / Always. Off = the classic scanner, which is blind while auras are secret (combat)."),
-          get = function() return data.foreverEngine ~= false end,
-          -- A full (non-simple) re-add so BuffTrigger.Add re-classifies the trigger; the plain
-          -- framework setter would only re-run the region modify and leave the trigger side stale.
-          set = function(_, v)
-            data.foreverEngine = v and true or false
-            WA.Add(data)
-            if WA.ClearAndUpdateOptions then WA.ClearAndUpdateOptions(data.id) end
-          end,
-          hidden = function() return Engine.HasNoAuraTrigger and Engine.HasNoAuraTrigger(data) end,
-        }
-        local function gateHidden(needToggle)
-          if data.foreverEngine == false then return true end
-          if Engine.HasNoAuraTrigger and Engine.HasNoAuraTrigger(data) then return true end
-          if needToggle and data.foreverEngineRange ~= true then return true end
-          local plan = Engine.Classify(data)
-          return not plan or plan.unit == "player"
-        end
-        group.foreverEngineRange = {
-          type = "toggle", order = 100.4, width = WA.doubleWidth,
-          name = T("Only while the spell is in range of the unit"),
-          desc = T("Hides the display unless the trigger's spell can reach the unit right now (C_Spell.IsSpellInRange: the spell's own minimum and maximum range, sampled 5x per second, also in combat). Hidden while there is no valid unit. The display's own alpha, conditions and animations still apply on top. The spell must be one you know that has a range; the status line above says when it is not."),
-          get = function() return data.foreverEngineRange == true end,
-          set = function(_, v)
-            data.foreverEngineRange = v and true or false
-            WA.Add(data)
-            if WA.ClearAndUpdateOptions then WA.ClearAndUpdateOptions(data.id) end
-          end,
-          hidden = function() return gateHidden(false) end,
-        }
-        group.foreverEngineRangeSpell = {
-          type = "input", order = 100.5, width = WA.doubleWidth,
-          name = T("Range check spell (blank = the trigger's spell)"),
-          desc = T("Name or id of the spell whose range is checked, for example Auto Shot for a hunter's 8-35 yd window. Blank uses the name of the lowest tracked spell id, i.e. the rank you know."),
-          get = function() return data.foreverEngineRangeSpell or "" end,
-          set = function(_, v)
-            data.foreverEngineRangeSpell = strtrim(v or "")
-            WA.Add(data)
-            if WA.ClearAndUpdateOptions then WA.ClearAndUpdateOptions(data.id) end
-          end,
-          hidden = function() return gateHidden(true) end,
-        }
+        AddEngineOptions(group, data)
         AddPowerOptions(group, data, 101)
       end
       return options

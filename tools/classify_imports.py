@@ -86,15 +86,16 @@ def classify(d):
     if "aura2" not in types and "aura" not in types:
         return "PLAIN", []
     r = []
-    if d.get("regionType") != "icon":
-        r.append("region is %s, the engine draws Icons only" % d.get("regionType"))
+    rt = d.get("regionType")
+    if rt not in ("icon", "aurabar"):
+        r.append("region is %s, the engine draws Icons and Progress Bars only" % rt)
     if d.get("foreverEngine") is False:
         r.append("engine toggle off")
     if len(trigs) != 1:
         # would it qualify if the engine accepted extra NON-aura triggers combined with "all"?
         auras = [x for x in trigs if ((x or {}).get("trigger") or {}).get("type") in ("aura2", "aura")]
         mode = (d.get("triggers") or {}).get("disjunctive") or "all"
-        if len(auras) == 1 and mode == "all" and d.get("regionType") == "icon":
+        if len(auras) == 1 and mode == "all" and d.get("regionType") in ("icon", "aurabar"):
             sub_bucket, sub_r = classify(dict(d, triggers={1: auras[0]}))
             if sub_bucket == "ENGINE":
                 return "ENGINE+", ["%d triggers: 1 aura + %d readable, 'all' - ok if the engine accepted extra non-aura triggers"
@@ -112,6 +113,8 @@ def classify(d):
         r.append("Aura Type 'Both'")
     if (t.get("matchesShowOn") or "showOnActive") not in MODE:
         r.append("Show On '%s'" % t.get("matchesShowOn"))
+    elif rt == "aurabar" and (t.get("matchesShowOn") or "showOnActive") != "showOnActive":
+        r.append("Progress Bar with Show On other than Found")
     ids = [s for s in (t.get("auraspellids") or {}).values()] if t.get("useExactSpellId") else []
     names = [s for s in (t.get("auranames") or {}).values() if str(s).strip()] if t.get("useName") else []
     if not ids and not names:

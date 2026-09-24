@@ -15,6 +15,9 @@
 --                    The "cast this" icon lives inside it. Present = clipped away = nothing drawn.
 --                    Pure geometry driven by a value we cannot read.
 --
+-- Progress Bars (Show On: Found) are engine-driven too: the slot button carries its own StatusBar that
+-- Blizzard fills with the aura's duration (SetDurationBar), plus icon, name, timer and stack texts.
+--
 -- Triggers may use spell NAMES: they resolve to every known rank's id (classic ranks are separate
 -- spells) and follow the spellbook as you level. Exact ids stay exact.
 --
@@ -210,7 +213,8 @@ end
 function Engine.Classify(data)
   local r = {}
   local function no(msg) r[#r + 1] = msg end
-  if not data or data.regionType ~= "icon" then return nil, { T("the display is not an Icon") } end
+  local rt = data and data.regionType
+  if rt ~= "icon" and rt ~= "aurabar" then return nil, { T("the display is not an Icon or a Progress Bar") } end
   if not GloballyEnabled() then no(T("the engine is switched off (/faengine on)")) end
   if data.foreverEngine == false then no(T("'Let the game engine draw this aura' is off for this display (Display tab)")) end
   if not Engine.IsAvailable() then no(T("Blizzard_AuraContainer is not available")) end
@@ -224,6 +228,9 @@ function Engine.Classify(data)
   if filter ~= "HELPFUL" and filter ~= "HARMFUL" then no(T("Aura Type must be Buff or Debuff (not Both)")) end
   local mode = MODE[t.matchesShowOn or "showOnActive"]
   if not mode then no(T("'Show On: Match Count' cannot be expressed by the engine")) end
+  if rt == "aurabar" and mode and mode ~= "found" then
+    no(T("Progress Bars are engine-driven with 'Show On: Aura(s) Found' only (so far)"))
+  end
   local ids, sorted = {}, {}
   local byName, unresolved = false, {}
   if t.useExactSpellId then
@@ -433,6 +440,35 @@ local function BuildSlot(att, region, plan)
       pcall(button.SetMouseClickEnabled, button, false)   -- click-through like a WA icon
       pcall(button.EnableMouseMotion, button, false)      -- engine tooltip only with data.useTooltip
       pcall(button.SetHideTooltipInCombat, button, false)
+      if att.isBar then
+        -- geometry follows WA's own bar and icon frames, which already account for icon side and size
+        s.barBg = button:CreateTexture(nil, "BACKGROUND")
+        s.bar = CreateFrame("StatusBar", nil, button)
+        s.bar:SetAllPoints(region.bar)
+        s.bar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
+        s.bar:SetFrameLevel(button:GetFrameLevel() + 1)
+        s.barBg:SetAllPoints(s.bar)
+        s.icon = button:CreateTexture(nil, "ARTWORK")
+        s.icon:SetAllPoints(region.icon)
+        pcall(s.icon.SetSnapToPixelGrid, s.icon, false)
+        s.texts = CreateFrame("Frame", nil, button)
+        s.texts:SetAllPoints(button)
+        s.texts:SetFrameLevel(button:GetFrameLevel() + 2)
+        s.duration = s.texts:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        s.duration:SetPoint("CENTER")
+        s.count = s.texts:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        s.count:SetPoint("CENTER")
+        s.name = s.texts:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        s.name:SetPoint("CENTER")
+        local dirs = Enum and Enum.StatusBarTimerDirection
+        att.barDirection = dirs and dirs.RemainingTime
+        button:SetDurationBar(s.bar, { direction = att.barDirection })
+        button:SetIcon(s.icon)
+        button:SetDurationText(s.duration, nil)
+        button:SetApplicationCount(s.count, nil)
+        button:SetSpellName(s.name)
+        return
+      end
       s.icon = button:CreateTexture(nil, "ARTWORK")
       s.icon:SetAllPoints(button)
       pcall(s.icon.SetSnapToPixelGrid, s.icon, false)
@@ -530,7 +566,7 @@ end
 local function MirrorTexts(att, region, data, useShadows)
   local s = att.shadows
   att.mirrored = {}
-  local haveP, haveS
+  local haveP, haveS, haveN
   local ri = 0
   for _, sub in ipairs(data.subRegions or {}) do
     if Private.subRegionTypes[sub.type] then
@@ -546,6 +582,10 @@ local function MirrorTexts(att, region, data, useShadows)
           haveS = true
           if live then att.mirrored[live] = true end
           if useShadows then StyleShadowText(region, s.count, sub, true); s.count:SetAlpha(1) end
+        elseif not haveN and txt == "%n" and useShadows and s.name then
+          haveN = true
+          if live then att.mirrored[live] = true end
+          StyleShadowText(region, s.name, sub, true); s.name:SetAlpha(1)
         end
       end
     end
@@ -553,10 +593,63 @@ local function MirrorTexts(att, region, data, useShadows)
   if useShadows then
     if not haveP then s.duration:Hide() end     -- Shown is not a secret aspect of the duration text
     if not haveS then s.count:SetAlpha(0) end   -- Shown IS secret on the count text; Alpha is ours
+    if s.name and not haveN then s.name:SetAlpha(0) end
   end
 end
 
+-- Progress Bars: the engine drives its own StatusBar inside the slot button (SetDurationBar ->
+-- StatusBar:SetTimerDuration with the aura's duration). WA's own bar, background and icon are hidden
+-- while the display is engine-driven, and restored when it stops being so.
+local WHITE = "Interface\\Buttons\\WHITE8X8"
+
+local function SetBarVisuals(region, shown)
+  local bar = region.bar
+  if bar then bar:SetShown(shown); if bar.bg then bar.bg:SetShown(shown) end end
+  if region.iconFrame then region.iconFrame:SetShown(shown) end
+  if region.secretBar then region.secretBar:SetShown(shown) end
+end
+
+local function ApplyBarLook(att, region, data)
+  local s = att.shadows
+  local fg = region.bar and region.bar.fg
+  local atlas = fg and fg.GetAtlas and fg:GetAtlas()
+  if atlas == "" then atlas = nil end
+  local tex = (not atlas) and fg and fg:GetTexture() or nil
+  s.bar:SetStatusBarTexture(atlas and WHITE or (tex or WHITE))
+  if atlas then
+    pcall(function() s.bar:GetStatusBarTexture():SetAtlas(atlas) end)
+    s.barBg:SetAtlas(atlas)
+  else
+    s.barBg:SetTexture(tex or WHITE)
+  end
+  local c = data.barColor or { 1, 0, 0, 1 }
+  s.bar:SetStatusBarColor(c[1] or 1, c[2] or 0, c[3] or 0, c[4] or 1)
+  local bc = data.backgroundColor or { 0, 0, 0, 0.5 }
+  s.barBg:SetVertexColor(bc[1] or 0, bc[2] or 0, bc[3] or 0, bc[4] or 0.5)
+  local o = data.orientation or "HORIZONTAL"
+  local vertical = o:find("VERTICAL") ~= nil
+  s.bar:SetOrientation(vertical and "VERTICAL" or "HORIZONTAL")
+  s.bar:SetReverseFill(o:find("INVERSE") ~= nil)
+  pcall(s.bar.SetRotatesTexture, s.bar, vertical)
+  pcall(s.barBg.SetRotation, s.barBg, 0)
+  -- WA drains the bar as the aura runs out unless 'Inverse'
+  local dirs = Enum and Enum.StatusBarTimerDirection
+  local dir = dirs and (data.inverse and dirs.ElapsedTime or dirs.RemainingTime)
+  if att.barDirection ~= dir then
+    local ok = pcall(att.button.SetDurationBar, att.button, s.bar, { direction = dir })
+    if ok then att.barDirection = dir end
+  end
+  s.icon:SetShown(data.icon and true or false)
+  if region.icon then s.icon:SetTexCoord(region.icon:GetTexCoord()) end
+  local ic = data.icon_color or { 1, 1, 1, 1 }
+  s.icon:SetVertexColor(ic[1] or 1, ic[2] or 1, ic[3] or 1, ic[4] or 1)
+  pcall(s.icon.SetDesaturation, s.icon, data.desaturate and 1 or 0)
+  MirrorTexts(att, region, data, true)
+  pcall(att.button.EnableMouseMotion, att.button, data.useTooltip and true or false)
+end
+
 local function ApplySlotLook(att, region, data)
+  if att.isBar then return ApplyBarLook(att, region, data) end
   local s = att.shadows
   s.icon:SetTexCoord(region.icon:GetTexCoord())     -- WA already applied zoom/aspect/offset to its own texture
   pcall(s.icon.SetDesaturation, s.icon, data.desaturate and 1 or 0)
@@ -607,7 +700,8 @@ function Engine.OnLayout(region)          -- after every ApplyFrameLevel (Expand
   local att = attachments[region]
   if not (att and att.active) then return end
   SetMirroredShown(att, false)
-  if att.kind == "group" and region.icon then region.icon:Hide() end
+  if att.isBar then SetBarVisuals(region, false)
+  elseif att.kind == "group" and region.icon then region.icon:Hide() end
 end
 
 local function InPreview()
@@ -667,7 +761,7 @@ local function TurnOff(att, region, data, mode)
   if att.host then att.host:Hide() end
   DisableKind(att, "slot"); DisableKind(att, "group")
   RemoveGate(att)
-  if region.icon then region.icon:Show() end
+  if att.isBar then SetBarVisuals(region, true) elseif region.icon then region.icon:Show() end
   SetMirroredShown(att, true)
   if region.tooltipFrame and data then region.tooltipFrame:EnableMouseMotion(data.useTooltip and true or false) end
   att.mode, att.active, att.sig, att.kind = mode, false, nil, nil
@@ -729,9 +823,14 @@ local function Apply(region)
 
   -- Underlay policy: Found = nothing beneath; Always = the WA icon beneath the live aura;
   -- Missing = the WA icon is replaced by our clipped copy.
-  region.icon:SetShown(plan.mode == "always")
+  if att.isBar then SetBarVisuals(region, false) else region.icon:SetShown(plan.mode == "always") end
   if region.tooltipFrame then region.tooltipFrame:EnableMouseMotion(false) end
   if kind == "slot" then pcall(att.button.SetFrameLevel, att.button, c:GetFrameLevel()) end
+  if att.isBar and att.shadows.bar then                  -- keep bar under texts, both above the button
+    local sh = att.shadows
+    pcall(sh.bar.SetFrameLevel, sh.bar, c:GetFrameLevel() + 1)
+    pcall(sh.texts.SetFrameLevel, sh.texts, c:GetFrameLevel() + 2)
+  end
   att.host:Show()
   att.mode, att.active, att.sig = "on", true, att.wantSig
   att.rangeSpell = nil
@@ -781,6 +880,9 @@ local function ComputeSig(region, data, plan)
   local parts = { plan.key, w, h, tostring(data.cooldown), tostring(data.cooldownSwipe), tostring(data.cooldownEdge),
     tostring(data.cooldownTextDisabled), tostring(data.inverse), tostring(data.desaturate), tostring(data.useTooltip),
     tostring(data.iconSource), tostring(data.displayIcon),
+    tostring(data.texture), tostring(data.textureSource), tostring(data.textureInput), tostring(data.orientation),
+    tostring(data.icon), tostring(data.icon_side), table.concat(data.barColor or {}, ","),
+    table.concat(data.backgroundColor or {}, ","), table.concat(data.icon_color or {}, ","),
     tostring(data.foreverEngineRange), tostring(data.foreverEngineRangeSpell),
     table.concat(data.color or {}, ","), table.concat({ region.icon:GetTexCoord() }, ",") }
   for _, sub in ipairs(data.subRegions or {}) do
@@ -810,7 +912,7 @@ function Engine.Sync(region, data)
     if other ~= region and other.id == region.id and oatt.want then oatt.want = nil; Schedule(other) end
   end
   local att = attachments[region]
-  if not att then att = { region = region, shadows = {} }; attachments[region] = att end
+  if not att then att = { region = region, shadows = {}, isBar = data.regionType == "aurabar" }; attachments[region] = att end
   local plan = decided[data.uid]
   local t = data.triggers and #data.triggers == 1 and data.triggers[1] and data.triggers[1].trigger
   local isAura2 = t and t.type == "aura2"
@@ -827,7 +929,7 @@ function Engine.Sync(region, data)
   end
   if not plan then
     if att.want or att.active then att.want = nil; Schedule(region) end
-    if isAura2 and data.regionType == "icon" then
+    if isAura2 and (data.regionType == "icon" or data.regionType == "aurabar") then
       SetWarning(att, data.uid, "info", (Engine.Explain(data)))
     else
       SetWarning(att, data.uid, nil, nil)
@@ -868,6 +970,18 @@ if not icon then return end
 icon.default.foreverEngine = true            -- per-display opt-out (false); Private.validate fills it in
 icon.default.foreverEngineRange = false      -- 'only while the spell is in range of the unit'
 icon.default.foreverEngineRangeSpell = ""    -- override for the range-check spell (blank = trigger's spell)
+
+local aurabar = Private.regionTypes and Private.regionTypes.aurabar
+if aurabar and aurabar.modify and aurabar.default then
+  aurabar.default.foreverEngine = true
+  aurabar.default.foreverEngineRange = false
+  aurabar.default.foreverEngineRangeSpell = ""
+  local origBarModify = aurabar.modify
+  aurabar.modify = function(parent, region, data)
+    origBarModify(parent, region, data)
+    Engine.Sync(region, data)
+  end
+end
 
 local origModify = icon.modify
 icon.modify = function(parent, region, data)
