@@ -23,7 +23,9 @@ and lets the client draw it.
 | **Show On: Ready / On Cooldown** | Exact, from fields Blizzard left readable. |
 | **Conditions on secret state** — e.g. *Is Ready (Secret)* → *Alpha (Boolean)* | The secret boolean goes straight to the engine via `SetAlphaFromBoolean`; the addon never sees it. |
 | **Range gate** on engine-driven displays — *only while the spell is in range of the unit* (e.g. Serpent Sting missing **and** target within 8–35 yd) | `C_Spell.IsSpellInRange` answers with a plain boolean on Forever, in combat too, and honours the spell's own min/max range. Sampled 5x per second; the display's own alpha, conditions and animations still apply on top. |
-| Spell usable, in range, resources, item cooldowns, casts, swing timers | Plain readable data. |
+| **Resource bars and text** (mana, rage, energy), plus *hide while full* and *colour below a threshold* | The values are secret, even your mana out of combat. The engine draws them, and `UnitPowerPercent` with a curve lets the game make the comparison and hand back a secret alpha or colour. |
+| **Five Second Rule** timer for mana users | Started by your own mana-costing casts (spell id and cost are readable); regen resumes exactly 5 s later. |
+| Spell usable (incl. reactive abilities such as Overpower or Mongoose Bite), in range, item cooldowns, casts, swing timers | Plain readable data. |
 
 Together these are the building blocks of a rotation display: a row of icons, each showing when
 its spell should be cast, in combat, correctly. See the [design notes](#how-it-works) for what is

@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.4.0-alpha (2026-09-24)
+
+- **Power options** for Icons and Progress Bars (Display tab, *Power (WoW: Forever)*): *Hide while full* and
+  *Colour below a threshold*, for player / target / focus / pet and mana / rage / energy / focus. Resource values
+  are secret to addons on Forever (the player's mana even out of combat), so upstream's *Power (%)* conditions
+  never fire; here Blizzard evaluates the percentage (`UnitPowerPercent` with a curve) and the secret result goes
+  straight into the display's alpha or colour.
+- **Five Second Rule (mana)** trigger (Player/Unit Info): a 5 s timer on your own mana-costing casts, in combat
+  too. Measured on build 69977: regen resumes exactly 5.00 s after the cast and is continuous (no ticks).
+- **Custom code that reads a secret value** (an aura's own custom trigger, text, check or action) now gets one
+  clear message per aura instead of the generic "install BugSack" error, and reaches BugSack once per aura and
+  place instead of on every event.
+- **Imported auras:** globals the Forever client no longer has are replaced (`IsCurrentSpell` for the Queued
+  Action trigger and the queued-spell watcher, `IsSpellKnown` for Spell Known checks, the missing loss-of-control
+  cooldown API).
+- The *Aura(s) Missing cannot be answered* notice says why the display is not engine-driven (e.g. the engine
+  toggle is off).
+- `tools/classify_imports.py` decodes WeakAuras export strings offline and predicts, per display, whether it
+  works in combat on Forever. `!ForeverSVCanary` tells after each client patch whether SavedVariables are read
+  back yet; `/fdmana` measures mana regeneration.
+
 ## 0.3.2-alpha (2026-09-21)
 
 - **Load conditions work on Forever.** The load scanner called the load function with a retail-shaped
