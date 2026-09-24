@@ -26,8 +26,28 @@ import re
 import sys
 import time
 
-CLIENT = r"D:\World of Warcraft\World of Warcraft\_classic_beta_"
-SV_DIR = os.path.join(CLIENT, r"WTF\Account\YOUR_ACCOUNT\SavedVariables")
+CLIENT = os.environ.get("EVERAURAS_CLIENT", r"D:\World of Warcraft\World of Warcraft\_classic_beta_")
+
+
+def find_sv_dir():
+    """The account SavedVariables folder that holds EverAuras data (newest first); override with
+    EVERAURAS_SV_DIR. Account folder names are per player, so they are never hardcoded."""
+    if os.environ.get("EVERAURAS_SV_DIR"):
+        return os.environ["EVERAURAS_SV_DIR"]
+    accounts = os.path.join(CLIENT, "WTF", "Account")
+    found = []
+    for name in os.listdir(accounts) if os.path.isdir(accounts) else []:
+        sv = os.path.join(accounts, name, "SavedVariables")
+        if os.path.isdir(sv):
+            ours = os.path.join(sv, "EverAuras.lua")
+            found.append((os.path.exists(ours), os.path.getmtime(ours) if os.path.exists(ours) else 0, sv))
+    if not found:
+        sys.exit("no WTF\\Account\\*\\SavedVariables folder under %s (set EVERAURAS_CLIENT)" % CLIENT)
+    found.sort(reverse=True)
+    return found[0][2]
+
+
+SV_DIR = find_sv_dir()
 BRIDGE = os.path.join(CLIENT, r"Interface\AddOns\!ForeverSVBridge")
 
 # Which SavedVariables to carry across sessions. Blizzard's own files are left alone.
