@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.1-alpha (2026-09-24)
 
 - **Leaner install:** the zip holds only the five EverAuras folders. The `M33Auras` / `WeakAuras`
   settings-migration stubs are gone: there is nothing to migrate from on Forever, the folder names belong to
