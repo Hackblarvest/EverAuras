@@ -127,4 +127,4 @@ Community: [EverAuras Discord](https://discord.gg/HdRNYvKbY).
 Licensed under the **GNU General Public License v2.0**, like the projects it derives from.
 See [LICENSE](LICENSE).
 
-Author: Hackblarvest.
+Author: Hackblarvest. Modifications and additions © 2026 Hackblarvest.
