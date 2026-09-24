@@ -41,13 +41,11 @@ its spell should be cast, in combat, correctly. See the [design notes](#how-it-w
    or ForeverAuras are pointed at EverAuras' own copy of the same media automatically.
    Upgrading from 0.4.0 or earlier: delete the `M33Auras` and `WeakAuras` folders those zips added, if the
    addon list calls them "EverAuras Settings Migration" (other addons use the same folder names).
-3. **Beta client bug:** the Forever beta writes SavedVariables on logout but never reads them back,
-   so your auras vanish after `/reload`. Until Blizzard fixes it, run `start_sv_bridge.cmd`
-   (see `tools/sv_bridge.py`) and keep it open while you play. It regenerates a tiny
-   `!ForeverSVBridge` addon that restores your settings on every load, and switches itself off the
-   day the client behaves. Restart the watcher whenever the addon folders are renamed; it refuses
-   to replace a seed that holds auras with one that holds none.
-4. In game: `/ea` (or `/everauras`, `/wa`).
+3. In game: `/ea` (or `/everauras`, `/wa`).
+
+Nothing else is needed on build 1.60.1.70009 or newer. Earlier beta builds wrote SavedVariables on
+logout but never read them back; `tools/sv_bridge.py` (with `start_sv_bridge.cmd`) worked around that
+and is kept only for anyone stuck on an older build.
 
 Every release is built by `tools/rebuild_everauras.sh` from the upstream commit pinned in
 `tools/UPSTREAM` and packed by `tools/make_release_zip.py`; build from source (below) to get the same thing.
@@ -109,7 +107,7 @@ tools/engine_hunks.py             the engine-aura and text hunks, shared by buil
 tools/forever_files/              our new addon files (engine-driven auras, options UI)
 tools/rename_to_everauras.py      branding as a build step
 tools/apply_engine_to_installed.py  apply the hunks to an installed copy
-tools/sv_bridge.py                workaround for the beta SavedVariables bug
+tools/sv_bridge.py                workaround for the SavedVariables bug of beta builds before 70009
 addons/!ForeverCompat             shims for FrameXML globals the engine removed (old AceGUI libs)
 addons/ForeverDevInfo             diagnostics: /fdi, /fdsecret, /fdsecret2, /fdsecret3, /fdslot
 docs/                             bug reports and notes
