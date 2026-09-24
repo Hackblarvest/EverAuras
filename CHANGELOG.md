@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0-alpha (2026-09-25)
 
 - **Engine-driven Progress Bars** (*Show On: Aura(s) Found*): Blizzard's aura button fills a real status bar with
   the aura's own duration, so DoT and buff timer bars work in combat. Icon, name (`%n`), timer (`%p`) and stacks
