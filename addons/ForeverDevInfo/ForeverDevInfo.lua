@@ -964,3 +964,92 @@ SlashCmdList["FOREVERDEVLOAD"] = function()
 	end
 	llog("[done] %d display(s) with a Player Class condition", n)
 end
+
+---------------------------------------------------------------------------- /fdmana
+-- How does Forever regenerate mana? Logs every player mana change for 45 s with a timestamp,
+-- the value (or <secret>) and the step, plus your own casts with their mana cost and
+-- combat start/end. Answers two questions:
+--   ticks or continuous?    look at the gaps and step sizes between increases
+--   five-second rule?       after a mana-costing cast, does regen stop for ~5 s, then resume?
+-- Usage: out of combat with some mana missing:  /fdmana, stand still ~10 s, cast an Aspect (or
+-- any spell that costs mana and does not start combat), keep standing ~15 s. /fdmana stop ends early.
+local mp = {}
+
+local function mlog(fmt, ...)
+	local line = select("#", ...) > 0 and fmt:format(...) or fmt
+	ForeverDevInfoDB = ForeverDevInfoDB or {}
+	ForeverDevInfoDB.manaProbe = ForeverDevInfoDB.manaProbe or {}
+	local l = ForeverDevInfoDB.manaProbe
+	l[#l + 1] = line
+	while #l > 400 do table.remove(l, 1) end
+end
+
+local function manaNow()
+	local MANA = (Enum and Enum.PowerType and Enum.PowerType.Mana) or 0
+	local ok1, cur = pcall(UnitPower, "player", MANA)
+	local ok2, max = pcall(UnitPowerMax, "player", MANA)
+	return ok1 and cur, ok2 and max
+end
+
+local function stopManaProbe(reason)
+	if not mp.frame then return end
+	mp.frame:UnregisterAllEvents()
+	mp.running = false
+	mlog("[stop] %s after %.1fs, %d mana events", reason, GetTime() - mp.t0, mp.n or 0)
+	print("|cff33ff99FDI mana|r stopped (" .. reason .. ") - /reload or log out, then the log is on disk")
+end
+
+SLASH_FOREVERDEVMANA1 = "/fdmana"
+SlashCmdList["FOREVERDEVMANA"] = function(msg)
+	msg = strtrim(msg or ""):lower()
+	if msg == "stop" then stopManaProbe("by command"); return end
+	ForeverDevInfoDB = ForeverDevInfoDB or {}
+	ForeverDevInfoDB.manaProbe = {}
+	mp.frame = mp.frame or CreateFrame("Frame")
+	mp.t0, mp.n, mp.last, mp.lastT, mp.running = GetTime(), 0, nil, nil, true
+	local cur, max = manaNow()
+	local _, build = GetBuildInfo()
+	mlog("[start] %s build %s combat=%s mana=%s/%s", date("%H:%M:%S"), tostring(build),
+		tostring(InCombatLockdown()), show(cur), show(max))
+	local f = mp.frame
+	f:UnregisterAllEvents()
+	f:RegisterUnitEvent("UNIT_POWER_FREQUENT", "player")
+	f:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
+	f:RegisterEvent("PLAYER_REGEN_DISABLED")
+	f:RegisterEvent("PLAYER_REGEN_ENABLED")
+	f:SetScript("OnEvent", function(_, event, a1, a2, a3)
+		if not mp.running then return end
+		local t = GetTime() - mp.t0
+		if event == "UNIT_POWER_FREQUENT" then
+			if a2 ~= "MANA" then return end
+			mp.n = mp.n + 1
+			local v = manaNow()
+			if issecretvalue(v) then
+				mlog("%6.2f MANA <secret>", t)
+			elseif type(v) ~= "number" then
+				mlog("%6.2f MANA unreadable", t)
+			else
+				local step = mp.last and (v - mp.last) or 0
+				local gap = mp.lastT and (t - mp.lastT) or 0
+				mlog("%6.2f MANA %d  step %+d  gap %.2f", t, v, step, gap)
+				mp.last, mp.lastT = v, t
+			end
+		elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
+			local id = a3
+			local costTxt = "?"
+			if not issecretvalue(id) then
+				local ok, costs = pcall(C_Spell.GetSpellPowerCost, id)
+				costTxt = "none"
+				if ok and type(costs) == "table" then
+					for _, c in ipairs(costs) do costTxt = ("%s %s"):format(show(c.name), show(c.cost)) end
+				end
+			end
+			local okN, name = pcall(C_Spell.GetSpellName, id)
+			mlog("%6.2f CAST %s %s cost %s", t, show(id), okN and show(name) or "?", costTxt)
+		else
+			mlog("%6.2f %s", t, event == "PLAYER_REGEN_DISABLED" and "COMBAT START" or "COMBAT END")
+		end
+	end)
+	print("|cff33ff99FDI mana|r recording 45 s: stand still ~10 s, cast an Aspect, stand still ~15 s")
+	C_Timer.After(45, function() if mp.running then stopManaProbe("45 s") end end)
+end
