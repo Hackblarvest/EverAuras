@@ -228,7 +228,7 @@ function Engine.Classify(data)
   if filter ~= "HELPFUL" and filter ~= "HARMFUL" then no(T("Aura Type must be Buff or Debuff (not Both)")) end
   local mode = MODE[t.matchesShowOn or "showOnActive"]
   if not mode then no(T("'Show On: Match Count' cannot be expressed by the engine")) end
-  if rt == "aurabar" and mode and mode ~= "found" then
+  if rt == "aurabar" and mode and mode ~= "active" then   -- MODE maps showOnActive -> "active"
     no(T("Progress Bars are engine-driven with 'Show On: Aura(s) Found' only (so far)"))
   end
   local ids, sorted = {}, {}
