@@ -5,7 +5,7 @@ API-selection sites fall into the Classic path and call removed globals (UnitAur
 import os, sys
 root = sys.argv[1]
 if not os.path.isdir(os.path.join(root, "M33kAuras")):
-    print("  (build already rebranded to ForeverAuras - patches belong before the rename, skipping)")
+    print("  (build already renamed to EverAuras - patches belong before the rename, skipping)")
     sys.exit(0)
 def patch(rel, pairs):
     p = os.path.join(root, rel)

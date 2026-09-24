@@ -55,7 +55,8 @@
 
 ## 0.2.0-alpha (2026-09-19)
 
-- Rebrand ForeverAuras → EverAuras (new logo, `/ea` and `/everauras`, project links).
+- Renamed from the working name ForeverAuras to EverAuras, to avoid a clash with an unrelated project of the
+  same name (new logo, `/ea` and `/everauras`, project links).
 - Engine-driven aura displays (found / missing / always) confirmed working in combat; cooldown displays and
   `%p` remaining-time text through duration objects; *Is Ready (Secret)* → *Alpha (Boolean)* conditions.
 - SavedVariables bridge: never-shrink guard against an empty aura database overwriting a good seed.

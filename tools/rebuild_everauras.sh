@@ -28,8 +28,6 @@ ROOT="$(cd "$TOOLS/.." && pwd)"
 W="$ROOT/m33k-build"
 ADDONS="${EVERAURAS_ADDONS:-/d/World of Warcraft/World of Warcraft/_classic_beta_/Interface/AddOns}"
 UPSTREAM_DIRS="M33Auras M33kAuras M33kAurasArchive M33kAurasModelPaths M33kAurasOptions M33kAurasTemplates WeakAuras"
-# earlier brand of this fork; removed on install so nothing loads twice
-LEGACY_DIRS="ForeverAuras ForeverAurasArchive ForeverAurasModelPaths ForeverAurasOptions ForeverAurasTemplates"
 
 rm -rf "$W"; mkdir -p "$W"; cd "$W"
 
@@ -88,7 +86,7 @@ echo "== rebrand to EverAuras"
 python "$TOOLS/rename_to_everauras.py" release "$upstream"
 
 echo "== install"
-for d in $UPSTREAM_DIRS $LEGACY_DIRS; do rm -rf "$ADDONS/$d"; done
+for d in $UPSTREAM_DIRS; do rm -rf "$ADDONS/$d"; done
 for d in release/*/; do n=$(basename "$d"); rm -rf "$ADDONS/$n"; cp -r "$d" "$ADDONS/$n"; done
 for d in "$ROOT"/addons/*/; do n=$(basename "$d"); rm -rf "$ADDONS/$n"; cp -r "$d" "$ADDONS/$n"; done
 echo "installed EverAuras $VERSION+$upstream -> $ADDONS"
