@@ -212,7 +212,7 @@ function Engine.Classify(data)
   local function no(msg) r[#r + 1] = msg end
   if not data or data.regionType ~= "icon" then return nil, { T("the display is not an Icon") } end
   if not GloballyEnabled() then no(T("the engine is switched off (/faengine on)")) end
-  if data.foreverEngine == false then no(T("'Let the game engine draw this aura' is off for this display")) end
+  if data.foreverEngine == false then no(T("'Let the game engine draw this aura' is off for this display (Display tab)")) end
   if not Engine.IsAvailable() then no(T("Blizzard_AuraContainer is not available")) end
   if LibStub("Masque", true) then no(T("Masque is loaded")) end
   local t = data.triggers and #data.triggers == 1 and data.triggers[1] and data.triggers[1].trigger

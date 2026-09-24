@@ -6,6 +6,10 @@ apply_engine_to_installed.py maps them to the installed (EverAuras) names.
 
 # (anchor, replacement) pairs for BuffTrigger2.lua. Every anchor must be unique in the file.
 BUFFTRIGGER2_HUNKS = [
+    # missing-is-unknowable chat notice: name the reason the engine is not driving this display
+    # (applies after forever_patches.patch_missing_is_unknowable, which adds the notice)
+    ("        M33kAuras.prettyPrint((\"\\\"%s\\\": the client keeps this aura secret during combat, so \\\"Aura(s) Missing\\\" cannot be answered. Hiding it instead of reporting a match that may be false.\"):format(tostring(id)))\n",
+     "        -- Forever: say WHY this display is not engine-driven (the engine would answer it in combat)\n        local why = \"\"\n        local Engine = Private.ForeverEngine\n        local data = Engine and Engine.Classify and M33kAuras.GetData(id)\n        if data then\n          local ok, plan, reasons = pcall(Engine.Classify, data)\n          if ok and not plan and type(reasons) == \"table\" and #reasons > 0 then\n            why = \" Not engine-driven because: \" .. table.concat(reasons, \"; \") .. \".\"\n          end\n        end\n        M33kAuras.prettyPrint((\"\\\"%s\\\": the client keeps this aura secret during combat, so \\\"Aura(s) Missing\\\" cannot be answered. Hiding it instead of reporting a match that may be false.%s\"):format(tostring(id), why))\n"),
     # P1 BuffTrigger.Add: let the engine classify and mark the record before it is stored
     ("      triggerInfos[id] = triggerInfos[id] or {}\n      triggerInfos[id][triggernum] = triggerInformation",
      "      if Private.ForeverEngine then\n"
@@ -177,7 +181,7 @@ NEW_FILES = [
 
 # Markers that must exist afterwards, per relative file
 CHECKS = {
-    "M33kAuras/BuffTrigger2.lua": [
+    "M33kAuras/BuffTrigger2.lua": ["Not engine-driven because: ", 
         "ForeverEngine.PrepareTriggerInfo",
         "elseif triggerInfo.engineDelegated then",
         "return UpdateDelegatedState(time, triggerInfo, triggerStates)",
