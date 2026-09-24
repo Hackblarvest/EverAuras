@@ -870,6 +870,27 @@ function Engine.Sync(region, data)
   Schedule(region)
 end
 
+---------------------------------------------------------------------------- secret values in custom code
+-- An aura's own custom code (custom trigger, custom text, custom check, actions) that reads a value
+-- the client keeps secret in combat fails by design on Forever; no addon change can make it compare
+-- a secret. Recognised by the error text plus the place: a custom trigger, or a chunk the aura's
+-- author wrote (the addon compiles user code as "return <code>"). Anything else stays a real error.
+local function IsSecretError(msg)
+  return msg:find("a secret [%a ]*value") or msg:find("secret value") or msg:find("when secret")
+end
+
+function Private.ForeverSecretCustomError(data, context, message)
+  local msg = tostring(message or "")
+  if not IsSecretError(msg) then return nil end
+  local custom = msg:find('^%[string "return') ~= nil
+  local n = tonumber(tostring(context or ""):match("(%d+)"))
+  local trig = n and type(data.triggers) == "table" and data.triggers[n] and data.triggers[n].trigger
+  if trig and trig.type == "custom" then custom = true end
+  if not custom then return nil end
+  return T("The custom code in '%s' (%s) reads a value the game keeps secret in combat on WoW Forever, so that part cannot work in combat. It is the aura's own code, not an EverAuras bug: turn the aura off, or replace the custom trigger with a built-in one.")
+    :format(tostring(data.id), tostring(context or T("custom code")))
+end
+
 ---------------------------------------------------------------------------- zero-diff hooks into the core
 local icon = Private.regionTypes and Private.regionTypes.icon
 if not icon then return end
