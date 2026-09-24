@@ -37,9 +37,10 @@ its spell should be cast, in combat, correctly. See the [design notes](#how-it-w
 2. Download the latest `EverAuras-<version>.zip` from
    [Releases](https://github.com/Hackblarvest/EverAuras/releases) and unzip it into
    `_classic_beta_\Interface\AddOns`. It holds `EverAuras`, `EverAurasOptions`, `EverAurasArchive`,
-   `EverAurasModelPaths`, `EverAurasTemplates`, the two settings-migration stubs (`M33Auras`,
-   `WeakAuras`, the latter with the Media folder so texture paths in imported auras still resolve)
-   and `!ForeverCompat`.
+   `EverAurasModelPaths` and `EverAurasTemplates`. Textures in auras imported from WeakAuras, M33kAuras
+   or ForeverAuras are pointed at EverAuras' own copy of the same media automatically.
+   Upgrading from 0.4.0 or earlier: delete the `M33Auras` and `WeakAuras` folders those zips added, if the
+   addon list calls them "EverAuras Settings Migration" (other addons use the same folder names).
 3. **Beta client bug:** the Forever beta writes SavedVariables on logout but never reads them back,
    so your auras vanish after `/reload`. Until Blizzard fixes it, run `start_sv_bridge.cmd`
    (see `tools/sv_bridge.py`) and keep it open while you play. It regenerates a tiny

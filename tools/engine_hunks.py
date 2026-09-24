@@ -166,6 +166,10 @@ OPTIONS_HUNKS = {
 # Core (M33kAuras.lua): the load scanner's argument list is generated from the load prototype so
 # it can never drift from the parameter list on Forever (Player Class, Mounted, Zone ... loads).
 CORE_HUNKS = {
+    "M33kAuras/Init.lua": [
+        ("-- Forever: a native install with data has nothing to migrate from M33Auras/WeakAuras.\nif M33kAurasSaved.displays and next(M33kAurasSaved.displays) and not M33kAurasSaved.m33kMigrated then\n  M33kAurasSaved.m33kMigrated = true\nend\n",
+         "-- Forever: nothing to migrate from. The M33Auras / WeakAuras settings-migration stubs are not shipped,\n-- and those folder names belong to other addons, which must never be loaded or disabled from here.\nM33kAurasSaved.m33kMigrated = true\nM33kAurasSaved.migrationDisabled = true\n"),
+    ],
     "M33kAuras/Compatibility.lua": [
         ("if IsUsableSpell then\n  Private.ExecEnv.IsUsableSpell = IsUsableSpell\nelse\n  Private.ExecEnv.IsUsableSpell = C_Spell.IsSpellUsable\nend\n",
          "if IsUsableSpell then\n  Private.ExecEnv.IsUsableSpell = IsUsableSpell\nelse\n  Private.ExecEnv.IsUsableSpell = C_Spell.IsSpellUsable\nend\n\n-- Forever: the IsCurrentSpell global is gone (mainline engine); the Queued Action trigger\n-- and the queued-spell watcher called it directly and errored.\nif IsCurrentSpell then\n  Private.ExecEnv.IsCurrentSpell = IsCurrentSpell\nelse\n  Private.ExecEnv.IsCurrentSpell = C_Spell.IsCurrentSpell\nend\n"),
@@ -197,6 +201,7 @@ TOC_HUNKS = [
     ("M33kAuras/M33kAuras.toc", "DiscordList.lua\n", "DiscordList.lua\nForeverEngineAura.lua\n"),
     ("M33kAuras/M33kAuras.toc", "ForeverEngineAura.lua\n", "ForeverEngineAura.lua\nForeverManaRegen.lua\n"),
     ("M33kAuras/M33kAuras.toc", "ForeverManaRegen.lua\n", "ForeverManaRegen.lua\nForeverGate.lua\n"),
+    ("M33kAuras/M33kAuras.toc", "ForeverGate.lua\n", "ForeverGate.lua\nForeverImport.lua\n"),
     ("M33kAurasOptions/M33kAurasOptions.toc", "\nRegionOptions\\ProgressTexture.lua\n",
      "\nRegionOptions\\ProgressTexture.lua\nForeverEngineAuraOptions.lua\n"),
 ]
@@ -205,6 +210,7 @@ TOC_HUNKS = [
 NEW_FILES = [
     ("ForeverEngineAura.lua", "M33kAuras/ForeverEngineAura.lua"),
     ("ForeverGate.lua", "M33kAuras/ForeverGate.lua"),
+    ("ForeverImport.lua", "M33kAuras/ForeverImport.lua"),
     ("ForeverManaRegen.lua", "M33kAuras/ForeverManaRegen.lua"),
     ("ForeverEngineAuraOptions.lua", "M33kAurasOptions/ForeverEngineAuraOptions.lua"),
 ]
@@ -221,6 +227,7 @@ CHECKS = {
                                  "spellname and Private.ExecEnv.IsCurrentSpell(spellname)",
                                  "return Private.ExecEnv.IsSpellKnown(baseSpell, pet)",
                                  "ready = M33kAuras.IsSpellReady(effectiveSpellId)"],
+    "M33kAuras/Init.lua": ["M33kAurasSaved.migrationDisabled = true"],
     "M33kAuras/M33kAuras.lua": ["unpack(loadArgs, 1, loadArgs.n)", "Private.ForeverSecretCustomError(data, currentErrorHandlerContext, errorMessage)",
                                 "if foreverSecretForwarded[key] then return end"],
     "M33kAuras/Compatibility.lua": ["Private.ExecEnv.IsCurrentSpell = C_Spell.IsCurrentSpell",

@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- **Leaner install:** the zip holds only the five EverAuras folders. The `M33Auras` / `WeakAuras`
+  settings-migration stubs are gone: there is nothing to migrate from on Forever, the folder names belong to
+  other addons, and on an empty database (every login, while SavedVariables are not read back) the migration
+  code loaded and disabled whatever addon had those names. It is switched off on Forever. When upgrading,
+  delete those two folders if the addon list calls them "EverAuras Settings Migration".
+- **Imported media:** texture, sound and font paths pointing into WeakAuras, M33kAuras or ForeverAuras folders
+  are rewritten to EverAuras' own copy of the same media on import and load (8.8 MB less to ship).
+- `!ForeverCompat` (a shim for idTip's old AceGUI checkbox) is no longer shipped; EverAuras does not need it.
+  It stays in the repository for development.
+- The build script no longer deletes folders of other addons (M33kAuras, ForeverAuras); only its own stubs.
+
 ## 0.4.0-alpha (2026-09-24)
 
 - **Power options** for Icons and Progress Bars (Display tab, *Power (WoW: Forever)*): *Hide while full* and

@@ -85,8 +85,15 @@ python "$TOOLS/forever_patches.py" release
 echo "== rebrand to EverAuras"
 python "$TOOLS/rename_to_everauras.py" release "$upstream"
 
+echo "== drop the settings-migration stubs (nothing to migrate from on Forever; the names belong to other addons)"
+rm -rf release/M33Auras release/WeakAuras
+
 echo "== install"
-for d in $UPSTREAM_DIRS; do rm -rf "$ADDONS/$d"; done
+# our own settings-migration stubs from 0.2-0.4 builds; other addons use the same folder names,
+# so remove them only when the TOC says they are ours. Nothing else is ever deleted.
+for d in M33Auras WeakAuras; do
+  if grep -qs "EverAuras Settings Migration" "$ADDONS/$d/$d.toc"; then rm -rf "$ADDONS/$d"; fi
+done
 for d in release/*/; do n=$(basename "$d"); rm -rf "$ADDONS/$n"; cp -r "$d" "$ADDONS/$n"; done
 for d in "$ROOT"/addons/*/; do n=$(basename "$d"); rm -rf "$ADDONS/$n"; cp -r "$d" "$ADDONS/$n"; done
 echo "installed EverAuras $VERSION+$upstream -> $ADDONS"
