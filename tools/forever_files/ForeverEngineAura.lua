@@ -887,7 +887,7 @@ function Private.ForeverSecretCustomError(data, context, message)
   local trig = n and type(data.triggers) == "table" and data.triggers[n] and data.triggers[n].trigger
   if trig and trig.type == "custom" then custom = true end
   if not custom then return nil end
-  return T("The custom code in '%s' (%s) reads a value the game keeps secret in combat on WoW Forever, so that part cannot work in combat. It is the aura's own code, not an EverAuras bug: turn the aura off, or replace the custom trigger with a built-in one.")
+  return T("The custom code in '%s' (%s) reads a value WoW Forever keeps secret from addons (most of them in combat, some such as your current mana always), so that part of the aura cannot work. It is the aura's own code, not an EverAuras bug: turn the aura off, or replace the custom trigger with a built-in one.")
     :format(tostring(data.id), tostring(context or T("custom code")))
 end
 
