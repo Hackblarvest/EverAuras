@@ -1,6 +1,7 @@
 # EverAuras artwork
 
-`EVERAURAS.jpg` is the master badge (2048x2048, dark disc on white). `tools/forever_patches.py`
+`EVERAURAS.jpg` is the master badge (2048x2048, dark disc on white); `EVERAURAS.png` is a tighter
+667x662 crop of it (opaque, not used by the build). `tools/forever_patches.py`
 installs the rendered set from `build/` into the addon on every rebuild, replacing upstream's logo
 files by name, and points `## IconTexture` at `icon.tga`.
 
