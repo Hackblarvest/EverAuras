@@ -14,9 +14,12 @@ Copy-ready texts for the EverAuras project page. Keep in sync with README.md whe
 | Source | https://github.com/Hackblarvest/EverAuras |
 | Issues | https://github.com/Hackblarvest/EverAuras/issues |
 | Community (Discord) | https://discord.gg/HdRNYvKbY |
-| Project image | `logo/build/curseforge_400.png` (1024 px version next to it) |
+| Project | https://authors.curseforge.com/#/projects/1710578 (project id 1710578) |
+| Project image | `logo/build/preview_256.png` (dark edges suit CurseForge's dark theme; `curseforge_400.png` has white edges) |
+| Distribution | Allow distribution to 3rd party (WowUp and similar clients) |
+| Comments | Off: questions and bug reports go to Discord and GitHub Issues |
 | File | `EverAuras-<version>.zip` from the GitHub release (five folders at the zip root) |
-| Game version | WoW Forever / Classic Forever if CurseForge lists it (interface 16001). Do not pick Retail or Classic Era: the addon only targets Forever. |
+| Game version | CurseForge's own "WoW Forever" group, version matching the client (1.60.1 for build 1.60.1.70009). Do not pick Retail or Classic: the addon only targets Forever. |
 
 ## Description
 
