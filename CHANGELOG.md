@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **Engine-driven Progress Bars** (*Show On: Aura(s) Found*): Blizzard's aura button fills a real status bar with
+  the aura's own duration, so DoT and buff timer bars work in combat. Icon, name (`%n`), timer (`%p`) and stacks
+  (`%s`) come along; texture, colours, orientation and *Inverse* are taken from the WeakAuras bar. The range gate
+  and the power options work on bars too.
+- **Own Only now means "cast by you"** for engine-driven icons and bars (Blizzard's `PLAYER` filter). Before, any
+  player's copy of the aura counted, e.g. another hunter's Serpent Sting on your target.
+- **SavedVariables work on client build 1.60.1.70009.** The bridge watcher is no longer part of the install; the
+  README says so and `tools/sv_bridge.py` stays only for older builds.
+
 ## 0.4.1-alpha (2026-09-24)
 
 - **Leaner install:** the zip holds only the five EverAuras folders. The `M33Auras` / `WeakAuras`
