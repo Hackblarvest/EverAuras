@@ -1,6 +1,6 @@
 -- ForeverEngineAura.lua - WoW: Forever.
 --
--- Icon displays with ONE exact-spell-id Aura trigger are rendered by Blizzard_AuraContainer
+-- Icon and Progress Bar displays with Aura triggers are rendered by Blizzard_AuraContainer
 -- (CustomAuraContainerTemplate), so they keep working while auras are secret in combat.
 -- The addon never reads aura state. Every inbound call is a secure delegate; the engine writes
 -- secret values into regions we hand over and marks them unreadable. Proven in game 2026-09-18.
@@ -17,6 +17,15 @@
 --
 -- Progress Bars (Show On: Found) are engine-driven too: the slot button carries its own StatusBar that
 -- Blizzard fills with the aura's duration (SetDurationBar), plus icon, name, timer and stack texts.
+--
+-- Time left (icons): 'Remaining Time' on a Found trigger becomes a slot whose duration text is the
+-- display's icon, coloured by a Step curve over the remaining duration (alpha 0 outside the range).
+-- Composite displays combine one Missing trigger with Found + Remaining Time triggers through 'Any
+-- Triggered' or a custom combination of the form (other triggers) and (any Aura trigger), the common
+-- "cast it when it is missing or about to run out" aura.
+--
+-- Other triggers ("gates") may sit next to the Aura trigger(s): delegated Aura triggers report a
+-- constant true to WeakAuras, which keeps evaluating the gates itself (plain data in combat).
 --
 -- Triggers may use spell NAMES: they resolve to every known rank's id (classic ranks are separate
 -- spells) and follow the spellbook as you level. Exact ids stay exact.
@@ -46,7 +55,7 @@ local UNIT_OK = { player = true, target = true, focus = true, pet = true }
 local MODE = { showOnActive = "active", showOnMissing = "missing", showAlways = "always" }
 local UNSUPPORTED = {
   "useNamePattern", "useIgnoreName", "useIgnoreExactSpellId", "use_debuffClass",
-  "useRem", "useStacks", "useTotal", "use_tooltip", "fetchTooltip", "use_unitName", "use_npcId",
+  "useStacks", "useTotal", "use_tooltip", "fetchTooltip", "use_unitName", "use_npcId",
   "use_stealable", "use_isBossDebuff", "use_castByPlayer", "useAffected", "showClones", "useGroup_count",
 }
 
@@ -209,28 +218,19 @@ ResolveAuraName = function(entry, into, nameMode)
 end
 
 ---------------------------------------------------------------------------- eligibility
--- Pure function of data (and of the spellbook, for name-based triggers). Returns plan | nil, reasons.
-function Engine.Classify(data)
-  local r = {}
-  local function no(msg) r[#r + 1] = msg end
-  local rt = data and data.regionType
-  if rt ~= "icon" and rt ~= "aurabar" then return nil, { T("the display is not an Icon or a Progress Bar") } end
-  if not GloballyEnabled() then no(T("the engine is switched off (/faengine on)")) end
-  if data.foreverEngine == false then no(T("'Let the game engine draw this aura' is off for this display (Display tab)")) end
-  if not Engine.IsAvailable() then no(T("Blizzard_AuraContainer is not available")) end
-  if LibStub("Masque", true) then no(T("Masque is loaded")) end
-  local t = data.triggers and #data.triggers == 1 and data.triggers[1] and data.triggers[1].trigger
-  if not t then no(T("the display must have exactly one trigger")); return nil, r end
-  if t.type ~= "aura2" then no(T("the trigger is not an Aura trigger")); return nil, r end
+-- 'Remaining Time' filters the engine can draw without reading the time: the game evaluates a Step colour
+-- curve over the aura's remaining duration itself (see RemainCurve). WeakAuras applies the filter to
+-- 'Show On: Aura(s) Found' only (CanHaveMatchCheck); its default operator is ">=".
+local REM_OPS = { ["<"] = true, ["<="] = true, [">"] = true, [">="] = true }
+
+-- One aura2 trigger -> its part of the plan. Reasons it cannot be drawn go through no().
+local function AnalyseAuraTrigger(t, no)
   local unit = t.unit or "player"
   if not UNIT_OK[unit] then no(T("Unit must be Player, Target, Focus or Pet")) end
   local filter = t.debuffType or "HELPFUL"
   if filter ~= "HELPFUL" and filter ~= "HARMFUL" then no(T("Aura Type must be Buff or Debuff (not Both)")) end
   local mode = MODE[t.matchesShowOn or "showOnActive"]
   if not mode then no(T("'Show On: Match Count' cannot be expressed by the engine")) end
-  if rt == "aurabar" and mode and mode ~= "active" then   -- MODE maps showOnActive -> "active"
-    no(T("Progress Bars are engine-driven with 'Show On: Aura(s) Found' only (so far)"))
-  end
   local ids, sorted = {}, {}
   local byName, unresolved = false, {}
   if t.useExactSpellId then
@@ -272,26 +272,178 @@ function Engine.Classify(data)
     if t[k] then no(T("option '%s' cannot be expressed by the engine"):format(k)) end
   end
   if t.ownOnly == false then no(T("'Own Only' set to 'others only' cannot be expressed by the engine")) end
-  if #r > 0 then return nil, r end
+  local rem
+  if t.useRem and mode == "active" then
+    local op, x = t.remOperator or ">=", tonumber(t.rem)
+    if REM_OPS[op] and x and x >= 0 then
+      rem = { op = op, x = x }
+    else
+      no(T("'Remaining Time' must compare with <, <=, > or >= and a number of seconds"))
+    end
+  end
   table.sort(sorted)
-  local candidate = { includeSpellIDs = ids }
   -- Own Only = the filter's PLAYER token ("cast by you"). AuraData.isFromPlayerOrPlayerPet is true for
   -- any player's aura, so another hunter's Serpent Sting passed it.
   local filterString = (t.ownOnly == true) and (filter .. "|PLAYER") or filter
-  local key = table.concat({ unit, filterString, mode, table.concat(sorted, ",") }, ";")
-  return { unit = unit, filter = filter, filterString = filterString, mode = mode, candidate = candidate,
-           firstId = sorted[1], key = key,
-           ids = sorted, byName = byName, gen = spellbookGen, unresolved = unresolved, unseen = unseen }
+  return { unit = unit, filter = filter, filterString = filterString, mode = mode, rem = rem,
+           candidate = { includeSpellIDs = ids }, ids = sorted, firstId = sorted[1],
+           byName = byName, unresolved = unresolved, unseen = unseen,
+           key = filterString .. ";" .. table.concat(sorted, ",") }
 end
 
-local function InertConditions(data)
+-- Delegated Aura triggers publish a constant "true" to WeakAuras, and the engine decides which aura
+-- part is visible. That is only right when the display's combination is
+--   (every other trigger) AND (any Aura trigger)
+-- The other triggers keep running in WeakAuras (combat state, target attackable, talents, items and
+-- cooldowns are plain data on Forever). A custom combination is checked against that shape on every
+-- true/false assignment of its triggers; the verdict is cached per logic text.
+local logicVerdicts = {}
+local function CombinationOK(data, auraIdx, n)
+  local how = data.triggers.disjunctive or "all"
+  local nOther = n - #auraIdx
+  if how == "all" then
+    if #auraIdx == 1 then return true end
+    return false, T("several Aura triggers combined with 'All Triggers' cannot be expressed by the engine")
+  elseif how == "any" then
+    if nOther == 0 then return true end
+    return false, T("Aura triggers combined with other triggers through 'Any Triggered' cannot be expressed by the engine")
+  elseif how ~= "custom" then
+    return false, T("unknown trigger combination")
+  end
+  if n > 8 then return false, T("a custom trigger combination with more than 8 triggers") end
+  local src = data.triggers.customTriggerLogic or ""
+  local cacheKey = table.concat({ src, n, table.concat(auraIdx, ",") }, "\n")
+  local verdict = logicVerdicts[cacheKey]
+  if verdict == nil then
+    verdict = false
+    local isAura = {}
+    for _, i in ipairs(auraIdx) do isAura[i] = true end
+    local okL, f = pcall(WA.LoadFunction, "return " .. src, data.id)
+    if okL and type(f) == "function" then
+      verdict = true
+      local states = {}
+      for mask = 0, 2 ^ n - 1 do
+        local others, anyAura = true, false
+        for i = 1, n do
+          local on = math.floor(mask / 2 ^ (i - 1)) % 2 == 1
+          states[i] = on
+          if isAura[i] then anyAura = anyAura or on else others = others and on end
+        end
+        local okC, res = pcall(f, states)
+        if not okC or (res and true or false) ~= (others and anyAura) then verdict = false; break end
+      end
+    end
+    logicVerdicts[cacheKey] = verdict
+  end
+  if verdict then return true end
+  return false, T("the custom trigger combination must read: (every other trigger) and (any of the Aura triggers)")
+end
+
+-- Pure function of data (and of the spellbook, for name-based triggers). Returns plan | nil, reasons.
+--   single plan    : one Aura trigger, Show On Found / Missing / Always (plan.mode active/missing/always)
+--   composite plan : plan.parts = { missing = part | nil, remaining = { {part, op, x}, ... } }, icons only.
+--                    Shows the icon while the missing part's aura is absent OR a remaining part's aura
+--                    has the given time left. Built from Found + 'Remaining Time' triggers.
+function Engine.Classify(data)
+  local r = {}
+  local function no(msg)
+    for _, m in ipairs(r) do if m == msg then return end end
+    r[#r + 1] = msg
+  end
+  local rt = data and data.regionType
+  if rt ~= "icon" and rt ~= "aurabar" then return nil, { T("the display is not an Icon or a Progress Bar") } end
+  if not GloballyEnabled() then no(T("the engine is switched off (/faengine on)")) end
+  if data.foreverEngine == false then no(T("'Let the game engine draw this aura' is off for this display (Display tab)")) end
+  if not Engine.IsAvailable() then no(T("Blizzard_AuraContainer is not available")) end
+  if LibStub("Masque", true) then no(T("Masque is loaded")) end
+  local triggers = type(data.triggers) == "table" and data.triggers or {}
+  local n, auraIdx = #triggers, {}
+  for i = 1, n do
+    local t = triggers[i] and triggers[i].trigger
+    if t and t.type == "aura2" then
+      auraIdx[#auraIdx + 1] = i
+    elseif t and t.type == "aura" then
+      no(T("trigger %d is a legacy Aura trigger"):format(i))
+    end
+  end
+  if #auraIdx == 0 then no(T("the trigger is not an Aura trigger")); return nil, r end
+  if n > 1 then
+    local ok, why = CombinationOK(data, auraIdx, n)
+    if not ok then no(why) end
+  end
+  local infos, auraTriggers = {}, {}
+  for _, i in ipairs(auraIdx) do
+    infos[#infos + 1] = AnalyseAuraTrigger(triggers[i].trigger, no)
+    auraTriggers[i] = true
+  end
+  local unit = infos[1].unit
+  for _, inf in ipairs(infos) do
+    if inf.unit ~= unit then no(T("all Aura triggers must watch the same unit")); break end
+  end
+  local gates = n - #auraIdx
+
+  if #infos == 1 and not infos[1].rem then
+    local inf = infos[1]
+    if rt == "aurabar" and inf.mode and inf.mode ~= "active" then   -- MODE maps showOnActive -> "active"
+      no(T("Progress Bars are engine-driven with 'Show On: Aura(s) Found' only (so far)"))
+    end
+    if #r > 0 then return nil, r end
+    local key = table.concat({ unit, inf.filterString, inf.mode, table.concat(inf.ids, ",") }, ";")
+    return { unit = unit, filter = inf.filter, filterString = inf.filterString, mode = inf.mode,
+             candidate = inf.candidate, firstId = inf.firstId, key = key,
+             ids = inf.ids, byName = inf.byName, gen = spellbookGen, unresolved = inf.unresolved, unseen = inf.unseen,
+             auraTriggers = auraTriggers, gates = gates }
+  end
+
+  if rt ~= "icon" then
+    no(T("Progress Bars are engine-driven with one Aura trigger without 'Remaining Time' only (so far)"))
+  end
+  local missing, remaining = nil, {}
+  for _, inf in ipairs(infos) do
+    if inf.mode == "missing" then
+      if missing then no(T("only one Aura trigger may use 'Show On: Aura(s) Missing'")) end
+      missing = inf
+    elseif inf.mode == "active" then
+      if inf.rem then
+        remaining[#remaining + 1] = { part = inf, op = inf.rem.op, x = inf.rem.x }
+      else
+        no(T("'Show On: Aura(s) Found' without 'Remaining Time' cannot be combined with other Aura triggers"))
+      end
+    elseif inf.mode == "always" then
+      no(T("'Show On: Always' cannot be combined with other Aura triggers"))
+    end
+  end
+  if #r > 0 then return nil, r end
+  local keys, union, all, byName, unresolved, unseen = { unit, "composite" }, {}, {}, false, {}, {}
+  local function take(inf)
+    for _, id in ipairs(inf.ids) do if not union[id] then union[id] = true; all[#all + 1] = id end end
+    byName = byName or inf.byName
+    for _, nm in ipairs(inf.unresolved) do unresolved[#unresolved + 1] = nm end
+    for _, nm in ipairs(inf.unseen) do unseen[#unseen + 1] = nm end
+  end
+  if missing then keys[#keys + 1] = "M:" .. missing.key; take(missing) end
+  for _, rp in ipairs(remaining) do
+    keys[#keys + 1] = ("R%s%s:%s"):format(rp.op, tostring(rp.x), rp.part.key)
+    take(rp.part)
+  end
+  table.sort(all)
+  local first = missing or remaining[1].part
+  return { unit = unit, mode = "composite", parts = { missing = missing, remaining = remaining },
+           filter = first.filter, filterString = first.filterString, firstId = first.firstId,
+           key = table.concat(keys, ";"), ids = all, byName = byName, gen = spellbookGen,
+           unresolved = unresolved, unseen = unseen, auraTriggers = auraTriggers, gates = gates }
+end
+
+-- Conditions on a delegated Aura trigger never see aura data (only 'Buffed' changes).
+local function InertConditions(data, plan)
+  local aura = plan and plan.auraTriggers or { [1] = true }
   local function bad(check)
     if not check then return false end
     if check.checks then
       for _, c in ipairs(check.checks) do if bad(c) then return true end end
       return false
     end
-    return check.trigger == 1 and check.variable ~= nil and check.variable ~= "buffed"
+    return aura[check.trigger] and check.variable ~= nil and check.variable ~= "buffed"
   end
   for _, c in ipairs(data.conditions or {}) do if bad(c.check) then return true end end
   return false
@@ -341,6 +493,7 @@ local MODE_TEXT = {
   missing = "shows your icon while the aura is absent and disappears completely while it is present",
   always = "shows your icon while the aura is absent and the live aura while it is present",
 }
+local REM_TEXT = { ["<"] = "less than %s s", ["<="] = "at most %s s", [">"] = "more than %s s", [">="] = "at least %s s" }
 
 -- True when no trigger of this display reads auras (cooldown / usable / range / resource triggers
 -- are plain data on Forever, in combat too): the engine has nothing to take over.
@@ -359,8 +512,30 @@ function Engine.Explain(data, plan, reasons)
     return T("|cff33ff99Nothing to delegate:|r this display has no Aura trigger. Cooldowns, spell usable / in range, casts and resources are readable in combat on Forever, so it works as it is. The engine only takes over aura displays, which are blind while auras are secret."), false
   end
   if plan then
-    local txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It %s. Kept: position, size, groups, %%n/%%i texts, static colour/desaturate/zoom, border and glow. Not available: conditions and texts that read aura state (stacks, remaining, active), show/hide animations and actions on aura gain/loss.")
-      :format(plan.unit, plan.filterString, T(MODE_TEXT[plan.mode]))
+    local txt
+    if plan.parts then
+      local when = {}
+      if plan.parts.missing then when[#when + 1] = T("while the aura is absent") end
+      for _, rp in ipairs(plan.parts.remaining) do
+        when[#when + 1] = T("while it has %s left"):format(T(REM_TEXT[rp.op]):format(tostring(rp.x)))
+      end
+      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s). It shows your icon %s, and nothing otherwise. The game checks the time left itself, so it never has to be read. Kept: position, size, groups, the %%p text, static colour/zoom, and the glow as a static glow that follows the icon. Not available: the border (hidden while engine-driven), glow animation, cooldown swipe, stack count and desaturation on the time-left icon, conditions and texts that read aura state, show/hide animations and actions on aura gain/loss.")
+        :format(plan.unit, table.concat(when, T(" or ")))
+    else
+      local kept = T("border and glow")
+      if data.regionType == "icon" and plan.mode ~= "always" then
+        kept = T("the border (also while nothing is drawn), and the glow as a static glow that follows the aura")
+      end
+      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It %s. Kept: position, size, groups, %%n/%%i texts, static colour/desaturate/zoom, %s. Not available: conditions and texts that read aura state (stacks, remaining, active), show/hide animations and actions on aura gain/loss.")
+        :format(plan.unit, plan.filterString, T(MODE_TEXT[plan.mode]), kept)
+    end
+    if plan.parts and Engine.HasGlowPartChoice(data) and (data.foreverEngineGlowPart or "both") ~= "both" then
+      txt = txt .. " " .. (data.foreverEngineGlowPart == "remaining" and T("The glow is drawn only while it runs out.")
+                                                                    or T("The glow is drawn only while the aura is missing."))
+    end
+    if (plan.gates or 0) > 0 then
+      txt = txt .. " " .. T("Your other trigger(s) still decide when the display may show at all; WeakAuras checks them itself, which works in combat for plain data (combat state, target attackable or hostile, talents, items, cooldowns) but not for values Forever keeps secret, such as health or power amounts.")
+    end
     if plan.byName then
       txt = txt .. " " .. T("Spell name resolved to id(s) %s (your spellbook ranks and auras seen so far); re-resolved as you learn spells and see auras."):format(table.concat(plan.ids, ", "))
     end
@@ -373,7 +548,7 @@ function Engine.Explain(data, plan, reasons)
         txt = txt .. " " .. T("|cffff9933Range gate off:|r %s. Enter a 'Range check spell' you know that has a range, e.g. Auto Shot."):format(why)
       end
     end
-    if InertConditions(data) then
+    if InertConditions(data, plan) then
       txt = txt .. " " .. T("|cffff9933Note:|r a condition reads trigger data other than 'Buffed'; it never fires on this display.")
     end
     return txt, true
@@ -386,8 +561,14 @@ end
 function Engine.PrepareTriggerInfo(info, trigger, data)
   local plan = Engine.Classify(data)
   decided[data.uid] = plan or false
+  -- called once per Aura trigger: the display is name-watched when ANY of its Aura triggers uses names
+  local anyName = false
+  for _, tr in ipairs(data.triggers or {}) do
+    local t = tr and tr.trigger
+    if t and t.type == "aura2" and t.useName then anyName = true end
+  end
+  nameWatch[data.uid] = anyName or nil
   if trigger.useName then
-    nameWatch[data.uid] = true
     for _, nm in ipairs(trigger.auranames or {}) do
       nm = Trim(nm)
       local id = tonumber(nm)
@@ -397,8 +578,6 @@ function Engine.PrepareTriggerInfo(info, trigger, data)
       end
       if nm ~= "" then watchNames[nm:lower()] = true end
     end
-  else
-    nameWatch[data.uid] = nil
   end
   info.engineDelegated = plan ~= nil
   if plan then
@@ -484,6 +663,8 @@ local function BuildSlot(att, region, plan)
       s.duration:SetPoint("CENTER")
       s.count = button:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
       s.count:SetPoint("CENTER")
+      s.glow = button:CreateTexture(nil, "OVERLAY")   -- the static glow: shown with the button, i.e. the aura
+      s.glow:Hide()
       button:SetIcon(s.icon)
       button:SetDurationCooldown(s.cooldown)
       button:SetDurationText(s.duration, nil)
@@ -499,22 +680,32 @@ local function BuildSlot(att, region, plan)
   return true
 end
 
-local function GroupLayout(w, h)
-  return { elementWidth = w + 1, elementHeight = h }
+-- m = margin: the clip reaches m px past the icon on every side (room for the static glow). The element
+-- is 2m wider so that "present" still pushes the clip's left edge onto its right edge (zero width).
+local function GroupLayout(w, h, m)
+  return { elementWidth = w + 1 + 2 * (m or 0), elementHeight = h }
 end
 
--- Missing: a group of at most one INVISIBLE button. The container's secret width (1 or W+1) drives a
+local function AnchorClip(att, m)
+  local clip, c, host = att.shadows.clip, att.container, att.host
+  clip:ClearAllPoints()
+  clip:SetPoint("TOPLEFT", c, "TOPRIGHT", -1 - m, m)
+  clip:SetPoint("BOTTOMRIGHT", host, "BOTTOMRIGHT", m, -m)
+end
+
+-- Missing: a group of at most one INVISIBLE button. The container's secret width (1 or W+1+2m) drives a
 -- clipping frame that holds the "cast this" underlay: full while absent, zero width while present.
-local function BuildGroup(att, region, plan)
+local function BuildGroup(att, region, plan, m)
   local host, c, s = att.host, att.container, att.shadows
   local w, h = RegionSize(region)
+  m = m or 0
   local ok, err = pcall(c.AddAuraGroup, c, KEY, plan.filterString, {
     candidateFilters = plan.candidate,
     maxFrameCount = 1,
-    layout = GroupLayout(w, h),
+    layout = GroupLayout(w, h, m),
     initializeFrame = function(button)
       -- Ten of these are pre-created per group (the engine hides counts that way). They draw nothing.
-      button:SetSize(w + 1, h)
+      button:SetSize(w + 1 + 2 * m, h)
       pcall(button.SetMouseClickEnabled, button, false)
       pcall(button.EnableMouseMotion, button, false)
     end,
@@ -528,15 +719,38 @@ local function BuildGroup(att, region, plan)
   -- themselves (Blizzard_CustomAuraContainer.lua:317-322); this template is how addons opt in.
   local clip = CreateFrame("Frame", nil, host, "DisableUntrustedLayoutScriptsTemplate")
   clip:SetClipsChildren(true)
-  clip:SetPoint("TOPLEFT", c, "TOPRIGHT", -1, 0)
-  clip:SetPoint("BOTTOMRIGHT", host, "BOTTOMRIGHT", 0, 0)
   clip:SetFrameLevel(host:GetFrameLevel())
   local u = clip:CreateTexture(nil, "ARTWORK")
   u:SetAllPoints(host)
   pcall(u.SetSnapToPixelGrid, u, false)
   pcall(u.SetTexelSnappingBias, u, 0)
-  s.clip, s.underlay = clip, u
-  att.groupBuilt, att.groupW, att.groupH = true, w, h
+  -- the static glow: anchored to the host (a plain rect), clipped by the clip like the underlay
+  s.clip, s.underlay, s.mglow = clip, u, clip:CreateTexture(nil, "OVERLAY")
+  s.mglow:Hide()
+  AnchorClip(att, m)
+  att.groupBuilt, att.groupW, att.groupH, att.groupM = true, w, h, m
+  return true
+end
+
+-- Builds the missing-mode group on first use, else points it at the part's filter and candidates.
+-- part = a single plan, or the missing part of a composite plan (both carry filterString/candidate/key).
+local function EnsureGroup(att, region, part, m)
+  local c = att.container
+  m = m or 0
+  if not att.groupBuilt then
+    if not BuildGroup(att, region, part, m) then return false end
+    att.groupFilter, att.groupKey = part.filterString, part.key
+  else
+    if att.groupFilter ~= part.filterString then c:SetAuraGroupFilterString(KEY, part.filterString); att.groupFilter = part.filterString end
+    if att.groupKey ~= part.key then c:SetAuraGroupCandidateFilters(KEY, part.candidate); att.groupKey = part.key end
+    local w, h = RegionSize(region)
+    if w ~= att.groupW or h ~= att.groupH or m ~= att.groupM then
+      c:SetAuraGroupLayout(KEY, GroupLayout(w, h, m)); att.groupW, att.groupH = w, h
+      if m ~= att.groupM then AnchorClip(att, m); att.groupM = m end
+    end
+    c:SetAuraGroupEnabled(KEY, true)
+  end
+  att.shadows.clip:Show()
   return true
 end
 
@@ -601,6 +815,66 @@ local function MirrorTexts(att, region, data, useShadows)
   end
 end
 
+-- Glow. WA's glow sits on the WA region, which stays visible while the engine decides what is drawn,
+-- so it would frame an empty spot. Engine-driven icons draw a STATIC glow instead, in the element that
+-- follows the aura: the slot button (Found), the missing clip (Missing), a curve-driven text (time
+-- left). Texture and coordinates are LibCustomGlow's outer button glow; WA's glow colour, scale and
+-- offsets apply, the animation does not. 'Show On: Always' keeps WA's own glow (the icon is always there).
+local GLOW_TEX = "Interface\\SpellActivationOverlay\\IconAlert"
+local GLOW_TC = { 0.00781250, 0.50781250, 0.27734375, 0.52734375 }
+local GLOW_SIZE = 1.4
+
+-- The first glow of the display that is switched on: { r, g, b, a, scale, x, y } or nil.
+local function GlowSpec(data)
+  for _, sub in ipairs(data.subRegions or {}) do
+    if sub.type == "subglow" and sub.glow then
+      local c = sub.useGlowColor and sub.glowColor or nil
+      return { c and c[1] or 1, c and c[2] or 1, c and c[3] or 1, c and c[4] or 1,
+               tonumber(sub.glowScale) or 1, tonumber(sub.glowXOffset) or 0, tonumber(sub.glowYOffset) or 0 }
+    end
+  end
+end
+
+local function GlowSize(w, h, g)
+  return math.floor(w * GLOW_SIZE * g[5] + 0.5), math.floor(h * GLOW_SIZE * g[5] + 0.5)
+end
+
+-- How far a glow reaches past the icon: the missing clip must be that much larger to show it whole.
+local function GlowMargin(w, h, g)
+  if not g then return 0 end
+  local gw, gh = GlowSize(w, h, g)
+  return math.ceil(math.max(gw - w, gh - h) / 2 + math.max(math.abs(g[6]), math.abs(g[7]))) + 1
+end
+
+local function StyleGlowTexture(tex, anchor, w, h, g)
+  if not g then tex:Hide(); return end
+  local gw, gh = GlowSize(w, h, g)
+  tex:SetTexture(GLOW_TEX)
+  tex:SetTexCoord(GLOW_TC[1], GLOW_TC[2], GLOW_TC[3], GLOW_TC[4])
+  tex:SetVertexColor(g[1], g[2], g[3], g[4])
+  tex:ClearAllPoints()
+  tex:SetPoint("CENTER", anchor, "CENTER", g[6], g[7])
+  tex:SetSize(gw, gh)
+  tex:Show()
+end
+
+-- WA sub-regions that would show at the wrong time while engine-driven: every glow that is switched on
+-- (replaced by the static glow) and, when asked, the border. Joins att.mirrored, so OnLayout hides them
+-- and TurnOff gives them back. Only ones that are on: handing back cannot show one that was off.
+local function HideStaticDecor(att, region, data, withBorder)
+  local ri = 0
+  for _, sub in ipairs(data.subRegions or {}) do
+    if Private.subRegionTypes[sub.type] then
+      ri = ri + 1
+      local live = region.subRegions and region.subRegions[ri]
+      if live and ((sub.type == "subglow" and sub.glow)
+                   or (withBorder and sub.type == "subborder" and sub.border_visible ~= false)) then
+        att.mirrored[live] = true
+      end
+    end
+  end
+end
+
 -- Progress Bars: the engine drives its own StatusBar inside the slot button (SetDurationBar ->
 -- StatusBar:SetTimerDuration with the aura's duration). WA's own bar, background and icon are hidden
 -- while the display is engine-driven, and restored when it stops being so.
@@ -652,7 +926,7 @@ local function ApplyBarLook(att, region, data)
   pcall(att.button.EnableMouseMotion, att.button, data.useTooltip and true or false)
 end
 
-local function ApplySlotLook(att, region, data)
+local function ApplySlotLook(att, region, data, plan)
   if att.isBar then return ApplyBarLook(att, region, data) end
   local s = att.shadows
   s.icon:SetTexCoord(region.icon:GetTexCoord())     -- WA already applied zoom/aspect/offset to its own texture
@@ -665,22 +939,33 @@ local function ApplySlotLook(att, region, data)
   pcall(cd.SetDrawEdge, cd, data.cooldownEdge and true or false)
   pcall(cd.SetReverse, cd, not data.inverse)                   -- Icon.lua: WA reverses unless 'inverse'
   pcall(cd.SetHideCountdownNumbers, cd, (not data.cooldown) or data.cooldownTextDisabled or false)
+  local found = plan.mode == "active"                  -- Always: the WA icon is always there, so is WA's glow
+  if s.glow then
+    local w, h = RegionSize(region)
+    StyleGlowTexture(s.glow, att.button, w, h, found and GlowSpec(data) or nil)
+  end
   MirrorTexts(att, region, data, true)
+  if found then HideStaticDecor(att, region, data, false) end
   pcall(att.button.EnableMouseMotion, att.button, data.useTooltip and true or false)
 end
 
--- The underlay copies the WA icon's static look. Its texture is the display's own icon choice:
--- the manual icon when one is set, else the first tracked spell's texture (plain data, safe time).
-local function ApplyUnderlayLook(att, region, data, plan)
-  local u = att.shadows.underlay
+-- The display's own icon choice: the manual icon when one is set, else the first tracked spell's
+-- texture (plain data, safe time).
+local function DisplayTexture(data, firstId)
   local tex
   if data.iconSource == 0 and data.displayIcon and data.displayIcon ~= "" then
     tex = data.displayIcon
   else
-    tex = C_Spell and C_Spell.GetSpellTexture and C_Spell.GetSpellTexture(plan.firstId)
+    tex = C_Spell and C_Spell.GetSpellTexture and C_Spell.GetSpellTexture(firstId)
   end
   if issecretvalue(tex) then tex = nil end
-  tex = tex or data.displayIcon or 134400
+  return tex or data.displayIcon or 134400
+end
+
+-- The underlay copies the WA icon's static look.
+local function ApplyUnderlayLook(att, region, data, plan, noGlow)
+  local u = att.shadows.underlay
+  local tex = DisplayTexture(data, plan.firstId)
   if type(tex) == "string" and C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo(tex) then
     u:SetAtlas(tex)
   else
@@ -690,7 +975,12 @@ local function ApplyUnderlayLook(att, region, data, plan)
   pcall(u.SetDesaturation, u, data.desaturate and 1 or 0)
   local col = data.color or { 1, 1, 1, 1 }
   u:SetVertexColor(col[1] or 1, col[2] or 1, col[3] or 1, col[4] or 1)
+  if att.shadows.mglow then
+    local w, h = RegionSize(region)
+    StyleGlowTexture(att.shadows.mglow, att.host, w, h, not noGlow and GlowSpec(data) or nil)
+  end
   MirrorTexts(att, region, data, false)
+  HideStaticDecor(att, region, data, false)
 end
 
 local function SetMirroredShown(att, shown)
@@ -705,7 +995,7 @@ function Engine.OnLayout(region)          -- after every ApplyFrameLevel (Expand
   if not (att and att.active) then return end
   SetMirroredShown(att, false)
   if att.isBar then SetBarVisuals(region, false)
-  elseif att.kind == "group" and region.icon then region.icon:Hide() end
+  elseif (att.kind == "group" or att.kind == "composite") and region.icon then region.icon:Hide() end
 end
 
 local function InPreview()
@@ -715,10 +1005,192 @@ end
 local function DisableKind(att, kind)
   local c = att.container
   if kind == "slot" and att.slotBuilt then pcall(c.SetAuraSlotEnabled, c, KEY, false) end
-  if kind == "group" and att.groupBuilt then
+  if (kind == "group" or kind == "composite") and att.groupBuilt then
     pcall(c.SetAuraGroupEnabled, c, KEY, false)
     if att.shadows.clip then att.shadows.clip:Hide() end
   end
+  if kind == "composite" and att.rslots then
+    for key in pairs(att.rslots) do pcall(c.SetAuraSlotEnabled, c, key, false) end
+  end
+end
+
+---------------------------------------------------------------------------- time left (composite plans)
+-- "Less than X s left" without reading the time. Each Remaining Time part gets its own slot on the same
+-- aura. The slot's duration text is handed a Step colour curve over the remaining duration (visible
+-- below X, alpha 0 above) and a text that is only the display's icon as an inline texture, so the icon
+-- appears and disappears with the curve. The game evaluates the curve; nothing of ours reads it. A
+-- second slot on the same aura carries the %p countdown with the same curve. Proven in game 2026-09-27
+-- (Serpent Sting on a mob, in combat, ForeverDevInfo /fdremain).
+local REMAIN_EPS = 0.001
+
+local function RemainCurve(op, x, r, g, b, a)
+  local cc = C_CurveUtil.CreateColorCurve()
+  cc:SetType(Enum.LuaCurveType.Step)          -- a point rules from its own x on ("exact matches promote")
+  local on, off = CreateColor(r, g, b, a), CreateColor(r, g, b, 0)
+  if op == "<" then
+    if x > 0 then cc:AddPoint(0, on); cc:AddPoint(x, off) else cc:AddPoint(0, off) end
+  elseif op == "<=" then
+    cc:AddPoint(0, on); cc:AddPoint(x + REMAIN_EPS, off)
+  elseif op == ">" then
+    cc:AddPoint(0, off); cc:AddPoint(x + REMAIN_EPS, on)
+  else -- ">="
+    if x > 0 then cc:AddPoint(0, off); cc:AddPoint(x, on) else cc:AddPoint(0, on) end
+  end
+  return cc
+end
+
+-- The display's icon as inline text, with WA's zoom (the icon's texcoords) and colour.
+local TEXCOORD_UNITS = 1024
+local function IconMarkup(tex, w, h, region, col)
+  if type(tex) == "string" and C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo(tex) then
+    return ("|A:%s:%d:%d|a"):format(tex, h, w)
+  end
+  local ulx, uly, _, lly, urx = region.icon:GetTexCoord()
+  local function u(v) return math.floor((tonumber(v) or 0) * TEXCOORD_UNITS + 0.5) end
+  local function c(v) return math.floor(math.max(0, math.min(1, tonumber(v) or 1)) * 255 + 0.5) end
+  return ("|T%s:%d:%d:0:0:%d:%d:%d:%d:%d:%d:%d:%d:%d|t"):format(tostring(tex), h, w,
+    TEXCOORD_UNITS, TEXCOORD_UNITS, u(ulx), u(urx), u(uly), u(lly), c(col[1]), c(col[2]), c(col[3]))
+end
+
+-- The WA sub-text that shows the time left, if the display has one (same rule as MirrorTexts).
+local function CountdownSub(data)
+  for _, sub in ipairs(data.subRegions or {}) do
+    if sub.type == "subtext" and sub.text_visible ~= false and Trim(sub.text_text) == "%p" then return sub end
+  end
+end
+
+local function BuildRemainSlot(att, key, part)
+  local host, c = att.host, att.container
+  local rs = {}
+  local ok, button = pcall(c.AddAuraSlot, c, key, part.filterString, {
+    candidateFilters = part.candidate,
+    initializeFrame = function(button)
+      -- Runs synchronously inside AddAuraSlot, BEFORE DenyTaintedAccessWhenAurasAreSecret is applied.
+      button:ClearAllPoints()
+      button:SetAllPoints(host)
+      button:SetFrameLevel(c:GetFrameLevel())
+      pcall(button.SetMouseClickEnabled, button, false)
+      pcall(button.EnableMouseMotion, button, false)
+      rs.fs = button:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+      rs.fs:SetPoint("CENTER")
+      pcall(rs.fs.SetWordWrap, rs.fs, false)
+    end,
+  })
+  if not ok or not button or not rs.fs then
+    WA.prettyPrint(("%s: engine time-left slot failed: %s"):format(tostring(att.region.id), tostring(button)))
+    att.broken = true
+    return nil
+  end
+  rs.button, rs.filter, rs.pkey = button, part.filterString, part.key
+  return rs
+end
+
+-- A display that shows its icon both while the aura is missing and while it runs out lets the user pick
+-- where the static glow goes (data.foreverEngineGlowPart: "both" | "remaining" | "missing").
+local function GlowParts(data, plan)
+  local g = GlowSpec(data)
+  if not g then return nil, nil end
+  local both = plan.parts.missing and #plan.parts.remaining > 0
+  local where = both and data.foreverEngineGlowPart or "both"
+  return (where ~= "remaining") and g or nil, (where ~= "missing") and g or nil
+end
+
+function Engine.HasGlowPartChoice(data)
+  local plan = Engine.Classify(data)
+  return plan and plan.parts and plan.parts.missing and #plan.parts.remaining > 0 and GlowSpec(data) ~= nil or false
+end
+
+-- Slot keys: feR<i> = the icon of Remaining Time part i, feG<i> = its static glow, feT<i> = its %p countdown.
+local LEVEL_OF = { R = 0, G = 1, T = 2 }
+local function EnsureComposite(att, region, data, plan)
+  local c = att.container
+  local missingGlow, remainGlow = GlowParts(data, plan)
+  local glow = remainGlow
+  if plan.parts.missing then
+    local w, h = RegionSize(region)
+    if not EnsureGroup(att, region, plan.parts.missing, GlowMargin(w, h, missingGlow)) then return false end
+  else
+    DisableKind(att, "group")
+  end
+  att.rslots = att.rslots or {}
+  local used = {}
+  local withText = CountdownSub(data) ~= nil
+  for i, rp in ipairs(plan.parts.remaining) do
+    local keys = { "feR" .. i }
+    if glow then keys[#keys + 1] = "feG" .. i end
+    if withText then keys[#keys + 1] = "feT" .. i end
+    for _, key in ipairs(keys) do
+      used[key] = true
+      local rs = att.rslots[key]
+      if not rs then
+        rs = BuildRemainSlot(att, key, rp.part)
+        if not rs then return false end
+        att.rslots[key] = rs
+      else
+        if rs.filter ~= rp.part.filterString then c:SetAuraSlotFilterString(key, rp.part.filterString); rs.filter = rp.part.filterString end
+        if rs.pkey ~= rp.part.key then c:SetAuraSlotCandidateFilters(key, rp.part.candidate); rs.pkey = rp.part.key end
+        c:SetAuraSlotEnabled(key, true)
+      end
+    end
+  end
+  for key in pairs(att.rslots) do
+    if not used[key] then pcall(c.SetAuraSlotEnabled, c, key, false) end
+  end
+  att.rslotsUsed = used
+  return true
+end
+
+local function SetRemainLevels(att)
+  if not (att.rslots and att.container) then return end
+  local base = att.container:GetFrameLevel()
+  for key, rs in pairs(att.rslots) do
+    pcall(rs.button.SetFrameLevel, rs.button, base + (LEVEL_OF[key:sub(3, 3)] or 0))
+  end
+end
+
+local function ApplyCompositeLook(att, region, data, plan)
+  local missingGlow, remainGlow = GlowParts(data, plan)
+  if plan.parts.missing then ApplyUnderlayLook(att, region, data, plan.parts.missing, not missingGlow) end
+  local w, h = RegionSize(region)
+  local col = data.color or { 1, 1, 1, 1 }
+  local property = (Enum.DurationTextBindingProperty and Enum.DurationTextBindingProperty.RemainingDuration) or 0
+  local psub = CountdownSub(data)
+  for i, rp in ipairs(plan.parts.remaining) do
+    local ri = att.rslots["feR" .. i]
+    if ri then
+      ri.fs:SetFont(STANDARD_TEXT_FONT, 12, "")
+      ri.button:SetDurationText(ri.fs, {
+        textFormat = { formatString = IconMarkup(DisplayTexture(data, rp.part.firstId), w, h, region, col), components = {} },
+        textColor = { curve = RemainCurve(rp.op, rp.x, 1, 1, 1, col[4] or 1), property = property },
+      })
+    end
+    local rg = att.rslotsUsed["feG" .. i] and att.rslots["feG" .. i]
+    local g = remainGlow
+    if rg and g then
+      local gw, gh = GlowSize(w, h, g)
+      local u = TEXCOORD_UNITS
+      rg.fs:SetFont(STANDARD_TEXT_FONT, 12, "")
+      rg.fs:ClearAllPoints()
+      rg.fs:SetPoint("CENTER", att.host, "CENTER", g[6], g[7])
+      rg.button:SetDurationText(rg.fs, {
+        textFormat = { formatString = ("|T%s:%d:%d:0:0:%d:%d:%d:%d:%d:%d:%d:%d:%d|t"):format(GLOW_TEX, gh, gw, u, u,
+          math.floor(GLOW_TC[1] * u + 0.5), math.floor(GLOW_TC[2] * u + 0.5), math.floor(GLOW_TC[3] * u + 0.5),
+          math.floor(GLOW_TC[4] * u + 0.5), math.floor(g[1] * 255 + 0.5), math.floor(g[2] * 255 + 0.5),
+          math.floor(g[3] * 255 + 0.5)), components = {} },
+        textColor = { curve = RemainCurve(rp.op, rp.x, 1, 1, 1, g[4]), property = property },
+      })
+    end
+    local rt = att.rslotsUsed["feT" .. i] and att.rslots["feT" .. i]
+    if rt and psub then
+      StyleShadowText(region, rt.fs, psub, false)
+      local tc = psub.text_color or { 1, 1, 1, 1 }
+      rt.button:SetDurationText(rt.fs, {
+        textColor = { curve = RemainCurve(rp.op, rp.x, tc[1] or 1, tc[2] or 1, tc[3] or 1, tc[4] or 1), property = property },
+      })
+    end
+  end
+  MirrorTexts(att, region, data, false)     -- WA's own %p/%s/%n would read aura state: hidden
+  HideStaticDecor(att, region, data, true)  -- the border cannot follow the curve: hidden too
 end
 
 ---------------------------------------------------------------------------- range gate
@@ -763,7 +1235,7 @@ end
 -- Every way out of "on" (off, preview, a failed engine build) hands the region back the same way.
 local function TurnOff(att, region, data, mode)
   if att.host then att.host:Hide() end
-  DisableKind(att, "slot"); DisableKind(att, "group")
+  DisableKind(att, "slot"); DisableKind(att, "group"); DisableKind(att, "composite")
   RemoveGate(att)
   if att.isBar then SetBarVisuals(region, true) elseif region.icon then region.icon:Show() end
   SetMirroredShown(att, true)
@@ -787,7 +1259,7 @@ local function Apply(region)
 
   if not att.host then att.host, att.container = BuildHost(region) end
   local c = att.container
-  local kind = (plan.mode == "missing") and "group" or "slot"
+  local kind = plan.parts and "composite" or ((plan.mode == "missing") and "group" or "slot")
   if att.kind and att.kind ~= kind then DisableKind(att, att.kind) end
 
   if kind == "slot" then
@@ -799,27 +1271,19 @@ local function Apply(region)
       if att.slotKey ~= plan.key then c:SetAuraSlotCandidateFilters(KEY, plan.candidate); att.slotKey = plan.key end
       c:SetAuraSlotEnabled(KEY, true)
     end
+  elseif kind == "group" then
+    local w, h = RegionSize(region)
+    if not EnsureGroup(att, region, plan, GlowMargin(w, h, GlowSpec(data))) then TurnOff(att, region, data, "off"); return end
   else
-    if not att.groupBuilt then
-      if not BuildGroup(att, region, plan) then TurnOff(att, region, data, "off"); return end
-      att.groupFilter, att.groupKey = plan.filterString, plan.key
-    else
-      if att.groupFilter ~= plan.filterString then c:SetAuraGroupFilterString(KEY, plan.filterString); att.groupFilter = plan.filterString end
-      if att.groupKey ~= plan.key then c:SetAuraGroupCandidateFilters(KEY, plan.candidate); att.groupKey = plan.key end
-      local w, h = RegionSize(region)
-      if w ~= att.groupW or h ~= att.groupH then
-        c:SetAuraGroupLayout(KEY, GroupLayout(w, h)); att.groupW, att.groupH = w, h
-      end
-      c:SetAuraGroupEnabled(KEY, true)
-    end
-    att.shadows.clip:Show()
+    if not EnsureComposite(att, region, data, plan) then TurnOff(att, region, data, "off"); return end
   end
   att.kind = kind
   if att.unit ~= plan.unit then c:SetUnit(plan.unit); att.unit = plan.unit end
 
   local okLook, err
-  if kind == "slot" then okLook, err = pcall(ApplySlotLook, att, region, data)
-  else okLook, err = pcall(ApplyUnderlayLook, att, region, data, plan) end
+  if kind == "slot" then okLook, err = pcall(ApplySlotLook, att, region, data, plan)
+  elseif kind == "group" then okLook, err = pcall(ApplyUnderlayLook, att, region, data, plan)
+  else okLook, err = pcall(ApplyCompositeLook, att, region, data, plan) end
   if not okLook and not att.lookWarned then
     att.lookWarned = true
     WA.prettyPrint(("%s: engine look failed: %s"):format(tostring(region.id), tostring(err)))
@@ -830,6 +1294,7 @@ local function Apply(region)
   if att.isBar then SetBarVisuals(region, false) else region.icon:SetShown(plan.mode == "always") end
   if region.tooltipFrame then region.tooltipFrame:EnableMouseMotion(false) end
   if kind == "slot" then pcall(att.button.SetFrameLevel, att.button, c:GetFrameLevel()) end
+  if kind == "composite" then SetRemainLevels(att) end
   if att.isBar and att.shadows.bar then                  -- keep bar under texts, both above the button
     local sh = att.shadows
     pcall(sh.bar.SetFrameLevel, sh.bar, c:GetFrameLevel() + 1)
@@ -887,7 +1352,7 @@ local function ComputeSig(region, data, plan)
     tostring(data.texture), tostring(data.textureSource), tostring(data.textureInput), tostring(data.orientation),
     tostring(data.icon), tostring(data.icon_side), table.concat(data.barColor or {}, ","),
     table.concat(data.backgroundColor or {}, ","), table.concat(data.icon_color or {}, ","),
-    tostring(data.foreverEngineRange), tostring(data.foreverEngineRangeSpell),
+    tostring(data.foreverEngineRange), tostring(data.foreverEngineRangeSpell), tostring(data.foreverEngineGlowPart),
     table.concat(data.color or {}, ","), table.concat({ region.icon:GetTexCoord() }, ",") }
   for _, sub in ipairs(data.subRegions or {}) do
     if sub.type == "subtext" then
@@ -895,6 +1360,12 @@ local function ComputeSig(region, data, plan)
         tostring(sub.text_fontSize), tostring(sub.text_fontType), tostring(sub.anchor_point), tostring(sub.text_selfPoint),
         tostring(sub.anchorXOffset), tostring(sub.anchorYOffset), tostring(sub.text_justify),
         sub.text_color and table.concat(sub.text_color, ",") or "" }, "/")
+    elseif sub.type == "subglow" then
+      parts[#parts + 1] = table.concat({ "glow", tostring(sub.glow), tostring(sub.useGlowColor),
+        sub.glowColor and table.concat(sub.glowColor, ",") or "", tostring(sub.glowScale),
+        tostring(sub.glowXOffset), tostring(sub.glowYOffset) }, "/")
+    elseif sub.type == "subborder" then
+      parts[#parts + 1] = "border/" .. tostring(sub.border_visible)
     end
   end
   return table.concat(parts, "|")
@@ -918,11 +1389,13 @@ function Engine.Sync(region, data)
   local att = attachments[region]
   if not att then att = { region = region, shadows = {}, isBar = data.regionType == "aurabar" }; attachments[region] = att end
   local plan = decided[data.uid]
-  local t = data.triggers and #data.triggers == 1 and data.triggers[1] and data.triggers[1].trigger
-  local isAura2 = t and t.type == "aura2"
+  local isAura2 = false
+  for _, tr in ipairs(data.triggers or {}) do
+    if tr and tr.trigger and tr.trigger.type == "aura2" then isAura2 = true; break end
+  end
   if plan and not isAura2 then
-    -- the trigger side only re-classifies aura2 triggers; a display whose only trigger changed type
-    -- would otherwise keep yesterday's plan
+    -- the trigger side only re-classifies aura2 triggers; a display whose Aura triggers all changed
+    -- type would otherwise keep yesterday's plan
     plan = false; decided[data.uid] = false; nameWatch[data.uid] = nil
   end
   if plan == nil then plan = Engine.Classify(data) or false end   -- no Add seen yet (should not happen)
@@ -974,6 +1447,7 @@ if not icon then return end
 icon.default.foreverEngine = true            -- per-display opt-out (false); Private.validate fills it in
 icon.default.foreverEngineRange = false      -- 'only while the spell is in range of the unit'
 icon.default.foreverEngineRangeSpell = ""    -- override for the range-check spell (blank = trigger's spell)
+icon.default.foreverEngineGlowPart = "both"  -- missing + time left: where the static glow goes
 
 local aurabar = Private.regionTypes and Private.regionTypes.aurabar
 if aurabar and aurabar.modify and aurabar.default then
@@ -1002,6 +1476,7 @@ function Private.ApplyFrameLevel(region, frameLevel)
   att.host:SetFrameLevel(region:GetFrameLevel() + 1)       -- L+2 (region is L+1 via subbackground)
   att.container:SetFrameLevel(att.host:GetFrameLevel())
   if att.shadows.clip then att.shadows.clip:SetFrameLevel(att.host:GetFrameLevel()) end
+  SetRemainLevels(att)
   if region.subRegions then
     for index, sub in pairs(region.subRegions) do
       if sub.type ~= "subbackground" and sub.SetFrameLevel then sub:SetFrameLevel(base + index + 1) end

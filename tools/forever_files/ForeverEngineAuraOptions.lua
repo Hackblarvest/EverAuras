@@ -92,7 +92,7 @@ table.insert(OptionsPrivate.registerRegions, function()
     group.foreverEngine = {
       type = "toggle", order = 100.3, width = WA.doubleWidth,
       name = T("Let the game engine draw this aura"),
-      desc = T("Needs exactly one Aura trigger (spell names or Exact Spell IDs) on Player, Target, Focus or Pet, Buff or Debuff (not Both). Icons: Show On Found / Missing / Always. Progress Bars: Show On Found. Off = the classic scanner, which is blind while auras are secret (combat)."),
+      desc = T("Aura triggers (spell names or Exact Spell IDs) on Player, Target, Focus or Pet, Buff or Debuff (not Both). Icons: Show On Found / Missing / Always, Found with 'Remaining Time', or one Missing trigger plus Found + 'Remaining Time' triggers through 'Any Triggered'. Progress Bars: Show On Found. Other triggers may sit next to them. The status line above says what applies. Off = the classic scanner, which is blind while auras are secret (combat)."),
       get = function() return data.foreverEngine ~= false end,
       -- A full (non-simple) re-add so BuffTrigger.Add re-classifies the trigger; the plain
       -- framework setter would only re-run the region modify and leave the trigger side stale.
@@ -133,6 +133,23 @@ table.insert(OptionsPrivate.registerRegions, function()
         if WA.ClearAndUpdateOptions then WA.ClearAndUpdateOptions(data.id) end
       end,
       hidden = function() return gateHidden(true) end,
+    }
+    group.foreverEngineGlowPart = {
+      type = "select", order = 100.6, width = WA.doubleWidth,
+      name = T("Static glow"),
+      desc = T("This display shows its icon both while the aura is missing and while it runs out. Choose where the glow (the Glow element, switched on) is drawn. Engine-driven icons draw a static glow that follows the icon; the glow animation is not available."),
+      values = { both = T("Both"), remaining = T("Only while it runs out"), missing = T("Only while it is missing") },
+      sorting = { "both", "remaining", "missing" },
+      get = function() return data.foreverEngineGlowPart or "both" end,
+      set = function(_, v)
+        data.foreverEngineGlowPart = v
+        WA.Add(data)
+        if WA.ClearAndUpdateOptions then WA.ClearAndUpdateOptions(data.id) end
+      end,
+      hidden = function()
+        if data.foreverEngine == false then return true end
+        return not (Engine.HasGlowPartChoice and Engine.HasGlowPartChoice(data))
+      end,
     }
   end
 
