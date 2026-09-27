@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.6.0-alpha (2026-09-27)
+
+- **Time left, in combat:** *Remaining Time* on an Aura trigger (*Show On: Aura(s) Found*; `<`, `<=`, `>`, `>=`)
+  is engine-driven for icons. The icon, and its `%p` countdown, show only while the aura has that much time
+  left. The game evaluates a colour curve over the remaining time itself; the addon never reads it (tested in
+  combat with Serpent Sting under 5 s).
+- **Missing or about to run out:** one *Aura(s) Missing* trigger plus *Aura(s) Found* + *Remaining Time*
+  triggers, combined with *Any Triggered* or with a custom combination of the form *(other triggers) and (any
+  Aura trigger)*: the classic "refresh your DoT" icon. Imported packs built this way become engine-driven, e.g.
+  9 of the 10 DoT icons of a TBC Affliction tracker (the tenth mixes units between its triggers).
+- **Other triggers next to an Aura trigger** (*in combat*, *target attackable or hostile*, *talent known*, *item
+  count* …): the engine draws the aura part and WeakAuras evaluates the other triggers itself, which works in
+  combat for plain data. Health and power amounts stay secret on Forever.
+- **Glow on engine-driven icons:** WeakAuras' glow sits on the region, which stays visible while the engine
+  decides what is drawn, so it framed an empty spot. Engine-driven icons now draw a static glow (the Button
+  Glow texture with WeakAuras' colour, scale and offsets) that follows the icon: while the aura is present,
+  missing or running out. A display with both a missing and a time-left part chooses where it goes
+  (*Display tab → Static glow*). *Show On: Always* keeps WeakAuras' own animated glow.
+- Limits of time-left icons: no cooldown swipe, stack count, desaturation or border, and the glow does not
+  animate. The status line on the Trigger tab says what applies to each display, and names the reason when a
+  combination cannot be engine-driven.
+- `tools/classify_imports.py` now loads the engine itself, so its verdicts cannot drift from the addon: 68 of
+  116 displays in seven Classic packs are engine-driven (was 49), 4 stay blind.
+- GitHub issue forms for bug reports and feature requests.
+
 ## 0.5.0-alpha (2026-09-25)
 
 - **Engine-driven Progress Bars** (*Show On: Aura(s) Found*): Blizzard's aura button fills a real status bar with

@@ -31,6 +31,7 @@ Forever runs on the modern engine with its "secret values" system: the moment yo
 
 - **Buff and debuff auras** on you, your target, focus and pet, by spell name or spell ID, including **"show when missing"**: an icon for Serpent Sting or Corruption that disappears the moment the debuff lands.
 - **Timer bars** for DoTs and buffs, filled by the game itself.
+- **Time left:** an icon that shows only while a DoT or buff has less than X seconds left, or the classic "missing or about to run out" icon for refreshing DoTs, with its countdown and a glow.
 - **Range check**: only show an aura while your spell can reach the target (for example Serpent Sting's 8–35 yards).
 - **Cooldowns** with swipe and timer text, and **spell usable** triggers, including reactive abilities such as Overpower or Mongoose Bite.
 - **Resource bars** (mana, rage, energy) with **hide when full** and **colour below a threshold**.
