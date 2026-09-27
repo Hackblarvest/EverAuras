@@ -1303,3 +1303,85 @@ SlashCmdList["FOREVERDEVREMAIN"] = function(msg)
 	ForeverDevInfoDB.remainProbe = {}
 	buildRemainProbe(threshold, ids)
 end
+
+-- /fdench: what does the Weapon Enchant trigger see? Put a temporary enchant on your main hand
+-- (Rough Sharpening Stone / Weightstone, poison, shaman imbue), run it out of combat and in combat.
+-- Logs the raw GetWeaponEnchantInfo() values (secret or not), the tooltip line WeakAuras takes the
+-- enchant name from, Blizzard's C_PaperDollInfo / C_Item replacements, and EverAuras' own reading.
+-- /reload afterwards, then the log is on disk.
+local function elog(fmt, ...)
+	local line = select("#", ...) > 0 and fmt:format(...) or fmt
+	ForeverDevInfoDB = ForeverDevInfoDB or {}
+	ForeverDevInfoDB.enchProbe = ForeverDevInfoDB.enchProbe or {}
+	local l = ForeverDevInfoDB.enchProbe
+	l[#l + 1] = date("%H:%M:%S") .. " " .. line
+	while #l > 200 do table.remove(l, 1) end
+	print("|cff33ff99FDI ench|r " .. line)
+end
+
+local function packShow(...)
+	local out = {}
+	for i = 1, select("#", ...) do out[#out + 1] = show((select(i, ...))) end
+	return table.concat(out, ", ")
+end
+
+SLASH_FOREVERDEVENCH1 = "/fdench"
+SlashCmdList["FOREVERDEVENCH"] = function()
+	local _, build = GetBuildInfo()
+	elog("[run] build %s combat=%s", tostring(build), tostring(InCombatLockdown()))
+	if type(GetWeaponEnchantInfo) == "function" then
+		local ok, r = pcall(function() return { n = 0, GetWeaponEnchantInfo() } end)
+		if ok then
+			local t = r
+			local vals = {}
+			for i = 1, 12 do vals[#vals + 1] = show(t[i]) end
+			elog("GetWeaponEnchantInfo() = %s", table.concat(vals, ", "))
+		else
+			elog("GetWeaponEnchantInfo() ERROR %s", show(r))
+		end
+	else
+		elog("GetWeaponEnchantInfo = %s", type(GetWeaponEnchantInfo))
+	end
+	local mh = GetInventorySlotInfo("MainHandSlot")
+	if C_PaperDollInfo and C_PaperDollInfo.GetTemporaryEnchantmentInfo then
+		local ok, info = pcall(C_PaperDollInfo.GetTemporaryEnchantmentInfo, mh)
+		if ok and type(info) == "table" then
+			elog("C_PaperDollInfo.GetTemporaryEnchantmentInfo(%d) = enchantID %s, remainingTimeMs %s, charges %s, hasExpirationTime %s",
+				mh, show(info.enchantID), show(info.remainingTimeMs), show(info.chargesRemaining), show(info.hasExpirationTime))
+		else
+			elog("C_PaperDollInfo.GetTemporaryEnchantmentInfo(%d) -> %s", mh, ok and show(info) or ("ERROR " .. show(info)))
+		end
+	end
+	if C_Item and C_Item.GetWeaponEnchantInfo then
+		local ok, list = pcall(C_Item.GetWeaponEnchantInfo, 0)
+		if ok and type(list) == "table" then
+			for i, e in ipairs(list) do
+				elog("C_Item.GetWeaponEnchantInfo(MainHand)[%d] = hasEnchant %s, type %s, timeLeft %s, charges %s, enchantID %s",
+					i, show(e.hasEnchant), show(e.enchantType), show(e.timeLeft), show(e.charges), show(e.enchantID))
+			end
+			if #list == 0 then elog("C_Item.GetWeaponEnchantInfo(MainHand) = empty list") end
+		else
+			elog("C_Item.GetWeaponEnchantInfo(MainHand) -> %s", ok and show(list) or ("ERROR " .. show(list)))
+		end
+	end
+	if C_TooltipInfo and C_TooltipInfo.GetInventoryItem then
+		local ok, data = pcall(C_TooltipInfo.GetInventoryItem, "player", mh)
+		if ok and type(data) == "table" and type(data.lines) == "table" then
+			for i, line in ipairs(data.lines) do
+				local okT, txt = pcall(function() return line.leftText end)
+				-- the line WeakAuras parses looks like "Rockbiter 3 (5 min)"
+				local match = okT and not issecretvalue(txt) and type(txt) == "string" and txt:find("%(%d+%D.+%)$")
+				if match or (okT and issecretvalue(txt)) then elog("tooltip line %d: %s", i, show(txt)) end
+			end
+			elog("tooltip: %d lines", #data.lines)
+		else
+			elog("C_TooltipInfo.GetInventoryItem -> %s", ok and show(data) or ("ERROR " .. show(data)))
+		end
+	end
+	local EA = _G.EverAuras
+	if EA and EA.GetMHTenchInfo then
+		elog("EverAuras.GetMHTenchInfo() = %s", packShow(EA.GetMHTenchInfo()))
+	else
+		elog("EverAuras.GetMHTenchInfo not loaded (it loads with the first Weapon Enchant trigger)")
+	end
+end
