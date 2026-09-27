@@ -25,7 +25,7 @@
 set -euo pipefail
 
 REPO="m33shoq/M33kAuras"
-VERSION="0.6.1-alpha"
+VERSION="0.7.0-alpha"
 TOOLS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$TOOLS/.." && pwd)"
 W="$ROOT/m33k-build"

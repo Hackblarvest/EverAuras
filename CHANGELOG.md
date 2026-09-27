@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.7.0-alpha (2026-09-27)
+
+- **Animated glow on engine-driven icons:** WeakAuras' Button Glow, Pixel Glow, Autocast Shine and Proc Glow, with
+  your colour, lines, frequency, length, thickness, scale and offsets, now animate on engine-driven icons, in
+  combat too, and show only while the icon does: while the aura is present (*Aura(s) Found*) or missing
+  (*Aura(s) Missing*). The glow runs inside a frame whose width the game sets from the aura, so it is clipped away
+  exactly when the icon is. Blizzard refuses to move frames into such a frame, so EverAuras draws the four glow
+  types itself (`ForeverGlow.lua`) with everything created in place; looks and motion follow LibCustomGlow.
+- Time-left icons keep the static glow; on displays with both a missing and a time-left part, *Display tab →
+  Glow* still chooses where it goes. *Show On: Always* keeps WeakAuras' own glow as before. The Proc Glow's
+  one-off start burst is left out.
+- **Safer engine:** an error inside the engine can no longer stop EverAuras from loading. It is reported to
+  BugSack once and the displays load as usual.
+
 ## 0.6.1-alpha (2026-09-27)
 
 - **Weapon Enchant trigger sees Shaman imbues:** on Forever, Rockbiter, Windfury and the other imbues are
