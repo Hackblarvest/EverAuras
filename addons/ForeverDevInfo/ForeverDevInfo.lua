@@ -1385,3 +1385,129 @@ SlashCmdList["FOREVERDEVENCH"] = function()
 		elog("EverAuras.GetMHTenchInfo not loaded (it loads with the first Weapon Enchant trigger)")
 	end
 end
+
+--[[ ------------------------------------------------------------------------
+     /fdbar [seconds] [spellIDs...]  - can a duration BAR switch between full and empty at X seconds left?
+
+     For an animated glow on "time left" icons: if the game fills a StatusBar by the aura's remaining
+     time and we pin its range to (X - 0.1, X), the fill is full above X and empty below, and a clip
+     frame anchored to the fill's edge shows its content only while less than X seconds are left.
+     Builds one engine slot for YOUR debuff on the target (default: Serpent Sting, Corruption,
+     Immolate, Curse of Agony, every rank; threshold 10 s). Put the debuff on a mob and watch:
+       green  the bar itself (should be full above X, empty below if the range pin holds)
+       red    clip parented to OUR host, from the fill edge to the bar's end: visible below X?
+       blue   the same clip parented to the aura button instead
+       text   the plain countdown, for screenshots
+     Every call is pcall-logged to ForeverDevInfoDB.barProbe. /fdbar hide removes it.
+]]
+
+local bp = {}
+local BAR_DEFAULT_IDS = {
+	1978, 13549, 13550, 13551, 13552, 13553, 13554, 13555, 25295, 27016,  -- Serpent Sting
+	172, 6222, 6223, 7648, 11671, 11672, 25311, 27216,                   -- Corruption
+	348, 707, 1094, 2941, 11665, 11667, 11668, 25309, 27215,             -- Immolate
+	980, 1014, 6217, 11711, 11712, 11713, 27218,                         -- Curse of Agony
+}
+
+local function bplog(fmt, ...)
+	local line = select("#", ...) > 0 and fmt:format(...) or fmt
+	ForeverDevInfoDB = ForeverDevInfoDB or {}
+	ForeverDevInfoDB.barProbe = ForeverDevInfoDB.barProbe or {}
+	local l = ForeverDevInfoDB.barProbe
+	l[#l + 1] = date("%H:%M:%S") .. " " .. line
+	while #l > 200 do table.remove(l, 1) end
+	print("|cff33ff99FDI bar|r " .. line)
+end
+
+local function bptry(label, fn, ...)
+	if type(fn) ~= "function" then bplog("%s -> missing", label); return false end
+	local ok, res = pcall(fn, ...)
+	bplog("%s -> %s", label, ok and "ok" or ("ERROR: " .. show(res)))
+	return ok, res
+end
+
+local function colourClip(parent, anchorFill, bar, host, r, g, b, label)
+	local clip = CreateFrame("Frame", nil, parent)
+	clip:SetClipsChildren(true)
+	local okA = bptry(label .. " anchor TOPLEFT to the fill's TOPRIGHT", clip.SetPoint, clip, "TOPLEFT", anchorFill, "TOPRIGHT")
+	bptry(label .. " anchor BOTTOMRIGHT to the bar", clip.SetPoint, clip, "BOTTOMRIGHT", bar, "BOTTOMRIGHT")
+	local t = clip:CreateTexture(nil, "OVERLAY")
+	t:SetAllPoints(host)
+	t:SetColorTexture(r, g, b, 0.75)
+	return clip, okA
+end
+
+local function buildBarProbe(threshold, ids)
+	if bp.host then bplog("already built - /fdbar hide first"); return end
+	if InCombatLockdown() then bplog("build it out of combat"); return end
+	if C_AddOns and not C_AddOns.IsAddOnLoaded("Blizzard_AuraContainer") then
+		bptry("LoadAddOn(Blizzard_AuraContainer)", C_AddOns.LoadAddOn, "Blizzard_AuraContainer")
+	end
+	local set = {}
+	for _, id in ipairs(ids) do set[id] = true end
+	local host = CreateFrame("Frame", "FDIBarHost", UIParent)
+	host:SetSize(120, 40)
+	host:SetPoint("CENTER", UIParent, "CENTER", 0, 200)
+	bp.host = host
+	local cap = host:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	cap:SetPoint("BOTTOM", host, "TOP", 0, 2)
+	cap:SetText(("bar probe: X = %g s  (green bar, red/blue clips)"):format(threshold))
+
+	local ok, c = pcall(CreateFrame, "AuraContainer", nil, host, "CustomAuraContainerTemplate")
+	if not ok or not c then bplog("container -> ERROR %s", show(c)); return end
+	c:SetAllPoints(host)
+	bptry("SetUnit(target)", c.SetUnit, c, "target")
+	bp.container = c
+
+	local parts = {}
+	local okS, button = pcall(c.AddAuraSlot, c, "bar", "HARMFUL|PLAYER", {
+		candidateFilters = { includeSpellIDs = set },
+		initializeFrame = function(b)
+			b:ClearAllPoints()
+			b:SetAllPoints(host)
+			local sb = CreateFrame("StatusBar", nil, b)
+			sb:SetAllPoints(host)
+			sb:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
+			sb:GetStatusBarTexture():SetVertexColor(0.1, 1, 0.1, 0.5)
+			parts.sb = sb
+			local fs = b:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+			fs:SetPoint("CENTER", host, "CENTER")
+			parts.fs = fs
+			local dirs = Enum and Enum.StatusBarTimerDirection
+			bptry("SetDurationBar(RemainingTime)", b.SetDurationBar, b, sb, { direction = dirs and dirs.RemainingTime })
+			bptry("SetDurationText (plain)", b.SetDurationText, b, fs, nil)
+		end,
+	})
+	bplog("AddAuraSlot -> %s", okS and "ok" or ("ERROR: " .. show(button)))
+	if not okS or not parts.sb then return end
+	bp.button, bp.sb = button, parts.sb
+
+	-- pin the range around X: full above, empty below (if the timer does not reset it)
+	bptry(("SetMinMaxValues(%g, %g)"):format(threshold - 0.1, threshold), parts.sb.SetMinMaxValues, parts.sb, threshold - 0.1, threshold)
+	local okMM, lo, hi = pcall(parts.sb.GetMinMaxValues, parts.sb)
+	bplog("GetMinMaxValues -> %s, %s", okMM and show(lo) or "ERROR", okMM and show(hi) or show(lo))
+
+	local fill = parts.sb:GetStatusBarTexture()
+	colourClip(host, fill, parts.sb, host, 1, 0.15, 0.15, "red (host)")
+	colourClip(button, fill, parts.sb, host, 0.2, 0.4, 1, "blue (button)")
+	bplog("built. Put your DoT on a mob; screenshot once above %g s and once below.", threshold)
+end
+
+SLASH_FOREVERDEVBAR1 = "/fdbar"
+SlashCmdList["FOREVERDEVBAR"] = function(msg)
+	msg = strtrim(msg or ""):lower()
+	if msg == "hide" then
+		if bp.host then bp.host:Hide(); bp.host = nil; bp.container = nil end
+		bplog("removed (a /reload clears it completely)")
+		return
+	end
+	local threshold, ids = 10, {}
+	for word in msg:gmatch("%d+%.?%d*") do
+		local n = tonumber(word)
+		if n and n < 100 then threshold = n elseif n then ids[#ids + 1] = n end
+	end
+	if #ids == 0 then ids = BAR_DEFAULT_IDS end
+	ForeverDevInfoDB = ForeverDevInfoDB or {}
+	ForeverDevInfoDB.barProbe = {}
+	buildBarProbe(threshold, ids)
+end
