@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.1-alpha (2026-09-27)
+
+- **Weapon Enchant trigger sees Shaman imbues:** on Forever, Rockbiter, Windfury and the other imbues are
+  their own enchant type (*Imbue*), which the old function WeakAuras asked never reported, so a "Rockbiter
+  missing" icon stayed on even with Rockbiter up. The trigger now reads the newer API, which reports imbues as
+  well as stones, oils and poisons, in and out of combat. Found and diagnosed together with a player on our
+  Discord.
+- Tip: the Weapon Enchant name is the one on the weapon's tooltip (*Rockbiter 3 (60 min)* → `Rockbiter`,
+  *Sharpened +2 (30 min)* → `Sharpened`), not the spell or item name. Leave it empty for "any enchant".
+
 ## 0.6.0-alpha (2026-09-27)
 
 - **Time left, in combat:** *Remaining Time* on an Aura trigger (*Show On: Aura(s) Found*; `<`, `<=`, `>`, `>=`)
