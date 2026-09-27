@@ -27,6 +27,10 @@
 -- Other triggers ("gates") may sit next to the Aura trigger(s): delegated Aura triggers report a
 -- constant true to WeakAuras, which keeps evaluating the gates itself (plain data in combat).
 --
+-- Glow: an animated glow (ForeverGlow.lua, the WA glow's own settings) on a frame of ours inside the clip
+-- that follows the aura part (Missing clip; a mirrored Found clip from a second container). Time-left
+-- parts draw a static glow as curve-driven text.
+--
 -- Triggers may use spell NAMES: they resolve to every known rank's id (classic ranks are separate
 -- spells) and follow the spellbook as you level. Exact ids stay exact.
 --
@@ -519,12 +523,12 @@ function Engine.Explain(data, plan, reasons)
       for _, rp in ipairs(plan.parts.remaining) do
         when[#when + 1] = T("while it has %s left"):format(T(REM_TEXT[rp.op]):format(tostring(rp.x)))
       end
-      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s). It shows your icon %s, and nothing otherwise. The game checks the time left itself, so it never has to be read. Kept: position, size, groups, the %%p text, static colour/zoom, and the glow as a static glow that follows the icon. Not available: the border (hidden while engine-driven), glow animation, cooldown swipe, stack count and desaturation on the time-left icon, conditions and texts that read aura state, show/hide animations and actions on aura gain/loss.")
+      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s). It shows your icon %s, and nothing otherwise. The game checks the time left itself, so it never has to be read. Kept: position, size, groups, the %%p text, static colour/zoom, and the glow: WeakAuras' own animated glow while the aura is missing, a static glow while it runs out. Not available: the border (hidden while engine-driven), the glow animation while it runs out, cooldown swipe, stack count and desaturation on the time-left icon, conditions and texts that read aura state, show/hide animations and actions on aura gain/loss.")
         :format(plan.unit, table.concat(when, T(" or ")))
     else
       local kept = T("border and glow")
       if data.regionType == "icon" and plan.mode ~= "always" then
-        kept = T("the border (also while nothing is drawn), and the glow as a static glow that follows the aura")
+        kept = T("the border (also while nothing is drawn), and the glow: shown only while the icon is, and animated like WeakAuras' own")
       end
       txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It %s. Kept: position, size, groups, %%n/%%i texts, static colour/desaturate/zoom, %s. Not available: conditions and texts that read aura state (stacks, remaining, active), show/hide animations and actions on aura gain/loss.")
         :format(plan.unit, plan.filterString, T(MODE_TEXT[plan.mode]), kept)
@@ -754,6 +758,71 @@ local function EnsureGroup(att, region, part, m)
   return true
 end
 
+-- Found: the Missing trick mirrored. A second container holds a group of at most one invisible button
+-- on the same aura; its secret width (1 or W+1+2m) drives a clip that is full while the aura is present
+-- and zero width while it is absent. The animated glow lives in it. Built only for Found icons with a
+-- glow. Returns false when it cannot be built; the display then keeps the static glow.
+local function EnsurePresentClip(att, region, plan, m)
+  local host = att.host
+  local w, h = RegionSize(region)
+  if not att.pBuilt then
+    local c2 = CreateFrame("AuraContainer", nil, host, "CustomAuraContainerTemplate")
+    c2:SetPoint("TOPLEFT", host, "TOPLEFT")
+    c2:SetFrameLevel(host:GetFrameLevel())
+    local ok, err = pcall(c2.AddAuraGroup, c2, KEY, plan.filterString, {
+      candidateFilters = plan.candidate,
+      maxFrameCount = 1,
+      layout = GroupLayout(w, h, m),
+      initializeFrame = function(button)
+        button:SetSize(w + 1 + 2 * m, h)
+        pcall(button.SetMouseClickEnabled, button, false)
+        pcall(button.EnableMouseMotion, button, false)
+      end,
+    })
+    if not ok then
+      if not att.pWarned then
+        att.pWarned = true
+        WA.prettyPrint(("%s: engine glow clip failed: %s"):format(tostring(region.id), tostring(err)))
+      end
+      c2:Hide()
+      return false
+    end
+    local clip = CreateFrame("Frame", nil, host, "DisableUntrustedLayoutScriptsTemplate")
+    clip:SetClipsChildren(true)
+    att.container2, att.pclip, att.pBuilt = c2, clip, true
+    att.pFilter, att.pKey, att.pW, att.pH, att.pM = plan.filterString, plan.key, w, h, m
+    att.pAnchoredM = nil
+  else
+    local c2 = att.container2
+    if att.pFilter ~= plan.filterString then c2:SetAuraGroupFilterString(KEY, plan.filterString); att.pFilter = plan.filterString end
+    if att.pKey ~= plan.key then c2:SetAuraGroupCandidateFilters(KEY, plan.candidate); att.pKey = plan.key end
+    if w ~= att.pW or h ~= att.pH or m ~= att.pM then
+      c2:SetAuraGroupLayout(KEY, GroupLayout(w, h, m)); att.pW, att.pH, att.pM = w, h, m
+    end
+    c2:SetAuraGroupEnabled(KEY, true)
+  end
+  if att.pAnchoredM ~= m then
+    -- right edge from the secret-width container, left and bottom from the plain host
+    local clip = att.pclip
+    clip:ClearAllPoints()
+    clip:SetPoint("TOPRIGHT", att.container2, "TOPRIGHT", -1 - m, m)
+    clip:SetPoint("BOTTOMLEFT", host, "BOTTOMLEFT", -m, -m)
+    att.pAnchoredM = m
+  end
+  if att.pUnit ~= plan.unit then att.container2:SetUnit(plan.unit); att.pUnit = plan.unit end
+  att.container2:Show()
+  att.pclip:SetFrameLevel(host:GetFrameLevel() + 2)
+  att.pclip:Show()
+  return true
+end
+
+local function DisablePresentClip(att)
+  if not att.pBuilt then return end
+  pcall(att.container2.SetAuraGroupEnabled, att.container2, KEY, false)
+  att.pclip:Hide()
+  att.pclipShown = false
+end
+
 -- WA's SubText resolves selfPoint "AUTO" from the anchor: inside the icon the text hugs that corner,
 -- outside it hangs off the opposite side.
 local MIRROR = { LEFT = "RIGHT", RIGHT = "LEFT", TOP = "BOTTOM", BOTTOM = "TOP",
@@ -875,6 +944,67 @@ local function HideStaticDecor(att, region, data, withBorder)
   end
 end
 
+-- Animated glow. Where a clip follows the aura part (the Missing clip, or the Found clip of a second
+-- container), a frame of ours inside the clip carries the WA glow, drawn by ForeverGlow.lua with the WA
+-- glow's own settings, so every glow type animates and shows only with that part. Nothing may be
+-- re-parented into these clips (they inherit Blizzard's ban on layout scripts from the aura container):
+-- WA's glow frame and LibCustomGlow's pooled frames are refused (tried 2026-09-27), so ForeverGlow
+-- creates everything in place. The static glow above stays as the fallback, and a failure is reported.
+local function FG() return Private.ForeverGlow end   -- ForeverGlow.lua loads after this file
+
+-- The display's first glow that is switched on (its WA settings), or nil.
+local function GlowSub(data)
+  for _, sub in ipairs(data.subRegions or {}) do
+    if sub.type == "subglow" and sub.glow then return sub end
+  end
+end
+
+-- How far a WA glow reaches past the icon: the clip must be that much larger to show it whole.
+local function AnimatedGlowMargin(w, h, sub)
+  if not sub then return 0 end
+  local off = math.max(math.abs(tonumber(sub.glowXOffset) or 0), math.abs(tonumber(sub.glowYOffset) or 0))
+  return math.ceil(math.max(w, h) * 0.5 * (tonumber(sub.glowScale) or 1)) + off + (tonumber(sub.glowThickness) or 1) + 4
+end
+
+local function GlowHolder(att, key, clip)
+  local holder = att[key]
+  if not holder then
+    holder = CreateFrame("Frame", nil, clip)   -- created in the clip: never re-parented
+    holder:SetAllPoints(att.host)              -- a plain rect, so its size is readable
+    holder:Hide()
+    att[key] = holder
+  end
+  holder:SetFrameLevel(clip:GetFrameLevel() + 2)
+  return holder
+end
+
+local function StopAnimatedGlow(holder)
+  if holder and FG() then pcall(FG().Stop, holder) end
+end
+
+local glowReported = false
+-- Starts sub's glow on holder; false when it cannot (the caller then draws the static glow).
+local function StartAnimatedGlow(holder, sub)
+  if not (sub and FG()) then return false end
+  local ok, started = pcall(FG().Start, holder, sub)
+  if not ok then
+    pcall(FG().Stop, holder)
+    if not glowReported then
+      glowReported = true
+      local handler = geterrorhandler and geterrorhandler()
+      if handler then handler("engine (animated glow): " .. tostring(started)) end
+    end
+    return false
+  end
+  return started and true or false
+end
+
+-- Margin of the Missing clip: room for the static glow texture or the animated glow, whichever is used.
+local function ClipMargin(w, h, data, staticGlow)
+  if not staticGlow then return 0 end
+  return math.max(GlowMargin(w, h, staticGlow), AnimatedGlowMargin(w, h, GlowSub(data)))
+end
+
 -- Progress Bars: the engine drives its own StatusBar inside the slot button (SetDurationBar ->
 -- StatusBar:SetTimerDuration with the aura's duration). WA's own bar, background and icon are hidden
 -- while the display is engine-driven, and restored when it stops being so.
@@ -940,9 +1070,12 @@ local function ApplySlotLook(att, region, data, plan)
   pcall(cd.SetReverse, cd, not data.inverse)                   -- Icon.lua: WA reverses unless 'inverse'
   pcall(cd.SetHideCountdownNumbers, cd, (not data.cooldown) or data.cooldownTextDisabled or false)
   local found = plan.mode == "active"                  -- Always: the WA icon is always there, so is WA's glow
+  local glowSub = found and GlowSub(data) or nil
+  local animated = glowSub and att.pclipShown and StartAnimatedGlow(GlowHolder(att, "pglow", att.pclip), glowSub)
+  if not animated then StopAnimatedGlow(att.pglow) end
   if s.glow then
     local w, h = RegionSize(region)
-    StyleGlowTexture(s.glow, att.button, w, h, found and GlowSpec(data) or nil)
+    StyleGlowTexture(s.glow, att.button, w, h, (found and not animated) and GlowSpec(data) or nil)
   end
   MirrorTexts(att, region, data, true)
   if found then HideStaticDecor(att, region, data, false) end
@@ -975,9 +1108,12 @@ local function ApplyUnderlayLook(att, region, data, plan, noGlow)
   pcall(u.SetDesaturation, u, data.desaturate and 1 or 0)
   local col = data.color or { 1, 1, 1, 1 }
   u:SetVertexColor(col[1] or 1, col[2] or 1, col[3] or 1, col[4] or 1)
+  local glowSub = not noGlow and GlowSub(data) or nil
+  local animated = glowSub and att.shadows.clip and StartAnimatedGlow(GlowHolder(att, "mglowHolder", att.shadows.clip), glowSub)
+  if not animated then StopAnimatedGlow(att.mglowHolder) end
   if att.shadows.mglow then
     local w, h = RegionSize(region)
-    StyleGlowTexture(att.shadows.mglow, att.host, w, h, not noGlow and GlowSpec(data) or nil)
+    StyleGlowTexture(att.shadows.mglow, att.host, w, h, (not noGlow and not animated) and GlowSpec(data) or nil)
   end
   MirrorTexts(att, region, data, false)
   HideStaticDecor(att, region, data, false)
@@ -1005,6 +1141,7 @@ end
 local function DisableKind(att, kind)
   local c = att.container
   if kind == "slot" and att.slotBuilt then pcall(c.SetAuraSlotEnabled, c, KEY, false) end
+  if kind == "slot" then DisablePresentClip(att) end
   if (kind == "group" or kind == "composite") and att.groupBuilt then
     pcall(c.SetAuraGroupEnabled, c, KEY, false)
     if att.shadows.clip then att.shadows.clip:Hide() end
@@ -1108,7 +1245,7 @@ local function EnsureComposite(att, region, data, plan)
   local glow = remainGlow
   if plan.parts.missing then
     local w, h = RegionSize(region)
-    if not EnsureGroup(att, region, plan.parts.missing, GlowMargin(w, h, missingGlow)) then return false end
+    if not EnsureGroup(att, region, plan.parts.missing, ClipMargin(w, h, data, missingGlow)) then return false end
   else
     DisableKind(att, "group")
   end
@@ -1236,6 +1373,7 @@ end
 local function TurnOff(att, region, data, mode)
   if att.host then att.host:Hide() end
   DisableKind(att, "slot"); DisableKind(att, "group"); DisableKind(att, "composite")
+  StopAnimatedGlow(att.pglow); StopAnimatedGlow(att.mglowHolder)
   RemoveGate(att)
   if att.isBar then SetBarVisuals(region, true) elseif region.icon then region.icon:Show() end
   SetMirroredShown(att, true)
@@ -1243,7 +1381,7 @@ local function TurnOff(att, region, data, mode)
   att.mode, att.active, att.sig, att.kind = mode, false, nil, nil
 end
 
-local function Apply(region)
+local function ApplyUnguarded(region)
   local att = attachments[region]
   if not att then return end
   local data = WA.GetData(region.id)
@@ -1271,9 +1409,16 @@ local function Apply(region)
       if att.slotKey ~= plan.key then c:SetAuraSlotCandidateFilters(KEY, plan.candidate); att.slotKey = plan.key end
       c:SetAuraSlotEnabled(KEY, true)
     end
+    local glowSub = plan.mode == "active" and not att.isBar and GlowSub(data)
+    if glowSub then
+      local w, h = RegionSize(region)
+      att.pclipShown = EnsurePresentClip(att, region, plan, AnimatedGlowMargin(w, h, glowSub))
+    else
+      DisablePresentClip(att)
+    end
   elseif kind == "group" then
     local w, h = RegionSize(region)
-    if not EnsureGroup(att, region, plan, GlowMargin(w, h, GlowSpec(data))) then TurnOff(att, region, data, "off"); return end
+    if not EnsureGroup(att, region, plan, ClipMargin(w, h, data, GlowSpec(data))) then TurnOff(att, region, data, "off"); return end
   else
     if not EnsureComposite(att, region, data, plan) then TurnOff(att, region, data, "off"); return end
   end
@@ -1317,7 +1462,23 @@ local function Apply(region)
   end
   Engine.OnLayout(region)
   pcall(c.UpdateAllAuras, c)
+  if att.pclipShown then pcall(att.container2.UpdateAllAuras, att.container2) end
 end
+
+-- The engine rides on WeakAuras' own modify / layout calls. A bug here must never stop WeakAuras from
+-- loading or updating displays: every entry point is guarded, and each kind of error is reported once.
+local reported = {}
+local function Guard(label, fn, ...)
+  local ok, err = pcall(fn, ...)
+  if not ok and not reported[label] then
+    reported[label] = true
+    local handler = geterrorhandler and geterrorhandler()
+    if handler then handler(("engine (%s): %s"):format(label, tostring(err))) end
+  end
+  return ok
+end
+
+local function Apply(region) Guard("apply", ApplyUnguarded, region) end
 
 local function Schedule(region)
   if Engine.IsSafe() then pending[region] = nil; Apply(region) else pending[region] = true end
@@ -1363,7 +1524,9 @@ local function ComputeSig(region, data, plan)
     elseif sub.type == "subglow" then
       parts[#parts + 1] = table.concat({ "glow", tostring(sub.glow), tostring(sub.useGlowColor),
         sub.glowColor and table.concat(sub.glowColor, ",") or "", tostring(sub.glowScale),
-        tostring(sub.glowXOffset), tostring(sub.glowYOffset) }, "/")
+        tostring(sub.glowXOffset), tostring(sub.glowYOffset), tostring(sub.glowType), tostring(sub.glowLines),
+        tostring(sub.glowFrequency), tostring(sub.glowLength), tostring(sub.glowThickness), tostring(sub.glowBorder),
+        tostring(sub.glowStartAnim), tostring(sub.glowDuration) }, "/")
     elseif sub.type == "subborder" then
       parts[#parts + 1] = "border/" .. tostring(sub.border_visible)
     end
@@ -1457,25 +1620,33 @@ if aurabar and aurabar.modify and aurabar.default then
   local origBarModify = aurabar.modify
   aurabar.modify = function(parent, region, data)
     origBarModify(parent, region, data)
-    Engine.Sync(region, data)
+    Guard("sync", Engine.Sync, region, data)
   end
 end
 
 local origModify = icon.modify
 icon.modify = function(parent, region, data)
   origModify(parent, region, data)
-  Engine.Sync(region, data)
+  Guard("sync", Engine.Sync, region, data)
 end
 
 local origApplyFrameLevel = Private.ApplyFrameLevel
+local ApplyEngineFrameLevels
 function Private.ApplyFrameLevel(region, frameLevel)
   origApplyFrameLevel(region, frameLevel)
+  Guard("layout", ApplyEngineFrameLevels, region, frameLevel)
+end
+ApplyEngineFrameLevels = function(region, frameLevel)
   local att = attachments[region]
   if not (att and att.active and att.host) then return end
   local base = frameLevel or (Private.frameLevels and Private.frameLevels[region.id]) or 5
   att.host:SetFrameLevel(region:GetFrameLevel() + 1)       -- L+2 (region is L+1 via subbackground)
   att.container:SetFrameLevel(att.host:GetFrameLevel())
   if att.shadows.clip then att.shadows.clip:SetFrameLevel(att.host:GetFrameLevel()) end
+  if att.container2 then att.container2:SetFrameLevel(att.host:GetFrameLevel()) end
+  if att.pclip then att.pclip:SetFrameLevel(att.host:GetFrameLevel() + 2) end
+  if att.pglow and att.pclip then att.pglow:SetFrameLevel(att.pclip:GetFrameLevel() + 2) end
+  if att.mglowHolder and att.shadows.clip then att.mglowHolder:SetFrameLevel(att.shadows.clip:GetFrameLevel() + 2) end
   SetRemainLevels(att)
   if region.subRegions then
     for index, sub in pairs(region.subRegions) do
@@ -1591,6 +1762,7 @@ ev:SetScript("OnEvent", function(_, event, arg1)
     -- UNIT_AURA/UNIT_FACTION/UNIT_FLAGS/PLAYER_REGEN_*; unit swaps are our job.
     if att.active and (event == "PLAYER_ENTERING_WORLD" or att.unit == unit) then
       pcall(att.container.UpdateAllAuras, att.container)
+      if att.pclipShown then pcall(att.container2.UpdateAllAuras, att.container2) end
     end
   end
 end)

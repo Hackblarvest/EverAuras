@@ -136,8 +136,8 @@ table.insert(OptionsPrivate.registerRegions, function()
     }
     group.foreverEngineGlowPart = {
       type = "select", order = 100.6, width = WA.doubleWidth,
-      name = T("Static glow"),
-      desc = T("This display shows its icon both while the aura is missing and while it runs out. Choose where the glow (the Glow element, switched on) is drawn. Engine-driven icons draw a static glow that follows the icon; the glow animation is not available."),
+      name = T("Glow"),
+      desc = T("This display shows its icon both while the aura is missing and while it runs out. Choose where the glow is drawn: while the aura is missing it is WeakAuras' own glow type, animated; while it runs out it is a static glow that follows the icon."),
       values = { both = T("Both"), remaining = T("Only while it runs out"), missing = T("Only while it is missing") },
       sorting = { "both", "remaining", "missing" },
       get = function() return data.foreverEngineGlowPart or "both" end,
