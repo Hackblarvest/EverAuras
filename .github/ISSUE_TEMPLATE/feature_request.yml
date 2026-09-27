@@ -1,0 +1,23 @@
+name: Feature request
+description: An aura or option you would like EverAuras to support
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: want
+    attributes:
+      label: What I want to track
+      description: What should the aura show, and when? Mention whether it matters in combat.
+      placeholder: e.g. show Serpent Sting when it is missing or has less than 4 seconds left on my target
+    validations:
+      required: true
+  - type: textarea
+    id: now
+    attributes:
+      label: What happens today
+      description: Optional. How close you got, and what stops it (a message in the Trigger tab, a BugSack error, nothing shows in combat ...).
+  - type: textarea
+    id: export
+    attributes:
+      label: WeakAuras or EverAuras export
+      description: Optional. An export string or a Wago link to the aura you would like to use.
+      render: text

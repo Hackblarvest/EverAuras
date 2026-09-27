@@ -1053,3 +1053,253 @@ SlashCmdList["FOREVERDEVMANA"] = function(msg)
 	print("|cff33ff99FDI mana|r recording 45 s: stand still ~10 s, cast an Aspect, stand still ~15 s")
 	C_Timer.After(45, function() if mp.running then stopManaProbe("45 s") end end)
 end
+
+-- /fddur [aura name]: what can a secret-safe display learn about an aura's REMAINING time?
+-- For "show when missing OR about to expire" (12 of the 15 BLIND displays in the analysed packs):
+--   1. which methods a duration object (C_UnitAuras.GetAuraDuration) has, and whether one takes a
+--      curve like UnitPowerPercent does, so remaining time could drive SetAlpha without being read;
+--   2. whether Forever has a refresh ("pandemic") window at all: GetRefreshExtendedDuration longer
+--      than GetAuraBaseDuration means a refresh now carries the rest over, which is what the aura
+--      button's AddPandemicRegion shows.
+-- Put your DoT on the target, run it once out of combat and once in combat, then /reload.
+-- Without a name it takes your first debuff on the target (names are secret in combat).
+local function dlog(fmt, ...)
+	local line = select("#", ...) > 0 and fmt:format(...) or fmt
+	ForeverDevInfoDB = ForeverDevInfoDB or {}
+	ForeverDevInfoDB.durProbe = ForeverDevInfoDB.durProbe or {}
+	local l = ForeverDevInfoDB.durProbe
+	l[#l + 1] = line
+	while #l > 600 do table.remove(l, 1) end
+end
+
+local function sortedKeys(t, pattern)
+	local out = {}
+	if type(t) ~= "table" then return out end
+	for k in pairs(t) do
+		if type(k) == "string" and (not pattern or k:find(pattern)) then out[#out + 1] = k end
+	end
+	table.sort(out)
+	return out
+end
+
+local function findOwnDebuff(unit, name, filter)
+	local first
+	for i = 1, 40 do
+		local ok, a = pcall(C_UnitAuras.GetAuraDataByIndex, unit, i, filter or "HARMFUL|PLAYER")
+		if not ok or a == nil then break end
+		if issecretvalue(a) then return nil, "aura data table is secret" end
+		first = first or a
+		if not name then return a, "first own debuff" end
+		local okN, same = pcall(function() return a.name == name end)
+		if okN and same then return a, "matched by name" end
+	end
+	return first, first and "name not comparable or not found, took the first own debuff" or "no own debuff on " .. unit
+end
+
+SLASH_FOREVERDEVDUR1 = "/fddur"
+SlashCmdList["FOREVERDEVDUR"] = function(msg)
+	msg = strtrim(msg or "")
+	local unit = "target"
+	local _, build = GetBuildInfo()
+	dlog("[run] %s build %s combat=%s arg='%s'", date("%H:%M:%S"), tostring(build), tostring(InCombatLockdown()), msg)
+
+	dlog("C_UnitAuras: %s", table.concat(sortedKeys(C_UnitAuras, "Duration") , " "))
+	dlog("C_UnitAuras refresh/remaining: %s", table.concat(sortedKeys(C_UnitAuras, "Re[fm]"), " "))
+	dlog("C_DurationUtil: %s", _G.C_DurationUtil and table.concat(sortedKeys(C_DurationUtil), " ") or "<missing>")
+	dlog("C_CurveUtil: %s", _G.C_CurveUtil and table.concat(sortedKeys(C_CurveUtil), " ") or "<missing>")
+	for _, e in ipairs(sortedKeys(Enum, "Duration")) do
+		local fields = {}
+		for _, k in ipairs(sortedKeys(Enum[e])) do fields[#fields + 1] = k .. "=" .. show(Enum[e][k]) end
+		dlog("Enum.%s: %s", e, table.concat(fields, " "))
+	end
+
+	local a, how = findOwnDebuff(unit, msg ~= "" and msg or nil)
+	if not a then
+		-- in combat addons get no aura data at all; out of combat a timed buff of yours still
+		-- answers the method list (Hunter's Mark on a mob, Rapid Fire, food ...)
+		local b, howB = findOwnDebuff("player", nil, "HELPFUL|PLAYER")
+		local okD, timed = pcall(function() return b and b.duration and b.duration > 0 end)
+		if okD and timed then a, how, unit = b, "no own debuff on the target, took your timed buff", "player" end
+	end
+	dlog("aura: %s (%s)", a and ("name=%s spellId=%s id=%s"):format(show(a.name), show(a.spellId), show(a.auraInstanceID)) or "none", how)
+	if not a then
+		print("|cff33ff99FDI dur|r " .. how .. " - put your DoT on the target first")
+		return
+	end
+	local id = a.auraInstanceID
+
+	dlog("GetAuraBaseDuration = %s", ask(C_UnitAuras.GetAuraBaseDuration, unit, id))
+	dlog("GetRefreshExtendedDuration = %s", ask(C_UnitAuras.GetRefreshExtendedDuration, unit, id))
+	dlog("GetRefreshCarryOverDuration = %s", ask(C_UnitAuras.GetRefreshCarryOverDuration, unit, id))
+	dlog("aura.duration = %s  aura.expirationTime = %s  GetTime = %.2f", show(a.duration), show(a.expirationTime), GetTime())
+
+	local ok, dur = pcall(C_UnitAuras.GetAuraDuration, unit, id)
+	dlog("GetAuraDuration -> ok=%s type=%s secret=%s", tostring(ok), type(dur), tostring(issecretvalue(dur)))
+	if not ok or dur == nil then
+		print("|cff33ff99FDI dur|r GetAuraDuration gave nothing - /reload and send the log")
+		return
+	end
+	local okM, mt = pcall(getmetatable, dur)
+	local index = okM and type(mt) == "table" and mt.__index
+	local methods = sortedKeys(type(index) == "table" and index or nil)
+	dlog("duration object methods (%d): %s", #methods, table.concat(methods, " "))
+
+	local curve = C_CurveUtil and C_CurveUtil.CreateCurve and C_CurveUtil.CreateCurve()
+	if curve then
+		if curve.SetType and Enum.LuaCurveType then pcall(curve.SetType, curve, Enum.LuaCurveType.Linear) end
+		pcall(curve.AddPoint, curve, 0, 0)
+		pcall(curve.AddPoint, curve, 60, 1)
+	end
+	for _, m in ipairs(methods) do
+		local fn = dur[m]
+		if type(fn) == "function" then
+			if m:find("^Get") or m:find("^Is") or m:find("^Has") then
+				local okC, r = pcall(fn, dur)
+				dlog("  %s() -> %s%s", m, okC and show(r) or "ERROR " .. show(r), okC and ("  [" .. type(r) .. "]") or "")
+			elseif m:find("^Evaluate") and curve then
+				local okC, r = pcall(fn, dur, curve)
+				dlog("  %s(curve 0s->0, 60s->1) -> %s%s", m, okC and show(r) or "ERROR " .. show(r), okC and ("  [" .. type(r) .. "]") or "")
+			end
+		end
+	end
+	print(("|cff33ff99FDI dur|r logged %d duration methods (%s) - /reload, then the log is on disk"):format(#methods, how))
+end
+
+--[[ ------------------------------------------------------------------------
+     /fdremain [seconds] [spellIDs...]  - can an engine-drawn aura show "about to expire"?
+
+     Builds three engine slots side by side (out of combat) for YOUR debuff on the target
+     (default: every Serpent Sting rank, threshold 6 s). Put the debuff on a mob and watch in combat:
+       A  duration TEXT coloured by a Step colour curve over RemainingDuration: red and visible
+          only while <= threshold, invisible above (SetDurationText options.textColor)
+       B  the same curve on a text that is just the spell icon (|T..|t via options.textFormat):
+          does an inline icon follow the curve's alpha? If yes, B = "icon only while expiring"
+       C  a copy of the icon handed over with AddPandemicRegion: shown only inside the refresh
+          window, i.e. only if Forever carries the rest of a DoT over when you refresh it
+     Every hand-over is pcall-logged to ForeverDevInfoDB.remainProbe. /fdremain hide removes it.
+]]
+
+local rp = {}
+local SERPENT = { 1978, 13549, 13550, 13551, 13552, 13553, 13554, 13555, 25295, 27016 }
+
+local function rplog(fmt, ...)
+	local line = select("#", ...) > 0 and fmt:format(...) or fmt
+	ForeverDevInfoDB = ForeverDevInfoDB or {}
+	ForeverDevInfoDB.remainProbe = ForeverDevInfoDB.remainProbe or {}
+	local l = ForeverDevInfoDB.remainProbe
+	l[#l + 1] = date("%H:%M:%S") .. " " .. line
+	while #l > 200 do table.remove(l, 1) end
+	print("|cff33ff99FDI remain|r " .. line)
+end
+
+local function rptry(label, fn, ...)
+	if type(fn) ~= "function" then rplog("%s -> missing", label); return false end
+	local ok, res = pcall(fn, ...)
+	rplog("%s -> %s", label, ok and "ok" or ("ERROR: " .. show(res)))
+	return ok, res
+end
+
+local function remainCurve(threshold)
+	local ok, cc = pcall(C_CurveUtil.CreateColorCurve)
+	if not ok or not cc then rplog("CreateColorCurve -> ERROR %s", show(cc)); return nil end
+	rptry("colour curve SetType(Step)", cc.SetType, cc, Enum.LuaCurveType.Step)
+	-- Step: a point takes over from its own x on, so [0, threshold) = red, [threshold, inf) = invisible
+	rptry("colour curve AddPoint(0, red)", cc.AddPoint, cc, 0, CreateColor(1, 0.25, 0.25, 1))
+	rptry(("colour curve AddPoint(%g, clear)"):format(threshold), cc.AddPoint, cc, threshold, CreateColor(1, 1, 1, 0))
+	return cc
+end
+
+local function buildRemainProbe(threshold, ids)
+	if rp.host then rplog("already built - /fdremain hide first"); return end
+	if InCombatLockdown() then rplog("build it out of combat"); return end
+	if C_AddOns and not C_AddOns.IsAddOnLoaded("Blizzard_AuraContainer") then
+		rptry("LoadAddOn(Blizzard_AuraContainer)", C_AddOns.LoadAddOn, "Blizzard_AuraContainer")
+	end
+	local set = {}
+	for _, id in ipairs(ids) do set[id] = true end
+	local okT, iconFile = pcall(C_Spell.GetSpellTexture, ids[1])
+	iconFile = okT and iconFile or 134400
+	local property = Enum.DurationTextBindingProperty and Enum.DurationTextBindingProperty.RemainingDuration
+	rplog("threshold %gs, %d spell id(s) from %d, icon %s, RemainingDuration=%s", threshold, #ids, ids[1], show(iconFile), show(property))
+	local curve = remainCurve(threshold)
+
+	local host = CreateFrame("Frame", "FDIRemainHost", UIParent)
+	host:SetSize(4 * 70, 90)
+	host:SetPoint("CENTER", UIParent, "CENTER", 0, 180)
+	rp.host = host
+
+	local ok, c = pcall(CreateFrame, "AuraContainer", nil, host, "CustomAuraContainerTemplate")
+	if not ok or not c then rplog("container -> ERROR %s", show(c)); return end
+	c:SetAllPoints(host)
+	rptry("SetUnit(target)", c.SetUnit, c, "target")
+	rp.container = c
+
+	local S = 44
+	local function addSlot(key, col, label, init)
+		local cap = host:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+		cap:SetPoint("TOP", host, "TOPLEFT", 35 + 70 * (col - 1), 0)
+		cap:SetText(label)
+		local okS, frame = pcall(c.AddAuraSlot, c, key, "HARMFUL|PLAYER", {
+			candidateFilters = { includeSpellIDs = set },
+			initializeFrame = function(button)
+				button:SetSize(S, S)
+				init(button)
+			end,
+		})
+		rplog("AddAuraSlot(%s) -> %s", key, okS and "ok" or ("ERROR: " .. show(frame)))
+		if okS and frame then
+			pcall(function()
+				frame:ClearAllPoints()
+				frame:SetPoint("TOP", host, "TOPLEFT", 35 + 70 * (col - 1), -16)
+			end)
+		end
+	end
+
+	addSlot("A", 1, "A text", function(b)
+		local icon = b:CreateTexture(nil, "ARTWORK"); icon:SetAllPoints(); icon:SetAlpha(0.35)
+		local fs = b:CreateFontString(nil, "OVERLAY", "GameFontNormalHuge")
+		fs:SetPoint("CENTER")
+		rptry("A SetIcon", b.SetIcon, b, icon)
+		rptry("A SetDurationText + textColor curve", b.SetDurationText, b, fs,
+			{ textColor = { curve = curve, property = property } })
+	end)
+	addSlot("B", 2, "B icon text", function(b)
+		local fs = b:CreateFontString(nil, "OVERLAY", "GameFontNormalHuge")
+		fs:SetPoint("CENTER")
+		rptry("B SetDurationText + |T| format + textColor curve", b.SetDurationText, b, fs, {
+			textFormat = { formatString = "|T" .. tostring(iconFile) .. ":40:40|t", components = {} },
+			textColor = { curve = curve, property = property },
+		})
+	end)
+	addSlot("C", 3, "C pandemic", function(b)
+		local frameBg = b:CreateTexture(nil, "BACKGROUND"); frameBg:SetAllPoints(); frameBg:SetColorTexture(0, 0, 0, 0.4)
+		local icon = b:CreateTexture(nil, "ARTWORK"); icon:SetAllPoints(); icon:SetTexture(iconFile)
+		rptry("C AddPandemicRegion(icon)", b.AddPandemicRegion, b, icon)
+	end)
+	addSlot("D", 4, "D clock", function(b)
+		-- reference: the plain countdown, so a screenshot shows how much time is left
+		local fs = b:CreateFontString(nil, "OVERLAY", "GameFontNormalHuge")
+		fs:SetPoint("CENTER")
+		rptry("D SetDurationText (plain)", b.SetDurationText, b, fs, nil)
+	end)
+	rplog("built. Put your debuff on a mob: A/B/C should appear only in the last %gs (C only if refresh carries over), D counts down.", threshold)
+end
+
+SLASH_FOREVERDEVREMAIN1 = "/fdremain"
+SlashCmdList["FOREVERDEVREMAIN"] = function(msg)
+	msg = strtrim(msg or ""):lower()
+	if msg == "hide" then
+		if rp.host then rp.host:Hide(); rp.host = nil; rp.container = nil end
+		rplog("removed (a /reload clears it completely)")
+		return
+	end
+	local threshold, ids = 6, {}
+	for word in msg:gmatch("%d+%.?%d*") do
+		local n = tonumber(word)
+		if n and n < 100 then threshold = n elseif n then ids[#ids + 1] = n end
+	end
+	if #ids == 0 then ids = SERPENT end
+	ForeverDevInfoDB = ForeverDevInfoDB or {}
+	ForeverDevInfoDB.remainProbe = {}
+	buildRemainProbe(threshold, ids)
+end

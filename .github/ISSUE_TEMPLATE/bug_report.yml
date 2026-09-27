@@ -1,0 +1,61 @@
+name: Bug report
+description: Something in EverAuras does not work as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! The more of this you fill in, the faster it gets fixed.
+        Lua errors are easiest to catch with [BugSack](https://www.curseforge.com/wow/addons/bugsack) and [BugGrabber](https://www.curseforge.com/wow/addons/bug-grabber) (both are needed).
+  - type: input
+    id: version
+    attributes:
+      label: EverAuras version
+      description: The title of the /ea window.
+      placeholder: e.g. 0.5.0-alpha
+    validations:
+      required: true
+  - type: input
+    id: build
+    attributes:
+      label: Client build
+      description: Shown at the bottom left of the login screen.
+      placeholder: e.g. 1.60.1.70009
+    validations:
+      required: true
+  - type: input
+    id: class
+    attributes:
+      label: Class and level
+      placeholder: e.g. Hunter 42
+  - type: textarea
+    id: did
+    attributes:
+      label: What I did
+      description: Steps to reproduce, e.g. which aura, in or out of combat, which target.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What I expected
+    validations:
+      required: true
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: textarea
+    id: bugsack
+    attributes:
+      label: BugSack error
+      description: Optional. Paste the full text of the error.
+      render: text
+  - type: textarea
+    id: export
+    attributes:
+      label: Aura export
+      description: Optional. The aura's menu → Export to string.
+      render: text

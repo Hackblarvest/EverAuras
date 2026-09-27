@@ -24,3 +24,6 @@
 !logo/**
 !CHANGELOG.md
 !tools/UPSTREAM
+
+!.github/
+!.github/**
