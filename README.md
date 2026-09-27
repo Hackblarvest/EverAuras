@@ -51,7 +51,8 @@ logout but never read them back; `tools/sv_bridge.py` (with `start_sv_bridge.cmd
 and is kept only for anyone stuck on an older build.
 
 Every release is built by `tools/rebuild_everauras.sh` from the upstream commit pinned in
-`tools/UPSTREAM` and packed by `tools/make_release_zip.py`; build from source (below) to get the same thing.
+`tools/UPSTREAM` and the upstream release (for the bundled libraries) pinned in `tools/UPSTREAM_RELEASE`,
+and packed by `tools/make_release_zip.py`; build from source (below) to get the same thing.
 
 ## Build from source
 
@@ -63,6 +64,8 @@ bash tools/rebuild_everauras.sh
 # EVERAURAS_ADDONS="<path to Interface/AddOns>"  overrides the install location
 # EVERAURAS_UPSTREAM="<commit|tag|branch>"       pins the upstream source (default: latest main);
 #                                                 a tools/UPSTREAM file does the same for everyone
+# EVERAURAS_UPSTREAM_RELEASE="<release tag>"      pins the release the libraries come from (default:
+#                                                 latest); tools/UPSTREAM_RELEASE does the same
 ```
 
 Requirements: Git Bash, `git`, `gh` (logged in), `curl`, `unzip`, Python 3.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Rebuilds EverAuras - our World of Warcraft: Forever fork of M33kAuras / WeakAuras - and installs it.
 #
-#   libs    = latest upstream GitHub release zip (packager output, has all externals)
+#   libs    = an upstream GitHub release zip (packager output, has all externals)
 #   source  = upstream main branch (where the Forever fixes land)
 #   patches = our Forever fixes + the engine-driven aura system
 #             (tools/forever_patches.py, tools/engine_hunks.py, tools/forever_files/)
@@ -19,6 +19,9 @@
 #                                                  A file tools/UPSTREAM with the same content does the
 #                                                  same without the variable - commit it to freeze a
 #                                                  known-good upstream for everyone building the repo.
+#   EVERAURAS_UPSTREAM_RELEASE=<release tag>       pins the release the libraries come from (default:
+#                                                  the latest release). tools/UPSTREAM_RELEASE does the
+#                                                  same; together the two files make a build reproducible.
 set -euo pipefail
 
 REPO="m33shoq/M33kAuras"
@@ -31,8 +34,15 @@ UPSTREAM_DIRS="M33Auras M33kAuras M33kAurasArchive M33kAurasModelPaths M33kAuras
 
 rm -rf "$W"; mkdir -p "$W"; cd "$W"
 
-echo "== upstream release (for the bundled libraries)"
-url=$(gh api "repos/$REPO/releases/latest" --jq '.assets[] | select(.name | endswith(".zip")) | .browser_download_url' | head -1)
+UPSTREAM_RELEASE="${EVERAURAS_UPSTREAM_RELEASE:-}"
+if [ -z "$UPSTREAM_RELEASE" ] && [ -f "$TOOLS/UPSTREAM_RELEASE" ]; then
+  UPSTREAM_RELEASE="$(tr -d '[:space:]' < "$TOOLS/UPSTREAM_RELEASE")"
+fi
+echo "== upstream release (for the bundled libraries): ${UPSTREAM_RELEASE:-latest}"
+if [ -n "$UPSTREAM_RELEASE" ]; then release_api="repos/$REPO/releases/tags/$UPSTREAM_RELEASE"
+else release_api="repos/$REPO/releases/latest"; fi
+url=$(gh api "$release_api" --jq '.assets[] | select(.name | endswith(".zip")) | .browser_download_url' | head -1)
+[ -n "$url" ] || { echo "no release zip for ${UPSTREAM_RELEASE:-latest}"; exit 1; }
 echo "   $url"
 curl -sL --max-time 600 -o release.zip "$url"
 mkdir release && (cd release && unzip -q ../release.zip)
