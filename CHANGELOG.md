@@ -8,7 +8,7 @@
   says why. New option, *Display tab -> Match debuffs on you by their properties (approximation)*: EverAuras learns the
   debuff's fingerprint the first time it lands on you out of combat (duration, dispel type and the flags Blizzard does
   let addons filter on) and the engine shows a debuff on you that matches all of it, e.g. Weakened Soul for a priest.
-  *Own Only* decides whether only debuffs you put on yourself count. Reported by a priest levelling on the beta.
+  *Own Only* decides whether only debuffs you put on yourself count. Reported by Carl, a priest levelling on the beta. Thanks, Carl!
 - **Countdown numbers on aura icons match Blizzard's buff frame.** The Cooldown swipe's numbers round up (36.4 s left
   showed "37") while the buff frame rounds down ("36 s"). Icons whose triggers are all Aura triggers now count like the
   buff frame, in and out of combat; over 90 s they show minutes the way Blizzard does. Spell cooldown icons keep the
