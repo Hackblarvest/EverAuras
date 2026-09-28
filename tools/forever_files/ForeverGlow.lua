@@ -1,14 +1,17 @@
 -- ForeverGlow.lua - WoW: Forever.
 --
 -- Animated glows for engine-driven displays. The engine's clips are anchored to Blizzard aura containers
--- and carry the UntrustedLayoutScriptExecution aspect, and no frame or texture may be re-parented into
--- them: WeakAuras' glow frame and LibCustomGlow's pooled frames are both refused (tested 2026-09-27).
--- Everything here is CREATED inside the frame it draws on and never moves. Textures and motion follow
+-- and aura buttons. While an aura is shown there, every region anchored to them, however indirectly, has
+-- SECRET anchoring: the client refuses SetPoint, ClearAllPoints and SetSize on it from addon code
+-- ("Attempt to access forbidden object", found 2026-09-28 with Pixel Glow), and nothing may be re-parented
+-- into the clips (WeakAuras' glow frame and LibCustomGlow's pooled frames are both refused, 2026-09-27).
+-- So a glow here is CREATED in place, laid out once, and then MOVED BY THE CLIENT ALONE: every motion is
+-- an animation (Path, FlipBook), never a script that lays textures out. Looks and motion follow
 -- LibCustomGlow, which WeakAuras bundles, so the four WeakAuras glow types look the same: Button Glow,
 -- Pixel Glow, Autocast Shine and Proc Glow (the looping part; the one-off start burst is left out).
 --
--- Private.ForeverGlow.Start(holder, sub) starts the glow described by a WeakAuras glow sub-region on
--- holder (a plain-sized frame) and returns true; Stop(holder) ends it.
+-- Private.ForeverGlow.Start(holder, sub, w, h) starts the glow described by a WeakAuras glow sub-region on
+-- holder (w by h, plain numbers) and returns true; Stop(holder) ends it.
 ---@type string
 local AddonName = ...
 ---@class Private
@@ -16,6 +19,7 @@ local Private = select(2, ...)
 
 local G = {}
 Private.ForeverGlow = G
+if type(_G[AddonName]) == "table" then _G[AddonName].ForeverGlow = G end   -- reachable by the dev probes
 
 local WHITE = "Interface\\BUTTONS\\WHITE8X8"
 local EMPTY = "Interface\\AdventureMap\\BrokenIsles\\AM_29"
@@ -27,7 +31,7 @@ local SHINE = isRetail and "Interface\\Artifacts\\Artifacts" or "Interface\\Item
 local SHINE_TC = isRetail and { 0.8115234375, 0.9169921875, 0.8798828125, 0.9853515625 }
                            or { 0.3984375, 0.4453125, 0.40234375, 0.44921875 }
 local DEFAULT_COLOR = { 0.95, 0.95, 0.32, 1 }
-local AnimateTexCoords = (TextureUtil and TextureUtil.AnimateTexCoords) or _G.AnimateTexCoords
+local SQRT2 = math.sqrt(2)
 
 local function SetColor(tex, color, desaturate)
   if color then
@@ -52,22 +56,80 @@ local function Part(holder, kind)
   return f
 end
 
+-- A repeating animation group owned by region, remembered on the part so Stop can end it.
+local function Loop(part, region)
+  local ag = region:CreateAnimationGroup()
+  ag:SetLooping("REPEAT")
+  part.loops = part.loops or {}
+  part.loops[#part.loops + 1] = ag
+  return ag
+end
+
+local function StopLoops(part)
+  for _, ag in ipairs(part.loops or {}) do ag:Stop() end
+end
+
 local function HideAll(holder)
   for _, f in pairs(holder.fgParts or {}) do
-    f:SetScript("OnUpdate", nil)
-    if f.loop then f.loop:Stop() end
+    StopLoops(f)
     f:Hide()
   end
 end
 
----------------------------------------------------------------------------- Button Glow
-local function ButtonUpdate(self, elapsed)
-  if AnimateTexCoords then AnimateTexCoords(self.ants, 256, 256, 48, 48, 22, elapsed, self.throttle) end
+-- A Path animation that carries the region from its own position through the given corners (offsets
+-- from that position) and back, one lap per `duration` seconds. The path is straight between its points,
+-- so every corner is a point; the client shares the time out between the points, so each side is cut
+-- into steps of nearly the same length for a steady speed.
+local function RectPath(ag, duration, corners)
+  local path = ag:CreateAnimation("Path")
+  path:SetDuration(duration)
+  pcall(path.SetCurveType, path, "NONE")
+  pcall(path.SetSmoothing, path, "NONE")
+  local lens, total, px, py = {}, 0, 0, 0
+  for i, c in ipairs(corners) do
+    lens[i] = math.abs(c[1] - px) + math.abs(c[2] - py)   -- the sides are axis-aligned
+    total = total + lens[i]
+    px, py = c[1], c[2]
+  end
+  local unit = math.max(4, total / 32)
+  local order = 0
+  px, py = 0, 0
+  for i, c in ipairs(corners) do
+    local steps = math.max(1, math.floor(lens[i] / unit + 0.5))
+    for s = 1, steps do
+      order = order + 1
+      local cp = path:CreateControlPoint(nil, nil, order)
+      cp:SetOffset(px + (c[1] - px) * s / steps, py + (c[2] - py) * s / steps)
+    end
+    px, py = c[1], c[2]
+  end
+  return path
 end
 
-local function StartButton(holder, sub)
+-- Restarts region's lap: rebuilt when the rectangle or the lap time changed, else just replayed from
+-- `offset` seconds into the lap.
+local function PlayLap(part, region, sig, duration, corners, offset)
+  local ag = region.loop
+  if not ag then
+    ag = Loop(part, region)
+    region.loop = ag
+  end
+  ag:Stop()
+  if region.sig ~= sig then
+    pcall(ag.RemoveAnimations, ag)
+    RectPath(ag, duration, corners)
+    region.sig = sig
+  end
+  ag:Play(false, offset % duration)
+end
+
+---------------------------------------------------------------------------- Button Glow
+-- The ants are a 256x256 sheet of 22 frames of 48x48, 5 per row (Blizzard's AnimateTexCoords parameters),
+-- played as a FlipBook animation.
+local ANTS_ROWS, ANTS_COLS, ANTS_FRAMES, ANTS_PX = 5, 5, 22, 48
+
+local function StartButton(holder, sub, w, h)
   local f = Part(holder, "button")
-  local w, h = holder:GetSize()
   f:ClearAllPoints()
   f:SetPoint("TOPLEFT", holder, "TOPLEFT", -w * 0.2, h * 0.2)
   f:SetPoint("BOTTOMRIGHT", holder, "BOTTOMRIGHT", w * 0.2, -h * 0.2)
@@ -79,69 +141,39 @@ local function StartButton(holder, sub)
     f.ants = f:CreateTexture(nil, "OVERLAY")
     f.ants:SetTexture(ANTS)
     f.ants:SetPoint("CENTER")
+    f.antsLoop = Loop(f, f.ants)
+    f.antsFlip = f.antsLoop:CreateAnimation("FlipBook")
+    f.antsFlip:SetFlipBookRows(ANTS_ROWS)
+    f.antsFlip:SetFlipBookColumns(ANTS_COLS)
+    f.antsFlip:SetFlipBookFrames(ANTS_FRAMES)
+    f.antsFlip:SetFlipBookFrameWidth(ANTS_PX)
+    f.antsFlip:SetFlipBookFrameHeight(ANTS_PX)
   end
   f.ants:SetSize(w * 1.4 * 0.85, h * 1.4 * 0.85)
   local color = sub.useGlowColor and sub.glowColor or nil
   SetColor(f.outer, color, true)
   SetColor(f.ants, color, true)
+  -- Blizzard's default advances one frame per 0.01 s; WA scales that by its frequency setting
   local freq = tonumber(sub.glowFrequency)
-  f.throttle = (freq and freq > 0) and (0.25 / freq * 0.01) or 0.01
-  f:SetScript("OnUpdate", ButtonUpdate)
+  local throttle = (freq and freq > 0) and (0.25 / freq * 0.01) or 0.01
+  f.antsLoop:Stop()
+  f.antsFlip:SetDuration(ANTS_FRAMES * throttle)
   f:Show()
+  f.antsLoop:Play()
 end
 
 ---------------------------------------------------------------------------- Pixel Glow
--- Positions of a line travelling round the border, as in LibCustomGlow.
-local function Calc1(progress, s, th, p)
-  local c
-  if progress > p[3] or progress < p[0] then c = 0
-  elseif progress > p[2] then c = s - th - (progress - p[2]) / (p[3] - p[2]) * (s - th)
-  elseif progress > p[1] then c = s - th
-  else c = (progress - p[0]) / (p[1] - p[0]) * (s - th) end
-  return math.floor(c + 0.5)
-end
-
-local function Calc2(progress, s, th, p)
-  local c
-  if progress > p[3] then c = s - th - (progress - p[3]) / (p[0] + 1 - p[3]) * (s - th)
-  elseif progress > p[2] then c = s - th
-  elseif progress > p[1] then c = (progress - p[1]) / (p[2] - p[1]) * (s - th)
-  elseif progress > p[0] then c = 0
-  else c = s - th - (progress + 1 - p[3]) / (p[0] + 1 - p[3]) * (s - th) end
-  return math.floor(c + 0.5)
-end
-
-local function PixelUpdate(self, elapsed)
-  local info = self.info
-  self.timer = (self.timer + elapsed / info.period) % 1
-  local w, h = self:GetSize()
-  if w ~= info.width or h ~= info.height then
-    local perimeter = 2 * (w + h)
-    if not (perimeter > 0) then return end
-    info.width, info.height = w, h
-    local L = info.length / 2
-    info.pTLx = { [0] = (h + L) / perimeter, [1] = (h + w + L) / perimeter, [2] = (2 * h + w - L) / perimeter, [3] = 1 - L / perimeter }
-    info.pTLy = { [0] = (h - L) / perimeter, [1] = (h + w + L) / perimeter, [2] = (2 * h + w + L) / perimeter, [3] = 1 - L / perimeter }
-    info.pBRx = { [0] = L / perimeter, [1] = (h - L) / perimeter, [2] = (h + w - L) / perimeter, [3] = (2 * h + w + L) / perimeter }
-    info.pBRy = { [0] = L / perimeter, [1] = (h + L) / perimeter, [2] = (h + w - L) / perimeter, [3] = (2 * h + w - L) / perimeter }
-  end
-  local th = info.th
-  for k, line in ipairs(self.lines) do
-    if k > info.n then break end
-    local p = (self.timer + info.step * (k - 1)) % 1
-    line:ClearAllPoints()
-    line:SetPoint("TOPLEFT", self, "TOPLEFT", Calc1(p, w, th, info.pTLx), -Calc2(p, h, th, info.pTLy))
-    line:SetPoint("BOTTOMRIGHT", self, "TOPLEFT", th + Calc2(p, w, th, info.pBRx), -h + Calc1(p, h, th, info.pBRy))
-  end
-end
-
-local function StartPixel(holder, sub)
+-- Each line is a square turned 45 degrees (a diamond) whose centre rides the middle of the border ring,
+-- one lap per period, clockwise from the bottom left as in LibCustomGlow. The ring mask keeps only what
+-- lies in the ring and the part clips what pokes out past the border, so what shows is a line of about
+-- `length` along the ring that bends round the corners like LibCustomGlow's: the ring points within
+-- length/2 of the centre, measured along the ring, are exactly the diamond's.
+local function StartPixel(holder, sub, w, h)
   local f = Part(holder, "pixel")
-  local w, h = holder:GetSize()
   local n = tonumber(sub.glowLines) or 8
   if n < 1 then n = 8 end
   local freq = tonumber(sub.glowFrequency) or 0.25
-  local period = (freq > 0 or freq < 0) and (1 / freq) or 4
+  local period = (freq > 0 or freq < 0) and math.abs(1 / freq) or 4
   local length = tonumber(sub.glowLength) or math.floor((w + h) * (2 / n - 0.1))
   length = math.min(length, math.min(w, h))
   local th = tonumber(sub.glowThickness) or 1
@@ -149,6 +181,7 @@ local function StartPixel(holder, sub)
   f:ClearAllPoints()
   f:SetPoint("TOPLEFT", holder, "TOPLEFT", -xo + 0.05, yo + 0.05)
   f:SetPoint("BOTTOMRIGHT", holder, "BOTTOMRIGHT", xo, -yo + 0.05)
+  f:SetClipsChildren(true)
   if not f.mask then
     f.mask = f:CreateMaskTexture()
     f.mask:SetTexture(EMPTY, "CLAMPTOWHITE", "CLAMPTOWHITE")
@@ -158,18 +191,29 @@ local function StartPixel(holder, sub)
   f.mask:SetPoint("TOPLEFT", f, "TOPLEFT", th, -th)
   f.mask:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -th, th)
   local color = sub.useGlowColor and sub.glowColor or DEFAULT_COLOR
+  -- the part spans the holder plus the offsets (see the anchors above)
+  local W, H = w + 2 * xo, h + 2 * yo
+  local side = length / SQRT2   -- the diamond's diagonal is the line length
+  local corners = { { 0, H - th }, { W - th, H - th }, { W - th, 0 }, { 0, 0 } }
+  local sig = table.concat({ W, H, th, period }, ":")
   for i = 1, math.max(n, #f.lines) do
     local line = f.lines[i]
     if i <= n then
       if not line then
         line = f:CreateTexture(nil, "ARTWORK", nil, 7)
         line:SetTexture(WHITE)
+        line:SetRotation(math.pi / 4)
         line:AddMaskTexture(f.mask)
         f.lines[i] = line
       end
+      line:ClearAllPoints()
+      line:SetPoint("CENTER", f, "BOTTOMLEFT", th / 2, th / 2)
+      line:SetSize(side, side)
       SetColor(line, color, false)
       line:Show()
+      PlayLap(f, line, sig, period, corners, period * (i - 1) / n)
     elseif line then
+      if line.loop then line.loop:Stop() end
       line:Hide()
     end
   end
@@ -189,54 +233,20 @@ local function StartPixel(holder, sub)
   elseif f.bg then
     f.bg:Hide()
   end
-  f.timer = f.timer or 0
-  f.info = { n = n, step = 1 / n, period = period, th = th, length = length }
   f:Show()
-  PixelUpdate(f, 0)
-  f:SetScript("OnUpdate", PixelUpdate)
 end
 
 ---------------------------------------------------------------------------- Autocast Shine
+-- Four sizes of sparkle, n of each, circling the border: the bigger, the slower (one lap per period times
+-- the size group), spread evenly round the lap, as in LibCustomGlow.
 local SHINE_SIZES = { 7, 6, 5, 4 }
 
-local function ShineUpdate(self, elapsed)
-  local info = self.info
-  local w, h = self:GetSize()
-  if w ~= info.width or h ~= info.height then
-    if w * h == 0 then return end
-    info.width, info.height = w, h
-    info.perimeter = 2 * (w + h)
-    info.bottomlim = h * 2 + w
-    info.rightlim = h + w
-    info.space = info.perimeter / info.n
-  end
-  local index = 0
-  for k = 1, 4 do
-    self.timer[k] = (self.timer[k] + elapsed / (info.period * k)) % 1
-    for i = 1, info.n do
-      index = index + 1
-      local dot = self.dots[index]
-      local pos = (info.space * i + info.perimeter * self.timer[k]) % info.perimeter
-      dot:ClearAllPoints()
-      if pos > info.bottomlim then
-        dot:SetPoint("CENTER", self, "BOTTOMRIGHT", -pos + info.bottomlim, 0)
-      elseif pos > info.rightlim then
-        dot:SetPoint("CENTER", self, "TOPRIGHT", 0, -pos + info.rightlim)
-      elseif pos > info.height then
-        dot:SetPoint("CENTER", self, "TOPLEFT", pos - info.height, 0)
-      else
-        dot:SetPoint("CENTER", self, "BOTTOMLEFT", 0, pos)
-      end
-    end
-  end
-end
-
-local function StartShine(holder, sub)
+local function StartShine(holder, sub, w, h)
   local f = Part(holder, "shine")
   local n = tonumber(sub.glowLines) or 4
   if n < 1 then n = 4 end
   local freq = tonumber(sub.glowFrequency) or 0.125
-  local period = (freq > 0 or freq < 0) and (1 / freq) or 8
+  local period = (freq > 0 or freq < 0) and math.abs(1 / freq) or 8
   local scale = tonumber(sub.glowScale) or 1
   local xo, yo = tonumber(sub.glowXOffset) or 0, tonumber(sub.glowYOffset) or 0
   f:ClearAllPoints()
@@ -244,6 +254,9 @@ local function StartShine(holder, sub)
   f:SetPoint("BOTTOMRIGHT", holder, "BOTTOMRIGHT", xo, -yo + 0.05)
   f.dots = f.dots or {}
   local color = sub.useGlowColor and sub.glowColor or DEFAULT_COLOR
+  local W, H = w + 2 * xo, h + 2 * yo
+  local corners = { { 0, H }, { W, H }, { W, 0 }, { 0, 0 } }
+  local sig = table.concat({ W, H, period }, ":")
   local total = n * 4
   for i = 1, math.max(total, #f.dots) do
     local dot = f.dots[i]
@@ -255,25 +268,26 @@ local function StartShine(holder, sub)
         if not isRetail then dot:SetBlendMode("ADD") end
         f.dots[i] = dot
       end
-      local size = SHINE_SIZES[math.floor((i - 1) / n) + 1] * scale
+      local k = math.floor((i - 1) / n) + 1   -- size group
+      local size = SHINE_SIZES[k] * scale
+      dot:ClearAllPoints()
+      dot:SetPoint("CENTER", f, "BOTTOMLEFT")
       dot:SetSize(size, size)
       SetColor(dot, color, true)
       dot:Show()
+      local lap = period * k
+      PlayLap(f, dot, sig, lap, corners, lap * ((i - 1) % n + 1) / n)
     elseif dot then
+      if dot.loop then dot.loop:Stop() end
       dot:Hide()
     end
   end
-  f.timer = f.timer or { 0, 0, 0, 0 }
-  f.info = { n = n, period = period }
   f:Show()
-  ShineUpdate(f, 0)
-  f:SetScript("OnUpdate", ShineUpdate)
 end
 
 ---------------------------------------------------------------------------- Proc Glow
-local function StartProc(holder, sub)
+local function StartProc(holder, sub, w, h)
   local f = Part(holder, "proc")
-  local w, h = holder:GetSize()
   local xo = (tonumber(sub.glowXOffset) or 0) + w * 0.2
   local yo = (tonumber(sub.glowYOffset) or 0) + h * 0.2
   f:ClearAllPoints()
@@ -283,35 +297,34 @@ local function StartProc(holder, sub)
     f.tex = f:CreateTexture(nil, "ARTWORK")
     f.tex:SetAtlas("UI-HUD-ActionBar-Proc-Loop-Flipbook")
     f.tex:SetAllPoints(f)
-    f.ProcLoop = f.tex
-    f.loop = f:CreateAnimationGroup()
-    f.loop:SetLooping("REPEAT")
-    f.flip = f.loop:CreateAnimation("FlipBook")
-    f.flip:SetChildKey("ProcLoop")
-    f.flip:SetOrder(0)
+    f.procLoop = Loop(f, f.tex)
+    f.flip = f.procLoop:CreateAnimation("FlipBook")
     f.flip:SetFlipBookRows(6)
     f.flip:SetFlipBookColumns(5)
     f.flip:SetFlipBookFrames(30)
     f.flip:SetFlipBookFrameWidth(0)
     f.flip:SetFlipBookFrameHeight(0)
   end
+  f.procLoop:Stop()
   f.flip:SetDuration(tonumber(sub.glowDuration) or 1)
   SetColor(f.tex, sub.useGlowColor and sub.glowColor or nil, true)
   f:Show()
-  f.loop:Play()
+  f.procLoop:Play()
 end
 
 ---------------------------------------------------------------------------- entry points
 local STARTERS = { buttonOverlay = StartButton, Pixel = StartPixel, ACShine = StartShine, Proc = StartProc }
 
-function G.Start(holder, sub)
+-- w, h: the holder's size, passed in because frames inside Blizzard's aura buttons answer GetSize()
+-- with secret values in combat (the engine knows the display's plain size).
+function G.Start(holder, sub, w, h)
   local start = STARTERS[sub and sub.glowType or "buttonOverlay"]
   if not start then return false end
-  local w, h = holder:GetSize()
+  if not (w and h) then w, h = holder:GetSize() end
   if issecretvalue(w) or issecretvalue(h) or not (w > 0 and h > 0) then return false end
   HideAll(holder)
   holder:Show()
-  start(holder, sub)
+  start(holder, sub, w, h)
   return true
 end
 

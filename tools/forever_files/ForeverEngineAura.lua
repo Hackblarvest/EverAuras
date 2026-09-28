@@ -317,6 +317,52 @@ end
 
 local durWatch = {}   -- uid -> true: a display waiting for a debuff's fingerprint (re-added once seen)
 local fpUsers = {}    -- uid -> true: displays that match debuffs on you by fingerprint
+local lateUsers = {}  -- uid -> true: time-left displays that want the aura's total duration (late clip)
+
+-- A spell's aura duration from its description ("... over 15 sec", "for 12 sec", "lasts 30 sec",
+-- "18 sec." at the end): the only source for a DoT you have never seen out of combat, since casting it
+-- starts the fight. Plain data; cached per id. nil when the description has no duration.
+local descDurations = {}
+local DESC_PATTERNS = {
+  "over (%d+%.?%d*) sec", "for (%d+%.?%d*) sec", "lasts (%d+%.?%d*) sec", "lasting (%d+%.?%d*) sec",
+  "within (%d+%.?%d*) sec", "next (%d+%.?%d*) sec", "over (%d+%.?%d*) min", "for (%d+%.?%d*) min",
+}
+local function DescribedDuration(id)
+  local cached = descDurations[id]
+  if cached ~= nil then return cached or nil end
+  descDurations[id] = false
+  if not (C_Spell and C_Spell.GetSpellDescription) then return nil end
+  local ok, desc = pcall(C_Spell.GetSpellDescription, id)
+  if not ok or type(desc) ~= "string" or issecretvalue(desc) or desc == "" then return nil end
+  local best
+  for _, pat in ipairs(DESC_PATTERNS) do
+    for n in desc:gmatch(pat) do
+      local v = tonumber(n)
+      if v and pat:find("min") then v = v * 60 end
+      if v and v > 0 and v > (best or 0) then best = v end
+    end
+  end
+  if best then descDurations[id] = best end
+  return best
+end
+
+-- The longest known total duration of a set of ids: from a plain sighting (fingerprints, 0.1 s steps,
+-- every unit's auras feed them) or, failing that, from the spell descriptions.
+local function LearnedDuration(ids)
+  local all = Fingerprints()
+  local best
+  for _, id in ipairs(ids) do
+    local fp = all and all[id]
+    local d = type(fp) == "table" and tonumber(fp.duration)
+    if d and d > 0 and d > (best or 0) then best = d end
+  end
+  if best then return best end
+  for _, id in ipairs(ids) do
+    local d = DescribedDuration(id)
+    if d and d > (best or 0) then best = d end
+  end
+  return best
+end
 
 local function AnalyseAuraTrigger(t, no, data)
   local unit = t.unit or "player"
@@ -498,7 +544,7 @@ function Engine.Classify(data)
   if data.foreverEngine == false then no(T("'Let the game engine draw this aura' is off for this display (Display tab)")) end
   if not Engine.IsAvailable() then no(T("Blizzard_AuraContainer is not available")) end
   if LibStub("Masque", true) then no(T("Masque is loaded")) end
-  if data.uid then durWatch[data.uid] = nil; fpUsers[data.uid] = nil end
+  if data.uid then durWatch[data.uid] = nil; fpUsers[data.uid] = nil; lateUsers[data.uid] = nil end
   local triggers = type(data.triggers) == "table" and data.triggers or {}
   local n, auraIdx = #triggers, {}
   for i = 1, n do
@@ -542,7 +588,8 @@ function Engine.Classify(data)
   if rt ~= "icon" then
     no(T("Progress Bars are engine-driven with one Aura trigger without 'Remaining Time' only (so far)"))
   end
-  local missing, remaining = nil, {}
+  if data.uid then lateUsers[data.uid] = true end
+  local missing, found, remaining = nil, nil, {}
   for _, inf in ipairs(infos) do
     if inf.mode == "missing" then
       if missing then no(T("only one Aura trigger may use 'Show On: Aura(s) Missing'")) end
@@ -551,10 +598,22 @@ function Engine.Classify(data)
       if inf.rem then
         remaining[#remaining + 1] = { part = inf, op = inf.rem.op, x = inf.rem.x }
       else
-        no(T("'Show On: Aura(s) Found' without 'Remaining Time' cannot be combined with other Aura triggers"))
+        -- Found + Remaining Time: the Found part draws the aura, the time-left part adds the glow
+        if found then no(T("only one Aura trigger may use 'Show On: Aura(s) Found' without 'Remaining Time'")) end
+        found = inf
       end
     elseif inf.mode == "always" then
       no(T("'Show On: Always' cannot be combined with other Aura triggers"))
+    end
+  end
+  if found and missing then no(T("'Aura(s) Found' and 'Aura(s) Missing' without 'Remaining Time' cannot be combined")) end
+  if found and #remaining == 0 then no(T("two 'Aura(s) Found' triggers cannot be combined")) end
+  -- a time-left part gets an animated glow through a clip that needs the aura's total duration
+  local lateTotal
+  for _, rp in ipairs(remaining) do
+    if rp.op == "<" or rp.op == "<=" then
+      local d = LearnedDuration(rp.part.ids)
+      if d and d > rp.x then lateTotal = math.max(lateTotal or 0, d) end
     end
   end
   if #r > 0 then return nil, r end
@@ -566,12 +625,14 @@ function Engine.Classify(data)
     for _, nm in ipairs(inf.unseen) do unseen[#unseen + 1] = nm end
   end
   if missing then keys[#keys + 1] = "M:" .. missing.key; take(missing) end
+  if found then keys[#keys + 1] = "F:" .. found.key; take(found) end
+  if lateTotal then keys[#keys + 1] = "late" .. lateTotal end
   for _, rp in ipairs(remaining) do
     keys[#keys + 1] = ("R%s%s:%s"):format(rp.op, tostring(rp.x), rp.part.key)
     take(rp.part)
   end
   table.sort(all)
-  local first = missing or remaining[1].part
+  local first = missing or found or remaining[1].part
   local warn, byDuration, durationFromSetting, fingerprint
   for _, inf in ipairs(infos) do
     warn = warn or inf.warn
@@ -579,7 +640,7 @@ function Engine.Classify(data)
       byDuration, durationFromSetting, fingerprint = inf.byDuration, inf.durationFromSetting, inf.fingerprint
     end
   end
-  return { unit = unit, mode = "composite", parts = { missing = missing, remaining = remaining },
+  return { unit = unit, mode = "composite", parts = { missing = missing, found = found, remaining = remaining, lateTotal = lateTotal },
            warn = warn, byDuration = byDuration, durationFromSetting = durationFromSetting, fingerprint = fingerprint,
            filter = first.filter, filterString = first.filterString, firstId = first.firstId,
            key = table.concat(keys, ";"), ids = all, byName = byName, gen = spellbookGen,
@@ -687,8 +748,16 @@ function Engine.Explain(data, plan, reasons)
       for _, rp in ipairs(plan.parts.remaining) do
         when[#when + 1] = T("while it has %s left"):format(T(REM_TEXT[rp.op]):format(tostring(rp.x)))
       end
-      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s). It shows your icon %s, and nothing otherwise. The game checks the time left itself, so it never has to be read. Kept: position, size, groups, the %%p text, static colour/zoom, and the glow: WeakAuras' own animated glow while the aura is missing, a static glow while it runs out. Not available: the border (hidden while engine-driven), the glow animation while it runs out, cooldown swipe, stack count and desaturation on the time-left icon, conditions and texts that read aura state, show/hide animations and actions on aura gain/loss.")
-        :format(plan.unit, table.concat(when, T(" or ")))
+      local glowTxt = plan.parts.lateTotal
+        and T("animated (the aura's total duration is known: %s s), also while it runs out"):format(tostring(plan.parts.lateTotal))
+        or T("WeakAuras' own animated glow while the aura is missing, a static glow while it runs out (animated once the aura's total duration is known: seen out of combat, or read from the spell's description)")
+      if plan.parts.found then
+        txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows the live aura while it is present and adds the glow %s. The game checks the time left itself, so it never has to be read. Kept: position, size, groups, %%p/%%s texts, static colour/desaturate/zoom, cooldown swipe; glow %s. Not available: the border (hidden while engine-driven), conditions and texts that read aura state, show/hide animations and actions on aura gain/loss.")
+          :format(plan.unit, plan.parts.found.filterString, table.concat(when, T(" or ")), glowTxt)
+      else
+        txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s). It shows your icon %s, and nothing otherwise. The game checks the time left itself, so it never has to be read. Kept: position, size, groups, the %%p text, static colour/zoom; glow %s. Not available: the border (hidden while engine-driven), cooldown swipe, stack count and desaturation on the time-left icon, conditions and texts that read aura state, show/hide animations and actions on aura gain/loss.")
+          :format(plan.unit, table.concat(when, T(" or ")), glowTxt)
+      end
     else
       local kept = T("border and glow")
       if data.regionType == "icon" and plan.mode ~= "always" then
@@ -1176,9 +1245,9 @@ end
 
 local glowReported = false
 -- Starts sub's glow on holder; false when it cannot (the caller then draws the static glow).
-local function StartAnimatedGlow(holder, sub)
+local function StartAnimatedGlow(holder, sub, w, h)
   if not (sub and FG()) then return false end
-  local ok, started = pcall(FG().Start, holder, sub)
+  local ok, started = pcall(FG().Start, holder, sub, w, h)
   if not ok then
     pcall(FG().Stop, holder)
     if not glowReported then
@@ -1262,12 +1331,13 @@ local function ApplySlotLook(att, region, data, plan)
   pcall(cd.SetReverse, cd, not data.inverse)                   -- Icon.lua: WA reverses unless 'inverse'
   pcall(cd.SetHideCountdownNumbers, cd, (not data.cooldown) or data.cooldownTextDisabled or false)
   local found = plan.mode == "active"                  -- Always: the WA icon is always there, so is WA's glow
-  local glowSub = found and GlowSub(data) or nil
-  local animated = glowSub and att.pclipShown and StartAnimatedGlow(GlowHolder(att, "pglow", att.pclip), glowSub)
+  local glowSub = found and not plan.noGlow and GlowSub(data) or nil
+  local gw, gh = RegionSize(region)
+  local animated = glowSub and att.pclipShown and StartAnimatedGlow(GlowHolder(att, "pglow", att.pclip), glowSub, gw, gh)
   if not animated then StopAnimatedGlow(att.pglow) end
   if s.glow then
     local w, h = RegionSize(region)
-    StyleGlowTexture(s.glow, att.button, w, h, (found and not animated) and GlowSpec(data) or nil)
+    StyleGlowTexture(s.glow, att.button, w, h, (found and not plan.noGlow and not animated) and GlowSpec(data) or nil)
   end
   MirrorTexts(att, region, data, true)
   if found then HideStaticDecor(att, region, data, false) end
@@ -1301,7 +1371,8 @@ local function ApplyUnderlayLook(att, region, data, plan, noGlow)
   local col = data.color or { 1, 1, 1, 1 }
   u:SetVertexColor(col[1] or 1, col[2] or 1, col[3] or 1, col[4] or 1)
   local glowSub = not noGlow and GlowSub(data) or nil
-  local animated = glowSub and att.shadows.clip and StartAnimatedGlow(GlowHolder(att, "mglowHolder", att.shadows.clip), glowSub)
+  local gw, gh = RegionSize(region)
+  local animated = glowSub and att.shadows.clip and StartAnimatedGlow(GlowHolder(att, "mglowHolder", att.shadows.clip), glowSub, gw, gh)
   if not animated then StopAnimatedGlow(att.mglowHolder) end
   if att.shadows.mglow then
     local w, h = RegionSize(region)
@@ -1324,6 +1395,7 @@ function Engine.OnLayout(region)          -- after every ApplyFrameLevel (Expand
   SetMirroredShown(att, false)
   if att.isBar then SetBarVisuals(region, false)
   elseif (att.kind == "group" or att.kind == "composite") and region.icon then region.icon:Hide() end
+  if att.kind == "composite" and att.want and att.want.parts and att.want.parts.found and region.icon then region.icon:Hide() end
 end
 
 local function InPreview()
@@ -1338,8 +1410,12 @@ local function DisableKind(att, kind)
     pcall(c.SetAuraGroupEnabled, c, KEY, false)
     if att.shadows.clip then att.shadows.clip:Hide() end
   end
-  if kind == "composite" and att.rslots then
-    for key in pairs(att.rslots) do pcall(c.SetAuraSlotEnabled, c, key, false) end
+  if kind == "composite" then
+    DisablePresentClip(att)
+    for key, rs in pairs(att.rslots or {}) do
+      pcall(c.SetAuraSlotEnabled, c, key, false)
+      if rs.clip then pcall(rs.clip.Hide, rs.clip) end
+    end
   end
 end
 
@@ -1429,10 +1505,61 @@ function Engine.HasGlowPartChoice(data)
   return plan and plan.parts and plan.parts.missing and #plan.parts.remaining > 0 and GlowSpec(data) ~= nil or false
 end
 
--- Slot keys: feR<i> = the icon of Remaining Time part i, feG<i> = its static glow, feT<i> = its %p countdown.
-local LEVEL_OF = { R = 0, G = 1, T = 2 }
+-- Late clip: an animated glow that appears when X seconds are left (clip geometry proven 2026-09-28,
+-- /fdlate). The engine fills a StatusBar by the aura's remaining time (SetDurationBar); with the aura's
+-- total duration known, the bar is K px per second wide and placed so the fill edge passes a fixed point
+-- exactly when X seconds are left, and the clip spans from the fill edge to that point: zero wide above X,
+-- open below. The bar must live in the aura button, but the clip must NOT: aura buttons carry
+-- UntrustedScriptExecution, which stops every script of their children, so an OnUpdate-driven glow never
+-- moves there. The clip is a child of our present clip instead (closed while the aura is absent) and only
+-- ANCHORS to the fill; DisableUntrustedLayoutScriptsTemplate makes that anchor legal.
+local LATE_K = 2000   -- px per second
+
+local function BuildLateSlot(att, key, part, x, total, region)
+  local host, c = att.host, att.container
+  local ls = {}
+  local ok, button = pcall(c.AddAuraSlot, c, key, part.filterString, {
+    candidateFilters = part.candidate,
+    initializeFrame = function(button)
+      button:ClearAllPoints()
+      button:SetAllPoints(host)
+      button:SetFrameLevel(c:GetFrameLevel())
+      pcall(button.SetMouseClickEnabled, button, false)
+      pcall(button.EnableMouseMotion, button, false)
+      local w, h = RegionSize(region)
+      local m = AnimatedGlowMargin(w, h, GlowSub(att.data or {}))
+      local bar = CreateFrame("StatusBar", nil, button)
+      bar:SetSize(total * LATE_K, h + 2 * m)
+      bar:SetPoint("LEFT", button, "RIGHT", m - x * LATE_K, 0)
+      bar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
+      bar:SetStatusBarColor(0, 0, 0, 0)
+      bar:SetAlpha(0)                               -- never drawn: only its fill edge serves as an anchor
+      bar:SetFrameLevel(button:GetFrameLevel())
+      local dirs = Enum and Enum.StatusBarTimerDirection
+      button:SetDurationBar(bar, { direction = dirs and dirs.RemainingTime })
+      -- outside the button (scripts run there), anchored to the fill inside it
+      local clip = CreateFrame("Frame", nil, att.pclip, "DisableUntrustedLayoutScriptsTemplate")
+      clip:SetClipsChildren(true)
+      clip:SetFrameLevel(att.pclip:GetFrameLevel() + 1)
+      clip:SetPoint("TOPLEFT", bar:GetStatusBarTexture(), "TOPRIGHT")
+      clip:SetPoint("BOTTOMRIGHT", bar, "BOTTOMLEFT", x * LATE_K, 0)
+      ls.bar, ls.clip, ls.m = bar, clip, m
+    end,
+  })
+  if not ok or not button or not ls.clip then
+    WA.prettyPrint(("%s: engine late glow failed: %s"):format(tostring(att.region.id), tostring(button)))
+    return nil
+  end
+  ls.button, ls.filter, ls.pkey, ls.x, ls.total = button, part.filterString, part.key, x, total
+  return ls
+end
+
+-- Slot keys: feR<i> = the icon of Remaining Time part i, feG<i> = its static glow, feT<i> = its %p countdown,
+-- feL<i> = its late clip (animated glow).
+local LEVEL_OF = { R = 0, G = 1, T = 2, L = 3 }
 local function EnsureComposite(att, region, data, plan)
   local c = att.container
+  att.data = data
   local missingGlow, remainGlow = GlowParts(data, plan)
   local glow = remainGlow
   if plan.parts.missing then
@@ -1441,18 +1568,62 @@ local function EnsureComposite(att, region, data, plan)
   else
     DisableKind(att, "group")
   end
+  -- Found + time left: the Found slot draws the live aura as in a single plan
+  if plan.parts.found then
+    local f = plan.parts.found
+    if not att.slotBuilt then
+      if not BuildSlot(att, region, f) then return false end
+      att.slotFilter, att.slotKey = f.filterString, f.key
+    else
+      if att.slotFilter ~= f.filterString then c:SetAuraSlotFilterString(KEY, f.filterString); att.slotFilter = f.filterString end
+      if att.slotKey ~= f.key then c:SetAuraSlotCandidateFilters(KEY, f.candidate); att.slotKey = f.key end
+      c:SetAuraSlotEnabled(KEY, true)
+    end
+  elseif att.slotBuilt then
+    pcall(c.SetAuraSlotEnabled, c, KEY, false)
+  end
   att.rslots = att.rslots or {}
   local used = {}
-  local withText = CountdownSub(data) ~= nil
+  local withText = CountdownSub(data) ~= nil and not plan.parts.found
+  local late = plan.parts.lateTotal
+  -- one time-left part gets the animated glow: its late clip sits in the present clip of that part's aura
+  local lateIdx
+  if glow and late then
+    for i, rp in ipairs(plan.parts.remaining) do
+      if (rp.op == "<" or rp.op == "<=") and rp.x < late then lateIdx = i; break end
+    end
+  end
+  if lateIdx then
+    local w, h = RegionSize(region)
+    local part = plan.parts.remaining[lateIdx].part
+    att.pclipShown = EnsurePresentClip(att, region, part, AnimatedGlowMargin(w, h, GlowSub(data)))
+    if not att.pclipShown then lateIdx = nil end
+  end
+  if not lateIdx then DisablePresentClip(att) end
+  att.lateActive = lateIdx ~= nil
   for i, rp in ipairs(plan.parts.remaining) do
-    local keys = { "feR" .. i }
-    if glow then keys[#keys + 1] = "feG" .. i end
+    local keys = {}
+    if not plan.parts.found then keys[#keys + 1] = "feR" .. i end
+    local animated = i == lateIdx
+    if animated then
+      keys[#keys + 1] = "feL" .. i
+    elseif glow then
+      keys[#keys + 1] = "feG" .. i
+    end
     if withText then keys[#keys + 1] = "feT" .. i end
     for _, key in ipairs(keys) do
       used[key] = true
       local rs = att.rslots[key]
+      -- a late clip is built for one X and total: rebuild when they change
+      if rs and key:sub(3, 3) == "L" and (rs.x ~= rp.x or rs.total ~= late) then
+        pcall(c.RemoveAuraSlot, c, key)
+        StopAnimatedGlow(rs.glowHolder)
+        if rs.clip then pcall(rs.clip.Hide, rs.clip) end
+        att.rslots[key], rs = nil, nil
+      end
       if not rs then
-        rs = BuildRemainSlot(att, key, rp.part)
+        if key:sub(3, 3) == "L" then rs = BuildLateSlot(att, key, rp.part, rp.x, late, region)
+        else rs = BuildRemainSlot(att, key, rp.part) end
         if not rs then return false end
         att.rslots[key] = rs
       else
@@ -1460,10 +1631,15 @@ local function EnsureComposite(att, region, data, plan)
         if rs.pkey ~= rp.part.key then c:SetAuraSlotCandidateFilters(key, rp.part.candidate); rs.pkey = rp.part.key end
         c:SetAuraSlotEnabled(key, true)
       end
+      if rs.clip then pcall(rs.clip.Show, rs.clip) end
     end
   end
-  for key in pairs(att.rslots) do
-    if not used[key] then pcall(c.SetAuraSlotEnabled, c, key, false) end
+  for key, rs in pairs(att.rslots) do
+    if not used[key] then
+      pcall(c.SetAuraSlotEnabled, c, key, false)
+      if rs.glowHolder then StopAnimatedGlow(rs.glowHolder) end
+      if rs.clip then pcall(rs.clip.Hide, rs.clip) end
+    end
   end
   att.rslotsUsed = used
   return true
@@ -1474,12 +1650,40 @@ local function SetRemainLevels(att)
   local base = att.container:GetFrameLevel()
   for key, rs in pairs(att.rslots) do
     pcall(rs.button.SetFrameLevel, rs.button, base + (LEVEL_OF[key:sub(3, 3)] or 0))
+    -- the late clip hangs on the aura button's bar and is forbidden to us while an aura is shown (even
+    -- GetFrameLevel): its levels come from the present clip, which is ours to ask, and are best effort
+    if rs.clip and att.pclip then
+      local pl = att.pclip:GetFrameLevel()
+      pcall(rs.clip.SetFrameLevel, rs.clip, pl + 1)
+      if rs.glowHolder then pcall(rs.glowHolder.SetFrameLevel, rs.glowHolder, pl + 2) end
+    end
   end
 end
 
 local function ApplyCompositeLook(att, region, data, plan)
   local missingGlow, remainGlow = GlowParts(data, plan)
   if plan.parts.missing then ApplyUnderlayLook(att, region, data, plan.parts.missing, not missingGlow) end
+  if plan.parts.found then
+    -- the Found slot looks like a single Found plan, but its glow belongs to the time-left part
+    ApplySlotLook(att, region, data, { mode = "active", filterString = plan.parts.found.filterString, noGlow = true })
+    StopAnimatedGlow(att.pglow)
+    if att.shadows.glow then att.shadows.glow:Hide() end
+  end
+  local glowSub = GlowSub(data)
+  for i, rp in ipairs(plan.parts.remaining) do
+    local ls = att.rslotsUsed["feL" .. i] and att.rslots["feL" .. i]
+    if ls and glowSub and remainGlow then
+      if not ls.glowHolder then
+        ls.glowHolder = CreateFrame("Frame", nil, ls.clip)
+        ls.glowHolder:SetAllPoints(att.host)
+      end
+      if att.pclip then pcall(ls.glowHolder.SetFrameLevel, ls.glowHolder, att.pclip:GetFrameLevel() + 2) end
+      local gw, gh = RegionSize(region)
+      if not StartAnimatedGlow(ls.glowHolder, glowSub, gw, gh) then StopAnimatedGlow(ls.glowHolder) end
+    elseif ls then
+      StopAnimatedGlow(ls.glowHolder)
+    end
+  end
   local w, h = RegionSize(region)
   local col = data.color or { 1, 1, 1, 1 }
   local property = (Enum.DurationTextBindingProperty and Enum.DurationTextBindingProperty.RemainingDuration) or 0
@@ -1518,8 +1722,8 @@ local function ApplyCompositeLook(att, region, data, plan)
       })
     end
   end
-  MirrorTexts(att, region, data, false)     -- WA's own %p/%s/%n would read aura state: hidden
-  HideStaticDecor(att, region, data, true)  -- the border cannot follow the curve: hidden too
+  if not plan.parts.found then MirrorTexts(att, region, data, false) end   -- WA's own %p/%s/%n would read aura state: hidden
+  HideStaticDecor(att, region, data, true, true)  -- WA's glow (the clips have it) and the border: hidden
 end
 
 ---------------------------------------------------------------------------- range gate
@@ -1566,6 +1770,7 @@ local function TurnOff(att, region, data, mode)
   if att.host then att.host:Hide() end
   DisableKind(att, "slot"); DisableKind(att, "group"); DisableKind(att, "composite")
   StopAnimatedGlow(att.pglow); StopAnimatedGlow(att.mglowHolder)
+  for _, rs in pairs(att.rslots or {}) do if rs.glowHolder then StopAnimatedGlow(rs.glowHolder) end end
   RemoveGate(att)
   if att.isBar then SetBarVisuals(region, true) elseif region.icon then region.icon:Show() end
   SetMirroredShown(att, true)
@@ -1631,7 +1836,10 @@ local function ApplyUnguarded(region)
   if att.isBar then SetBarVisuals(region, false) else region.icon:SetShown(plan.mode == "always") end
   if region.tooltipFrame then region.tooltipFrame:EnableMouseMotion(false) end
   if kind == "slot" then pcall(att.button.SetFrameLevel, att.button, c:GetFrameLevel()) end
-  if kind == "composite" then SetRemainLevels(att) end
+  if kind == "composite" then
+    SetRemainLevels(att)
+    if plan.parts.found and att.button then pcall(att.button.SetFrameLevel, att.button, c:GetFrameLevel()) end
+  end
   if att.isBar and att.shadows.bar then                  -- keep bar under texts, both above the button
     local sh = att.shadows
     pcall(sh.bar.SetFrameLevel, sh.bar, c:GetFrameLevel() + 1)
@@ -1868,7 +2076,7 @@ function Private.Pause(...)  origPause(...);  ScheduleAll() end
 function Private.Resume(...) origResume(...); ScheduleAll() end
 
 Private.callbacks:RegisterCallback("AboutToDelete", function(_, uid, id)
-  decided[uid], nameWatch[uid], readd[uid], durWatch[uid], fpUsers[uid] = nil, nil, nil, nil, nil
+  decided[uid], nameWatch[uid], readd[uid], durWatch[uid], fpUsers[uid], lateUsers[uid] = nil, nil, nil, nil, nil, nil
   for region, att in pairs(attachments) do
     if region.id == id and att.want then att.want = nil; Schedule(region) end
   end
@@ -1880,13 +2088,13 @@ local QueueSpellbookRefresh   -- defined below
 
 -- Walk a unit's auras while they are plain and remember the ids behind the names our triggers use.
 -- While auras are plain, remember every debuff on you as a fingerprint, for displays that match by it.
-local function LearnFingerprints()
-  if not (next(durWatch) or next(fpUsers)) or not Engine.IsSafe() then return end
+local function LearnFingerprints(unit)
+  if not (next(durWatch) or next(fpUsers) or next(lateUsers)) or not Engine.IsSafe() then return end
   local all = Fingerprints()
   if not all then return end
   local changed = false
   for i = 1, 40 do
-    local ok, a = pcall(C_UnitAuras.GetAuraDataByIndex, "player", i, "HARMFUL")
+    local ok, a = pcall(C_UnitAuras.GetAuraDataByIndex, unit, i, "HARMFUL")
     if not ok or type(a) ~= "table" then break end
     local id, dur = a.spellId, a.duration
     if type(id) == "number" and type(dur) == "number" and not issecretvalue(id) and not issecretvalue(dur) then
@@ -1909,12 +2117,13 @@ local function LearnFingerprints()
   if changed then
     for uid in pairs(durWatch) do readd[uid] = true end
     for uid in pairs(fpUsers) do readd[uid] = true end
+    for uid in pairs(lateUsers) do readd[uid] = true end
     FlushReadds()
   end
 end
 
 local function LearnFromUnit(unit)
-  if unit == "player" and C_UnitAuras and C_UnitAuras.GetAuraDataByIndex then LearnFingerprints() end
+  if UNIT_OK[unit] and C_UnitAuras and C_UnitAuras.GetAuraDataByIndex then LearnFingerprints(unit) end
   if not UNIT_OK[unit] or not Engine.IsSafe() or not next(watchNames) then return end
   if not (C_UnitAuras and C_UnitAuras.GetAuraDataByIndex) then return end
   local learned = Learned()
@@ -1994,6 +2203,7 @@ ev:SetScript("OnEvent", function(_, event, arg1)
   end
   if event == "PLAYER_ENTERING_WORLD" then QueueSpellbookRefresh() end   -- spellbook may not exist at Add time
   if event == "PLAYER_REGEN_ENABLED" or event == "PLAYER_ENTERING_WORLD" then
+    wipe(descDurations)      -- a new rank changes the description
     LearnFromAllUnits()      -- buffs that procced in combat and are still up become readable now
     Engine.Flush()
   end
