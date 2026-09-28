@@ -1511,3 +1511,271 @@ SlashCmdList["FOREVERDEVBAR"] = function(msg)
 	ForeverDevInfoDB.barProbe = {}
 	buildBarProbe(threshold, ids)
 end
+
+-- /fdspell <id or name>: how a spell trigger without 'Exact Spell Match' resolves a spell, step by step
+-- (WeakAuras' GetEffectiveSpellId: id -> name -> id for that name -> override). Default: Shoot (5019).
+SLASH_FOREVERDEVSPELL1 = "/fdspell"
+SlashCmdList["FOREVERDEVSPELL"] = function(msg)
+	msg = strtrim(msg or "")
+	local arg = tonumber(msg) or (msg ~= "" and msg) or 5019
+	local function slog(fmt, ...)
+		local line = select("#", ...) > 0 and fmt:format(...) or fmt
+		ForeverDevInfoDB = ForeverDevInfoDB or {}
+		ForeverDevInfoDB.spellProbe = ForeverDevInfoDB.spellProbe or {}
+		local l = ForeverDevInfoDB.spellProbe
+		l[#l + 1] = date("%H:%M:%S") .. " " .. line
+		while #l > 200 do table.remove(l, 1) end
+		print("|cff33ff99FDI spell|r " .. line)
+	end
+	local function info(x)
+		local ok, i = pcall(C_Spell.GetSpellInfo, x)
+		if not ok or type(i) ~= "table" then return "nil" end
+		return ("%s (id %s, icon %s)"):format(show(i.name), show(i.spellID), show(i.iconID))
+	end
+	slog("[run] %s combat=%s arg=%s", date("%H:%M:%S"), tostring(InCombatLockdown()), tostring(arg))
+	slog("1 C_Spell.GetSpellInfo(%s) = %s", tostring(arg), info(arg))
+	local okN, name = pcall(C_Spell.GetSpellName, arg)
+	name = okN and name or nil
+	slog("2 C_Spell.GetSpellName = %s", show(name))
+	if type(name) == "string" and not issecretvalue(name) then
+		slog("3 C_Spell.GetSpellInfo(%q) = %s   <- WeakAuras uses this id", name, info(name))
+		local okI, byName = pcall(C_Spell.GetSpellInfo, name)
+		local id = okI and type(byName) == "table" and byName.spellID or nil
+		if id then
+			slog("4 FindSpellOverrideByID(%s) = %s", show(id), ask(FindSpellOverrideByID, id))
+			slog("4 C_Spell.GetOverrideSpell(%s) = %s", show(id), ask(C_Spell and C_Spell.GetOverrideSpell, id))
+		end
+	end
+	if type(arg) == "number" then
+		slog("5 FindSpellOverrideByID(%s) = %s", tostring(arg), ask(FindSpellOverrideByID, arg))
+		slog("5 C_SpellBook.FindSpellBookSlotForSpell(%s) = %s", tostring(arg), ask(C_SpellBook and C_SpellBook.FindSpellBookSlotForSpell, arg))
+	end
+	slog("6 GetActionInfo for action bar slots showing that name:")
+	for slot = 1, 180 do
+		local okA, kind, id, sub = pcall(GetActionInfo, slot)
+		if okA and kind then
+			local okT, txt = pcall(GetActionText, slot)
+			local okS, sname = pcall(C_Spell.GetSpellName, id)
+			local label = (okT and txt) or (okS and sname) or ""
+			if kind == "macro" or (type(name) == "string" and label == name) then
+				slog("  slot %d: %s id=%s sub=%s text=%s", slot, show(kind), show(id), show(sub), show(label))
+			end
+		end
+	end
+end
+
+--[[ ------------------------------------------------------------------------
+     /fdself [spellID]  - which parts of a debuff's learned fingerprint let it through an aura slot?
+
+     Reads EverAurasSaved.foreverEngine.fingerprints[spellID] (default 11196, Recently Bandaged) and
+     builds one engine slot on the player per component, side by side:
+       A  HARMFUL|PLAYER, no candidate filters      (baseline)
+       B  maxDuration = learned duration            C  maxDuration = learned + 1
+       then one slot per learned flag (isFromPlayerOrPlayerPet, canApplyAura, ...), and
+       Z  everything combined, as the engine does it (+0.5 s headroom)
+     Build it out of combat with the debuff already learned, get the debuff, screenshot. /fdself hide.
+]]
+local sp = {}
+SLASH_FOREVERDEVSELF1 = "/fdself"
+SlashCmdList["FOREVERDEVSELF"] = function(msg)
+	msg = strtrim(msg or ""):lower()
+	local function plog(fmt, ...)
+		local line = select("#", ...) > 0 and fmt:format(...) or fmt
+		ForeverDevInfoDB = ForeverDevInfoDB or {}
+		ForeverDevInfoDB.selfProbe = ForeverDevInfoDB.selfProbe or {}
+		local l = ForeverDevInfoDB.selfProbe
+		l[#l + 1] = date("%H:%M:%S") .. " " .. line
+		while #l > 200 do table.remove(l, 1) end
+		print("|cff33ff99FDI self|r " .. line)
+	end
+	if msg == "hide" then
+		if sp.host then sp.host:Hide(); sp.host = nil end
+		plog("removed")
+		return
+	end
+	if sp.host then plog("already built - /fdself hide first"); return end
+	if InCombatLockdown() then plog("build it out of combat"); return end
+	local id = tonumber(msg) or 11196
+	local sv = _G.EverAurasSaved
+	local fp = sv and sv.foreverEngine and sv.foreverEngine.fingerprints and sv.foreverEngine.fingerprints[id]
+	if type(fp) ~= "table" then plog("no learned fingerprint for %d yet (get the debuff once out of combat with a display that uses it)", id); return end
+	if C_AddOns and not C_AddOns.IsAddOnLoaded("Blizzard_AuraContainer") then pcall(C_AddOns.LoadAddOn, "Blizzard_AuraContainer") end
+	local FLAGS = { "isFromPlayerOrPlayerPet", "canApplyAura", "isStealable", "isBossAura", "nameplateShowAll", "nameplateShowPersonal" }
+	local slots = {
+		{ "A", {}, "no filters" },
+	}
+	local dur = tonumber(fp.duration) or 0
+	if dur > 0 then
+		slots[#slots + 1] = { "B", { maxDuration = dur }, ("maxDuration %g"):format(dur) }
+		slots[#slots + 1] = { "C", { maxDuration = dur + 1 }, ("maxDuration %g"):format(dur + 1) }
+	end
+	if type(fp.dispel) == "string" then
+		slots[#slots + 1] = { "D", { includeDispelTypes = { [fp.dispel] = true } }, "dispel " .. fp.dispel }
+	end
+	local all = {}
+	if dur > 0 then all.maxDuration = dur + 0.5 end
+	if type(fp.dispel) == "string" then all.includeDispelTypes = { [fp.dispel] = true } end
+	local letter = string.byte("E")
+	for _, k in ipairs(FLAGS) do
+		if type(fp[k]) == "boolean" then
+			slots[#slots + 1] = { string.char(letter), { [k] = fp[k] }, k .. "=" .. tostring(fp[k]) }
+			all[k] = fp[k]
+			letter = letter + 1
+		end
+	end
+	slots[#slots + 1] = { "Z", all, "everything (engine)" }
+	local host = CreateFrame("Frame", "FDISelfHost", UIParent)
+	host:SetSize(#slots * 52, 70)
+	host:SetPoint("CENTER", UIParent, "CENTER", 0, 150)
+	sp.host = host
+	local ok, c = pcall(CreateFrame, "AuraContainer", nil, host, "CustomAuraContainerTemplate")
+	if not ok or not c then plog("container -> ERROR %s", show(c)); return end
+	c:SetAllPoints(host)
+	pcall(c.SetUnit, c, "player")
+	for i, s in ipairs(slots) do
+		local label, cand, desc = s[1], s[2], s[3]
+		local cap = host:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+		cap:SetPoint("TOP", host, "TOPLEFT", 26 + 52 * (i - 1), 0)
+		cap:SetText(label)
+		local okS, frame = pcall(c.AddAuraSlot, c, "self" .. label, "HARMFUL|PLAYER", {
+			candidateFilters = next(cand) and cand or nil,
+			initializeFrame = function(b)
+				b:SetSize(36, 36)
+				local icon = b:CreateTexture(nil, "ARTWORK"); icon:SetAllPoints()
+				local fs = b:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"); fs:SetPoint("TOP", b, "BOTTOM", 0, -1)
+				pcall(b.SetIcon, b, icon)
+				pcall(b.SetDurationText, b, fs, nil)
+			end,
+		})
+		plog("slot %s (%s) -> %s", label, desc, okS and "ok" or ("ERROR " .. show(frame)))
+		if okS and frame then
+			pcall(function() frame:ClearAllPoints(); frame:SetPoint("TOP", host, "TOPLEFT", 26 + 52 * (i - 1), -14) end)
+		end
+	end
+	pcall(c.UpdateAllAuras, c)
+	plog("built for %d (learned duration %g). Get the debuff on you and take a screenshot.", id, dur)
+end
+
+--[[ ------------------------------------------------------------------------
+     /fdcount  - can the cooldown countdown on an engine icon count like Blizzard's buff frame?
+
+     Blizzard's Cooldown countdown numbers round UP (36.4 s left -> "37"), the buff frame's duration
+     text rounds DOWN ("36 s"). Cooldown:SetCountdownFormatter(NumericFormatter) may let us pick.
+     Slots on YOUR OWN debuffs (Recently Bandaged), side by side:
+       A  cooldown, default countdown           (reference: rounds up)
+       B  cooldown, NumericRuleFormatter: whole seconds rounded DOWN, "%d"
+       C  cooldown, NumericRuleFormatter: seconds down, minutes/hours rounded up ("2m")
+       D  cooldown, SecondsFormatter like Blizzard's aura text (Truncate, "36 s")
+       E  no cooldown: the engine's duration text with the default formatter (reference: "36 s")
+     Build out of combat, bandage yourself, screenshot. /fdcount hide.
+]]
+local cp = {}
+SLASH_FOREVERDEVCOUNT1 = "/fdcount"
+SlashCmdList["FOREVERDEVCOUNT"] = function(msg)
+	msg = strtrim(msg or ""):lower()
+	local function clog(fmt, ...)
+		local line = select("#", ...) > 0 and fmt:format(...) or fmt
+		ForeverDevInfoDB = ForeverDevInfoDB or {}
+		ForeverDevInfoDB.countProbe = ForeverDevInfoDB.countProbe or {}
+		local l = ForeverDevInfoDB.countProbe
+		l[#l + 1] = date("%H:%M:%S") .. " " .. line
+		while #l > 200 do table.remove(l, 1) end
+		print("|cff33ff99FDI count|r " .. line)
+	end
+	if msg == "hide" then
+		if cp.host then cp.host:Hide(); cp.host = nil end
+		clog("removed")
+		return
+	end
+	if cp.host then clog("already built - /fdcount hide first"); return end
+	if InCombatLockdown() then clog("build it out of combat"); return end
+	if C_AddOns and not C_AddOns.IsAddOnLoaded("Blizzard_AuraContainer") then pcall(C_AddOns.LoadAddOn, "Blizzard_AuraContainer") end
+
+	local R = Enum.NumericRuleFormatRounding or {}
+	local function ruleFormatter(rules)
+		local ok, f = pcall(C_StringUtil.CreateNumericRuleFormatter)
+		if not ok or not f then clog("CreateNumericRuleFormatter -> ERROR %s", show(f)); return nil end
+		local okB, err = pcall(f.SetBreakpoints, f, rules)
+		clog("rule formatter SetBreakpoints -> %s", okB and "ok" or ("ERROR " .. show(err)))
+		return okB and f or nil
+	end
+	local floorSeconds = ruleFormatter({
+		{ threshold = 0, step = 1, rounding = R.Down or 2, format = "%d" },
+	})
+	local blizzLike = ruleFormatter({
+		{ threshold = 0, step = 1, rounding = R.Down or 2, format = "%d" },
+		{ threshold = 90.5, format = "%dm", components = { { div = 60, step = 1, rounding = R.Up or 1 } } },
+		{ threshold = 5400.5, format = "%dh", components = { { div = 3600, step = 1, rounding = R.Up or 1 } } },
+	})
+	local auraText
+	do
+		local ok, f = pcall(C_StringUtil.CreateSecondsFormatter)
+		if ok and f then
+			local E = Enum
+			local curve = C_CurveUtil.CreateCurve()
+			curve:SetType(E.LuaCurveType.Step)
+			curve:AddPoint(0, E.SecondsFormatterInterval.Seconds)
+			curve:AddPoint(1 + 1.5 * 60, E.SecondsFormatterInterval.Minutes)
+			curve:AddPoint(1 + 1.5 * 3600, E.SecondsFormatterInterval.Hours)
+			curve:AddPoint(1 + 1.5 * 86400, E.SecondsFormatterInterval.Days)
+			pcall(f.SetDefaultAbbreviation, f, E.SecondsFormatterAbbreviation.OneLetter)
+			pcall(f.SetRounding, f, E.SecondsFormatterRounding.Truncate)
+			pcall(f.SetCanRoundUpLastUnit, f, true)
+			pcall(f.SetMinInterval, f, E.SecondsFormatterInterval.Seconds)
+			pcall(f.SetMaxIntervalCurve, f, curve)
+			pcall(f.SetDesiredUnitCount, f, 1)
+			auraText = f
+		else
+			clog("CreateSecondsFormatter -> ERROR %s", show(f))
+		end
+	end
+
+	local host = CreateFrame("Frame", "FDICountHost", UIParent)
+	host:SetSize(5 * 60, 70)
+	host:SetPoint("CENTER", UIParent, "CENTER", 0, 120)
+	cp.host = host
+	local ok, c = pcall(CreateFrame, "AuraContainer", nil, host, "CustomAuraContainerTemplate")
+	if not ok or not c then clog("container -> ERROR %s", show(c)); return end
+	c:SetAllPoints(host)
+	pcall(c.SetUnit, c, "player")
+	local slots = {
+		{ "A", "default countdown", nil, true },
+		{ "B", "rule: seconds down", floorSeconds, true },
+		{ "C", "rule: s down, m/h up", blizzLike, true },
+		{ "D", "SecondsFormatter like aura text", auraText, true },
+		{ "E", "engine duration text", nil, false },
+	}
+	for i, s in ipairs(slots) do
+		local label, desc, formatter, withCooldown = s[1], s[2], s[3], s[4]
+		local cap = host:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+		cap:SetPoint("TOP", host, "TOPLEFT", 30 + 60 * (i - 1), 0)
+		cap:SetText(label)
+		local okS, frame = pcall(c.AddAuraSlot, c, "count" .. label, "HARMFUL|PLAYER", {
+			initializeFrame = function(b)
+				b:SetSize(40, 40)
+				local icon = b:CreateTexture(nil, "ARTWORK"); icon:SetAllPoints()
+				pcall(b.SetIcon, b, icon)
+				if withCooldown then
+					local cd = CreateFrame("Cooldown", nil, b, "CooldownFrameTemplate")
+					cd:SetAllPoints(icon)
+					pcall(cd.SetDrawBling, cd, false)
+					pcall(cd.SetHideCountdownNumbers, cd, false)
+					if formatter then
+						local okF, err = pcall(cd.SetCountdownFormatter, cd, formatter)
+						clog("slot %s SetCountdownFormatter -> %s", label, okF and "ok" or ("ERROR " .. show(err)))
+					end
+					pcall(b.SetDurationCooldown, b, cd)
+				else
+					local fs = b:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge"); fs:SetPoint("CENTER")
+					pcall(b.SetDurationText, b, fs, nil)
+				end
+			end,
+		})
+		clog("slot %s (%s) -> %s", label, desc, okS and "ok" or ("ERROR " .. show(frame)))
+		if okS and frame then
+			pcall(function() frame:ClearAllPoints(); frame:SetPoint("TOP", host, "TOPLEFT", 30 + 60 * (i - 1), -14) end)
+		end
+	end
+	pcall(c.UpdateAllAuras, c)
+	clog("built. Bandage yourself and screenshot A-E next to the buff frame.")
+end
