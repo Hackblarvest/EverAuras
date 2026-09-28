@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.7.2-alpha (2026-09-28)
+
+- **Animated glow in the last X seconds.** A display with *Remaining Time* < X on an aura trigger now shows its
+  WeakAuras glow *animated* while the aura runs out, in combat too: Button Glow's ants crawl, Pixel Glow's lines
+  circle, Autocast Shine sparkles, Proc Glow loops, all with your settings, for the last X seconds only. Two
+  recipes: one trigger with *Remaining Time* < 3 gives an icon with an animated glow for the last 3 seconds;
+  add a second trigger on the same aura with *Aura(s) Found* and no Remaining Time, set *Required for
+  Activation: Any Triggers*, and the one icon shows the whole time with its countdown, glowing for the last
+  3 seconds. The engine sizes a bar by the aura's remaining time, which the
+  game fills, and a clip anchored to the bar's fill edge opens exactly when X seconds are left; the glow lives in
+  it. The aura's total duration comes from what EverAuras learned of it out of combat or from the spell's
+  description ("... over 18 sec"). Asked for by Carl. Thanks, Carl!
+- **Glows are moved by the game, not by scripts.** While an aura is shown, the game refuses to let addon code
+  re-position anything anchored to its aura frames, which is where these glows live, so Pixel Glow and Autocast
+  Shine, which moved their lines and sparkles every frame, stood still or filled BugSack ("Attempt to access
+  forbidden object"). All four glow types are now driven by animations (Path, FlipBook): nothing runs per frame
+  and nothing is re-positioned. Pixel Glow's lines are drawn as squares turned 45 degrees riding the border ring
+  under a mask, which bends them round the corners the way LibCustomGlow's do.
+- Fixed an error ("engine (layout) ... GetFrameLevel") when frame levels were re-applied while an aura was shown.
+
 ## 0.7.1-alpha (2026-09-28)
 
 - **Debuffs on you (Weakened Soul, Forbearance, Recently Bandaged ...):** Blizzard's aura containers refuse to pick
