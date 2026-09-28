@@ -103,6 +103,42 @@ local function Trim(s) return (tostring(s or ""):gsub("^%s+", ""):gsub("%s+$", "
 -- which renders as "114.5" in combat. The engine can format the duration object itself ("1m 54s",
 -- "2.5s"). Prototypes.lua's dynamic_texts.p.func asks here for a SecondsFormatter matching the WA
 -- progress precision: 0 = whole seconds, 1-3 = always decimals, 4-6 = decimals under 3 s.
+-- Cooldown countdown numbers round UP (36.4 s left -> "37") while Blizzard's buff frame rounds DOWN
+-- ("36 s"), so an aura icon and the buff it mirrors disagree by one for most of every second. Aura icons
+-- get a countdown formatter that counts like the buff frame: whole seconds rounded down, minutes and
+-- hours rounded up past 90 s / 90 min like Blizzard's aura text (Blizzard_AuraContainerShared.lua).
+-- Measured 2026-09-28 (ForeverDevInfo /fdcount). Spell cooldown icons keep the default, which counts
+-- like the action bar.
+local auraCountdownFormatter
+function Private.ForeverAuraCountdownFormatter()
+  if auraCountdownFormatter ~= nil then return auraCountdownFormatter or nil end
+  auraCountdownFormatter = false
+  if not (C_StringUtil and C_StringUtil.CreateNumericRuleFormatter) then return nil end
+  local R = (Enum and Enum.NumericRuleFormatRounding) or {}
+  local ok, f = pcall(C_StringUtil.CreateNumericRuleFormatter)
+  if not ok or not f then return nil end
+  local okB = pcall(f.SetBreakpoints, f, {
+    { threshold = 0, step = 1, rounding = R.Down or 2, format = "%d" },
+    { threshold = 90.5, format = "%dm", components = { { div = 60, step = 1, rounding = R.Up or 1 } } },
+    { threshold = 5400.5, format = "%dh", components = { { div = 3600, step = 1, rounding = R.Up or 1 } } },
+    { threshold = 129600.5, format = "%dd", components = { { div = 86400, step = 1, rounding = R.Up or 1 } } },
+  })
+  if okB then auraCountdownFormatter = f end
+  return auraCountdownFormatter or nil
+end
+
+-- A display whose triggers are all Aura triggers shows a buff or debuff: its countdown follows the
+-- buff frame. Anything else (cooldowns, mixed) keeps the default countdown.
+local function IsAuraOnlyDisplay(data)
+  local n = 0
+  for _, tr in ipairs(data and data.triggers or {}) do
+    local t = tr and tr.trigger
+    if not (t and t.type == "aura2") then return false end
+    n = n + 1
+  end
+  return n > 0
+end
+
 local secretFormatters = {}
 function Private.SecretDurationFormatter(precision)
   precision = tonumber(precision) or 1
@@ -228,7 +264,61 @@ end
 local REM_OPS = { ["<"] = true, ["<="] = true, [">"] = true, [">="] = true }
 
 -- One aura2 trigger -> its part of the plan. Reasons it cannot be drawn go through no().
-local function AnalyseAuraTrigger(t, no)
+-- Blizzard's aura containers refuse to pick auras by spell id where that could single out an encounter
+-- debuff (Blizzard_AuraContainerUtil.lua, CanApplyIdentityCandidateFilters): debuffs on friendly units
+-- (you, your pet, a friendly target) and buffs on hostile units, unless the spell is never secret.
+-- Player and pet are always friendly; target and focus depend on who is targeted.
+local function NeverSecret(ids)
+  if not (C_Secrets and C_Secrets.GetSpellAuraSecrecy and Enum.SecrecyLevel) then return false end
+  if #ids == 0 then return false end
+  for _, id in ipairs(ids) do
+    local ok, level = pcall(C_Secrets.GetSpellAuraSecrecy, id)
+    if not ok or level ~= Enum.SecrecyLevel.NeverSecret then return false end
+  end
+  return true
+end
+
+-- Fingerprints of debuffs seen on you while auras were plain: spellId -> { duration, dispel, flags }.
+-- Blizzard's containers may not filter debuffs on you by spell, but they may filter by these properties
+-- (Blizzard_AuraContainerUtil.lua, DoesAuraPassCandidateFilters), so a debuff is matched by all of them.
+local FP_FLAGS = { "canApplyAura", "isStealable", "isBossAura", "nameplateShowAll", "nameplateShowPersonal",
+                   "isFromPlayerOrPlayerPet" }
+
+local function Fingerprints()
+  local sv = SV()
+  if not sv then return nil end
+  sv.foreverEngine = sv.foreverEngine or {}
+  sv.foreverEngine.fingerprints = sv.foreverEngine.fingerprints or {}
+  return sv.foreverEngine.fingerprints
+end
+
+-- One fingerprint for a set of ids (the ranks of a spell): the longest duration, and every other
+-- property only where all known ranks agree. nil when none of them has been seen yet.
+local function FingerprintOf(ids)
+  local all = Fingerprints()
+  if not all then return nil end
+  local out, seen = { flags = {} }, 0
+  for _, id in ipairs(ids) do
+    local fp = all[id]
+    if type(fp) == "table" then
+      seen = seen + 1
+      out.duration = math.max(out.duration or 0, tonumber(fp.duration) or 0)
+      if seen == 1 then
+        out.dispel = fp.dispel
+        for _, k in ipairs(FP_FLAGS) do out.flags[k] = fp[k] end
+      else
+        if out.dispel ~= fp.dispel then out.dispel = nil end
+        for _, k in ipairs(FP_FLAGS) do if out.flags[k] ~= fp[k] then out.flags[k] = nil end end
+      end
+    end
+  end
+  return seen > 0 and out or nil
+end
+
+local durWatch = {}   -- uid -> true: a display waiting for a debuff's fingerprint (re-added once seen)
+local fpUsers = {}    -- uid -> true: displays that match debuffs on you by fingerprint
+
+local function AnalyseAuraTrigger(t, no, data)
   local unit = t.unit or "player"
   if not UNIT_OK[unit] then no(T("Unit must be Player, Target, Focus or Pet")) end
   local filter = t.debuffType or "HELPFUL"
@@ -289,10 +379,58 @@ local function AnalyseAuraTrigger(t, no)
   -- Own Only = the filter's PLAYER token ("cast by you"). AuraData.isFromPlayerOrPlayerPet is true for
   -- any player's aura, so another hunter's Serpent Sting passed it.
   local filterString = (t.ownOnly == true) and (filter .. "|PLAYER") or filter
+  local candidate, byDuration, durationFromSetting, fingerprint = { includeSpellIDs = ids }, nil, nil, nil
+  local open = NeverSecret(sorted)
+  local friendlyDebuff = filter == "HARMFUL" and (unit == "player" or unit == "pet") and not open
+  if friendlyDebuff then
+    if unit == "player" and data and data.foreverEngineSelfDebuff == true then
+      -- the approximation: a debuff on you with the same fingerprint (duration, dispel type, flags)
+      if data.uid then fpUsers[data.uid] = true end
+      local fp = FingerprintOf(sorted)
+      local n = tonumber(data.foreverEngineSelfDebuffMax)
+      local fromSetting = n and n > 0
+      if not fromSetting then n = fp and fp.duration end
+      if fp or fromSetting then
+        candidate = {}
+        -- half a second of headroom: the filter is "at most", and durations carry a few ms of noise
+        if n and n > 0 then candidate.maxDuration = n + 0.5 end   -- 0 = permanent: a max duration would drop it
+        if fp then
+          if type(fp.dispel) == "string" and fp.dispel ~= "" then candidate.includeDispelTypes = { [fp.dispel] = true } end
+          for _, k in ipairs(FP_FLAGS) do
+            if type(fp.flags[k]) == "boolean" then candidate[k] = fp.flags[k] end
+          end
+        end
+        byDuration, durationFromSetting, fingerprint = n or 0, fromSetting and true or false, fp
+      else
+        if data.uid then durWatch[data.uid] = true end
+        no(T("the debuff's properties are not known yet: let it land on you once out of combat, or enter 'Longest duration' on the Display tab"))
+      end
+    else
+      no(unit == "pet"
+        and T("Blizzard does not let addons pick debuffs on your pet by spell while auras are secret")
+        or T("Blizzard does not let addons pick debuffs on yourself by spell while auras are secret; turn on 'Match debuffs on you by their properties' on the Display tab to track it approximately"))
+    end
+  end
+  -- target / focus: allowed or not depending on who is targeted, so only a warning (Explain). Not for
+  -- your own spells: your DoTs land on enemies and your buffs on friends, where the filter is allowed.
+  local warn
+  if not open and (unit == "target" or unit == "focus") then
+    local own = false
+    local bank = (Enum.SpellBookSpellBank and Enum.SpellBookSpellBank.Player) or 0
+    for _, id in ipairs(sorted) do
+      local ok, known = pcall(C_SpellBook.IsSpellKnown, id, bank)
+      if ok and known == true then own = true; break end
+    end
+    if not own then warn = (filter == "HARMFUL") and "friendly" or "hostile" end
+  end
   return { unit = unit, filter = filter, filterString = filterString, mode = mode, rem = rem,
-           candidate = { includeSpellIDs = ids }, ids = sorted, firstId = sorted[1],
+           candidate = candidate, ids = sorted, firstId = sorted[1], byDuration = byDuration, warn = warn,
+           durationFromSetting = durationFromSetting,
            byName = byName, unresolved = unresolved, unseen = unseen,
-           key = filterString .. ";" .. table.concat(sorted, ",") }
+           fingerprint = fingerprint,
+           key = filterString .. ";" .. (byDuration and ("fp" .. byDuration .. ":" .. tostring(candidate.includeDispelTypes and next(candidate.includeDispelTypes))
+             .. ":" .. (function() local f = {} for _, k in ipairs(FP_FLAGS) do f[#f + 1] = tostring(candidate[k]) end return table.concat(f, ",") end)())
+             or table.concat(sorted, ",")) }
 end
 
 -- Delegated Aura triggers publish a constant "true" to WeakAuras, and the engine decides which aura
@@ -360,6 +498,7 @@ function Engine.Classify(data)
   if data.foreverEngine == false then no(T("'Let the game engine draw this aura' is off for this display (Display tab)")) end
   if not Engine.IsAvailable() then no(T("Blizzard_AuraContainer is not available")) end
   if LibStub("Masque", true) then no(T("Masque is loaded")) end
+  if data.uid then durWatch[data.uid] = nil; fpUsers[data.uid] = nil end
   local triggers = type(data.triggers) == "table" and data.triggers or {}
   local n, auraIdx = #triggers, {}
   for i = 1, n do
@@ -377,7 +516,7 @@ function Engine.Classify(data)
   end
   local infos, auraTriggers = {}, {}
   for _, i in ipairs(auraIdx) do
-    infos[#infos + 1] = AnalyseAuraTrigger(triggers[i].trigger, no)
+    infos[#infos + 1] = AnalyseAuraTrigger(triggers[i].trigger, no, data)
     auraTriggers[i] = true
   end
   local unit = infos[1].unit
@@ -392,9 +531,10 @@ function Engine.Classify(data)
       no(T("Progress Bars are engine-driven with 'Show On: Aura(s) Found' only (so far)"))
     end
     if #r > 0 then return nil, r end
-    local key = table.concat({ unit, inf.filterString, inf.mode, table.concat(inf.ids, ",") }, ";")
+    local key = table.concat({ unit, inf.mode, inf.key }, ";")
     return { unit = unit, filter = inf.filter, filterString = inf.filterString, mode = inf.mode,
-             candidate = inf.candidate, firstId = inf.firstId, key = key,
+             candidate = inf.candidate, firstId = inf.firstId, key = key, byDuration = inf.byDuration, warn = inf.warn,
+             durationFromSetting = inf.durationFromSetting, fingerprint = inf.fingerprint,
              ids = inf.ids, byName = inf.byName, gen = spellbookGen, unresolved = inf.unresolved, unseen = inf.unseen,
              auraTriggers = auraTriggers, gates = gates }
   end
@@ -432,7 +572,15 @@ function Engine.Classify(data)
   end
   table.sort(all)
   local first = missing or remaining[1].part
+  local warn, byDuration, durationFromSetting, fingerprint
+  for _, inf in ipairs(infos) do
+    warn = warn or inf.warn
+    if inf.byDuration and not byDuration then
+      byDuration, durationFromSetting, fingerprint = inf.byDuration, inf.durationFromSetting, inf.fingerprint
+    end
+  end
   return { unit = unit, mode = "composite", parts = { missing = missing, remaining = remaining },
+           warn = warn, byDuration = byDuration, durationFromSetting = durationFromSetting, fingerprint = fingerprint,
            filter = first.filter, filterString = first.filterString, firstId = first.firstId,
            key = table.concat(keys, ";"), ids = all, byName = byName, gen = spellbookGen,
            unresolved = unresolved, unseen = unseen, auraTriggers = auraTriggers, gates = gates }
@@ -501,6 +649,22 @@ local REM_TEXT = { ["<"] = "less than %s s", ["<="] = "at most %s s", [">"] = "m
 
 -- True when no trigger of this display reads auras (cooldown / usable / range / resource triggers
 -- are plain data on Forever, in combat too): the engine has nothing to take over.
+-- The learned duration the approximation would use for this display (nil when not seen yet).
+function Engine.LearnedSelfDebuffDuration(data)
+  local plan = Engine.Classify(data)
+  if plan and plan.fingerprint then return plan.fingerprint.duration end
+  return nil
+end
+
+-- True when a display tracks debuffs on yourself (the case 'Match debuffs on you by their properties' is for).
+function Engine.TracksSelfDebuff(data)
+  for _, tr in ipairs(data and data.triggers or {}) do
+    local t = tr and tr.trigger
+    if t and t.type == "aura2" and (t.unit or "player") == "player" and t.debuffType == "HARMFUL" then return true end
+  end
+  return false
+end
+
 function Engine.HasNoAuraTrigger(data)
   if not data or type(data.triggers) ~= "table" or #data.triggers == 0 then return false end
   for _, tr in ipairs(data.triggers) do
@@ -530,7 +694,7 @@ function Engine.Explain(data, plan, reasons)
       if data.regionType == "icon" and plan.mode ~= "always" then
         kept = T("the border (also while nothing is drawn), and the glow: shown only while the icon is, and animated like WeakAuras' own")
       end
-      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It %s. Kept: position, size, groups, %%n/%%i texts, static colour/desaturate/zoom, %s. Not available: conditions and texts that read aura state (stacks, remaining, active), show/hide animations and actions on aura gain/loss.")
+      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It %s. Kept: position, size, groups, %%n/%%i texts, static colour/desaturate/zoom, %s; cooldown numbers count like the buff frame. Not available: conditions and texts that read aura state (stacks, remaining, active), show/hide animations and actions on aura gain/loss.")
         :format(plan.unit, plan.filterString, T(MODE_TEXT[plan.mode]), kept)
     end
     if plan.parts and Engine.HasGlowPartChoice(data) and (data.foreverEngineGlowPart or "both") ~= "both" then
@@ -551,6 +715,32 @@ function Engine.Explain(data, plan, reasons)
       else
         txt = txt .. " " .. T("|cffff9933Range gate off:|r %s. Enter a 'Range check spell' you know that has a range, e.g. Auto Shot."):format(why)
       end
+    end
+    if plan.byDuration then
+      local okN, spell = pcall(C_Spell.GetSpellName, plan.firstId)
+      spell = (okN and type(spell) == "string" and not issecretvalue(spell) and spell ~= "") and spell or T("the debuff")
+      local parts = {}
+      if plan.byDuration > 0 then
+        parts[#parts + 1] = T("lasting at most %s s%s"):format(tostring(plan.byDuration), plan.durationFromSetting and T(" (your setting)") or "")
+      else
+        parts[#parts + 1] = T("without a duration")
+      end
+      local fp = plan.fingerprint
+      if fp then
+        parts[#parts + 1] = (type(fp.dispel) == "string" and fp.dispel ~= "") and T("dispel type %s"):format(fp.dispel) or T("any dispel type")
+        local n = 0
+        for _, k in ipairs(FP_FLAGS) do if type(fp.flags[k]) == "boolean" then n = n + 1 end end
+        parts[#parts + 1] = T("%d more of its properties"):format(n)
+      end
+      txt = txt .. " " .. T("|cffff9933Approximation:|r Blizzard does not let addons tell which debuff on you it is while auras are secret, so this shows a debuff on you that matches %s's fingerprint, learned when it landed on you: %s. A different debuff with exactly the same fingerprint would count too."):format(spell, table.concat(parts, ", "))
+      if fp and fp.flags.isFromPlayerOrPlayerPet == false and (plan.filterString or ""):find("PLAYER") then
+        txt = txt .. " " .. T("|cffff9933Note:|r %s was not put on you by you, but 'Own Only' is on, so it never counts. Turn 'Own Only' off."):format(spell)
+      end
+    end
+    if plan.warn == "friendly" then
+      txt = txt .. " " .. T("|cffff9933Note:|r Blizzard does not let addons pick debuffs on friendly units by spell while auras are secret: on a friendly target this display finds nothing (a 'missing' icon shows as missing).")
+    elseif plan.warn == "hostile" then
+      txt = txt .. " " .. T("|cffff9933Note:|r Blizzard does not let addons pick buffs on hostile units by spell while auras are secret: on an enemy target this display finds nothing (a 'missing' icon shows as missing).")
     end
     if InertConditions(data, plan) then
       txt = txt .. " " .. T("|cffff9933Note:|r a condition reads trigger data other than 'Buffed'; it never fires on this display.")
@@ -663,6 +853,8 @@ local function BuildSlot(att, region, plan)
       s.cooldown = CreateFrame("Cooldown", nil, button, "CooldownFrameTemplate")
       s.cooldown:SetAllPoints(s.icon)
       pcall(s.cooldown.SetDrawBling, s.cooldown, false)
+      local fmt = Private.ForeverAuraCountdownFormatter()
+      if fmt then pcall(s.cooldown.SetCountdownFormatter, s.cooldown, fmt) end
       s.duration = button:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
       s.duration:SetPoint("CENTER")
       s.count = button:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
@@ -1611,12 +1803,16 @@ icon.default.foreverEngine = true            -- per-display opt-out (false); Pri
 icon.default.foreverEngineRange = false      -- 'only while the spell is in range of the unit'
 icon.default.foreverEngineRangeSpell = ""    -- override for the range-check spell (blank = trigger's spell)
 icon.default.foreverEngineGlowPart = "both"  -- missing + time left: where the static glow goes
+icon.default.foreverEngineSelfDebuff = false  -- debuffs on yourself: match any own debuff by duration
+icon.default.foreverEngineSelfDebuffMax = ""  -- its longest duration in seconds (blank = as seen)
 
 local aurabar = Private.regionTypes and Private.regionTypes.aurabar
 if aurabar and aurabar.modify and aurabar.default then
   aurabar.default.foreverEngine = true
   aurabar.default.foreverEngineRange = false
   aurabar.default.foreverEngineRangeSpell = ""
+  aurabar.default.foreverEngineSelfDebuff = false
+  aurabar.default.foreverEngineSelfDebuffMax = ""
   local origBarModify = aurabar.modify
   aurabar.modify = function(parent, region, data)
     origBarModify(parent, region, data)
@@ -1624,9 +1820,20 @@ if aurabar and aurabar.modify and aurabar.default then
   end
 end
 
+local function ApplyAuraCountdown(region, data)
+  local cd = region and region.cooldown
+  if not (cd and cd.SetCountdownFormatter) then return end
+  local fmt = IsAuraOnlyDisplay(data) and Private.ForeverAuraCountdownFormatter() or nil
+  if region.foreverCountdown ~= fmt then
+    region.foreverCountdown = fmt
+    pcall(cd.SetCountdownFormatter, cd, fmt)
+  end
+end
+
 local origModify = icon.modify
 icon.modify = function(parent, region, data)
   origModify(parent, region, data)
+  Guard("countdown", ApplyAuraCountdown, region, data)
   Guard("sync", Engine.Sync, region, data)
 end
 
@@ -1661,7 +1868,7 @@ function Private.Pause(...)  origPause(...);  ScheduleAll() end
 function Private.Resume(...) origResume(...); ScheduleAll() end
 
 Private.callbacks:RegisterCallback("AboutToDelete", function(_, uid, id)
-  decided[uid], nameWatch[uid], readd[uid] = nil, nil, nil
+  decided[uid], nameWatch[uid], readd[uid], durWatch[uid], fpUsers[uid] = nil, nil, nil, nil, nil
   for region, att in pairs(attachments) do
     if region.id == id and att.want then att.want = nil; Schedule(region) end
   end
@@ -1672,7 +1879,42 @@ Private.callbacks:RegisterCallback("WA_SECRET_STATE_UPDATE", function() Engine.F
 local QueueSpellbookRefresh   -- defined below
 
 -- Walk a unit's auras while they are plain and remember the ids behind the names our triggers use.
+-- While auras are plain, remember every debuff on you as a fingerprint, for displays that match by it.
+local function LearnFingerprints()
+  if not (next(durWatch) or next(fpUsers)) or not Engine.IsSafe() then return end
+  local all = Fingerprints()
+  if not all then return end
+  local changed = false
+  for i = 1, 40 do
+    local ok, a = pcall(C_UnitAuras.GetAuraDataByIndex, "player", i, "HARMFUL")
+    if not ok or type(a) ~= "table" then break end
+    local id, dur = a.spellId, a.duration
+    if type(id) == "number" and type(dur) == "number" and not issecretvalue(id) and not issecretvalue(dur) then
+      -- durations come with a few ms of noise (60 one time, 60.001 the next): keep a tenth
+      local fp = { duration = math.floor(dur * 10 + 0.5) / 10 }
+      local dispel = a.dispelName
+      if type(dispel) == "string" and not issecretvalue(dispel) and dispel ~= "" then fp.dispel = dispel end
+      for _, k in ipairs(FP_FLAGS) do
+        local v = a[k]
+        if type(v) == "boolean" and not issecretvalue(v) then fp[k] = v end
+      end
+      local old = all[id]
+      local same = type(old) == "table" and old.duration == fp.duration and old.dispel == fp.dispel
+      if same then
+        for _, k in ipairs(FP_FLAGS) do if old[k] ~= fp[k] then same = false; break end end
+      end
+      if not same then all[id] = fp; changed = true end
+    end
+  end
+  if changed then
+    for uid in pairs(durWatch) do readd[uid] = true end
+    for uid in pairs(fpUsers) do readd[uid] = true end
+    FlushReadds()
+  end
+end
+
 local function LearnFromUnit(unit)
+  if unit == "player" and C_UnitAuras and C_UnitAuras.GetAuraDataByIndex then LearnFingerprints() end
   if not UNIT_OK[unit] or not Engine.IsSafe() or not next(watchNames) then return end
   if not (C_UnitAuras and C_UnitAuras.GetAuraDataByIndex) then return end
   local learned = Learned()

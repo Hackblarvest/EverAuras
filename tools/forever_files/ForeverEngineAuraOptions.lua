@@ -134,6 +134,40 @@ table.insert(OptionsPrivate.registerRegions, function()
       end,
       hidden = function() return gateHidden(true) end,
     }
+    group.foreverEngineSelfDebuff = {
+      type = "toggle", order = 100.55, width = WA.doubleWidth,
+      name = T("Match debuffs on you by their properties (approximation)"),
+      desc = T("Blizzard does not let addons pick debuffs on yourself by spell while auras are secret (in combat). With this on, EverAuras learns the debuff's fingerprint the first time it lands on you out of combat (its duration, dispel type and the flags Blizzard lets addons filter on) and the engine shows a debuff on you that matches all of it, e.g. Weakened Soul for a priest. 'Own Only' decides whether only debuffs you put on yourself count. A different debuff with exactly the same fingerprint would count too."),
+      get = function() return data.foreverEngineSelfDebuff == true end,
+      set = function(_, v)
+        data.foreverEngineSelfDebuff = v and true or false
+        WA.Add(data)
+        if WA.ClearAndUpdateOptions then WA.ClearAndUpdateOptions(data.id) end
+      end,
+      hidden = function()
+        if data.foreverEngine == false then return true end
+        return not (Engine.TracksSelfDebuff and Engine.TracksSelfDebuff(data))
+      end,
+    }
+    group.foreverEngineSelfDebuffMax = {
+      type = "input", order = 100.56, width = WA.doubleWidth,
+      name = function()
+        local learned = Engine.LearnedSelfDebuffDuration and Engine.LearnedSelfDebuffDuration(data)
+        if learned then return T("Longest duration in seconds (blank = the debuff's own: %s s)"):format(tostring(learned)) end
+        return T("Longest duration in seconds (blank = the debuff's own, learned when it lands on you)")
+      end,
+      desc = T("Debuffs on you that last longer than this are ignored. Blank: EverAuras uses the debuff's own duration (e.g. 15 s for Weakened Soul), learned with its fingerprint the first time it lands on you out of combat."),
+      get = function() return data.foreverEngineSelfDebuffMax or "" end,
+      set = function(_, v)
+        data.foreverEngineSelfDebuffMax = strtrim(v or "")
+        WA.Add(data)
+        if WA.ClearAndUpdateOptions then WA.ClearAndUpdateOptions(data.id) end
+      end,
+      hidden = function()
+        if data.foreverEngine == false or data.foreverEngineSelfDebuff ~= true then return true end
+        return not (Engine.TracksSelfDebuff and Engine.TracksSelfDebuff(data))
+      end,
+    }
     group.foreverEngineGlowPart = {
       type = "select", order = 100.6, width = WA.doubleWidth,
       name = T("Glow"),
