@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.7.1-alpha (2026-09-28)
+
+- **Debuffs on you (Weakened Soul, Forbearance, Recently Bandaged ...):** Blizzard's aura containers refuse to pick
+  debuffs on friendly units (you, your pet, a friendly target) and buffs on hostile units by spell while auras are
+  secret, so such a display could never match in combat, and the status line wrongly said "Engine-driven". It now
+  says why. New option, *Display tab -> Match debuffs on you by their properties (approximation)*: EverAuras learns the
+  debuff's fingerprint the first time it lands on you out of combat (duration, dispel type and the flags Blizzard does
+  let addons filter on) and the engine shows a debuff on you that matches all of it, e.g. Weakened Soul for a priest.
+  *Own Only* decides whether only debuffs you put on yourself count. Reported by a priest levelling on the beta.
+- **Countdown numbers on aura icons match Blizzard's buff frame.** The Cooldown swipe's numbers round up (36.4 s left
+  showed "37") while the buff frame rounds down ("36 s"). Icons whose triggers are all Aura triggers now count like the
+  buff frame, in and out of combat; over 90 s they show minutes the way Blizzard does. Spell cooldown icons keep the
+  default, which counts like the action bar.
+- Target and focus displays note when their spell is not yours and the filter cannot apply on a friendly target
+  (debuffs) or an enemy target (buffs).
+- Learned aura durations are stored to a tenth of a second; the max-duration filter gets half a second of headroom.
+
 ## 0.7.0-alpha (2026-09-27)
 
 - **Animated glow on engine-driven icons:** WeakAuras' Button Glow, Pixel Glow, Autocast Shine and Proc Glow, with
