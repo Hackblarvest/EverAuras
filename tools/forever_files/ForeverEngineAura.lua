@@ -58,10 +58,18 @@ local WARN = "forever_engine"
 local UNIT_OK = { player = true, target = true, focus = true, pet = true }
 local MODE = { showOnActive = "active", showOnMissing = "missing", showAlways = "always" }
 local UNSUPPORTED = {
-  "useNamePattern", "useIgnoreName", "useIgnoreExactSpellId", "use_debuffClass",
+  "useNamePattern", "useIgnoreName", "useIgnoreExactSpellId",
   "useStacks", "useTotal", "use_tooltip", "fetchTooltip", "use_unitName", "use_npcId",
-  "use_stealable", "use_isBossDebuff", "use_castByPlayer", "useAffected", "showClones", "useGroup_count",
+  "useAffected", "showClones", "useGroup_count",
 }
+
+-- Aura properties Blizzard's containers filter on for EVERY aura (not identity filters, so the rule that
+-- keeps addons from picking debuffs on friendly units by spell does not apply to them). WeakAuras' Debuff
+-- Type classes -> the aura's dispelName; Enrage has been reported both as "Enrage" and as "".
+local DISPEL_NAMES = { magic = { "Magic" }, curse = { "Curse" }, disease = { "Disease" }, poison = { "Poison" },
+                       enrage = { "Enrage", "" }, bleed = { "Bleed" } }
+local PROPERTY_FLAGS = { { "use_stealable", "isStealable" }, { "use_isBossDebuff", "isBossAura" },
+                         { "use_castByPlayer", "isFromPlayerOrPlayerPet" } }
 
 local attachments = setmetatable({}, { __mode = "k" })   -- region -> att
 local pending = setmetatable({}, { __mode = "k" })       -- region -> true
@@ -292,6 +300,114 @@ local function Fingerprints()
   return sv.foreverEngine.fingerprints
 end
 
+-- Every aura with a dispel type (or stealable) EverAuras could read while auras were plain, on any unit
+-- it can read, plus the untyped debuffs on you: spellId -> { k = "HARMFUL" | "HELPFUL", d = dispelName
+-- or "", s = isStealable, b = isBossAura, pp / np = seen cast by a player / by a non-player, m = seen
+-- cast by you, t = last seen }. Property-based displays take their sound spell ids from here: the game
+-- plays aura sounds by spell id only.
+local MAX_SEEN_TOTAL, MAX_SOUND_IDS = 3000, 100
+local seenCount
+local function AuraSeen()
+  local sv = SV()
+  if not sv then return nil end
+  sv.foreverEngine = sv.foreverEngine or {}
+  local fe = sv.foreverEngine
+  if not fe.auraSeen then
+    fe.auraSeen = {}
+    -- development builds kept one list per display ("HARMFUL;t=Poison" -> ids): fold them in
+    for key, set in pairs(fe.propertySeen or {}) do
+      local filter, dn = tostring(key):match("^(%u+)"), tostring(key):match("t=(%a+)")
+      if filter and type(set) == "table" then
+        for id in pairs(set) do
+          if type(id) == "number" then fe.auraSeen[id] = { k = filter, d = dn or "", t = 0 } end
+        end
+      end
+    end
+    fe.propertySeen = nil
+  end
+  if not seenCount then
+    seenCount = 0
+    for _ in pairs(fe.auraSeen) do seenCount = seenCount + 1 end
+  end
+  return fe.auraSeen
+end
+
+-- Would the game's candidate filters pass an aura remembered as e?
+local function SeenMatches(e, cand)
+  if not cand then return true end
+  local dn = (e.d ~= nil and e.d ~= "") and e.d or nil
+  if cand.includeDispelTypes and not (dn and cand.includeDispelTypes[dn]) then return false end
+  if cand.excludeDispelTypes and dn and cand.excludeDispelTypes[dn] then return false end
+  if cand.isStealable ~= nil and (e.s == true) ~= cand.isStealable then return false end
+  if cand.isBossAura ~= nil and (e.b == true) ~= cand.isBossAura then return false end
+  if cand.isFromPlayerOrPlayerPet == true and not e.pp then return false end
+  if cand.isFromPlayerOrPlayerPet == false and not e.np then return false end
+  return true
+end
+
+-- The candidate filters a plan hands to the game (composites: the part that draws the aura).
+local function PlanCandidate(plan)
+  if plan.candidate then return plan.candidate end
+  local p = plan.parts
+  local part = p and (p.found or p.missing or (p.remaining[1] and p.remaining[1].part))
+  return part and part.candidate
+end
+
+-- The remembered spell ids a property-based plan matches: the newest MAX_SOUND_IDS, sorted by id; plus
+-- how many match in all.
+local function SeenIds(plan)
+  local seen, out = AuraSeen(), {}
+  if not seen then return out, 0 end
+  local cand = PlanCandidate(plan)
+  local own = (plan.filterString or ""):find("PLAYER", 1, true) ~= nil
+  local list = {}
+  for id, e in pairs(seen) do
+    if e.k == plan.filter and (not own or e.m) and SeenMatches(e, cand) then list[#list + 1] = id end
+  end
+  table.sort(list, function(x, y)
+    local tx, ty = seen[x].t or 0, seen[y].t or 0
+    if tx ~= ty then return tx > ty end
+    return x < y
+  end)
+  for i = 1, math.min(#list, MAX_SOUND_IDS) do out[i] = list[i] end
+  table.sort(out)
+  return out, #list
+end
+
+-- Remember one plain aura; true when that changes which displays it matches.
+local function RecordAura(seen, a, filter, unit)
+  local id, dn = a.spellId, a.dispelName
+  if type(id) ~= "number" or issecretvalue(id) or issecretvalue(dn) then return false end
+  local st = a.isStealable
+  if issecretvalue(st) then st = nil end
+  local typed = type(dn) == "string" and dn ~= ""
+  if not typed and st ~= true and not (unit == "player" and filter == "HARMFUL") then return false end
+  local e = seen[id]
+  local changed = false
+  if not e then
+    if seenCount >= MAX_SEEN_TOTAL then return false end
+    e, changed = {}, true
+    seen[id] = e
+    seenCount = seenCount + 1
+  end
+  local function set(k, v) if e[k] ~= v then e[k] = v; changed = true end end
+  set("k", filter)
+  set("d", typed and dn or "")
+  if type(st) == "boolean" then set("s", st) end
+  local b = a.isBossAura
+  if type(b) == "boolean" and not issecretvalue(b) then set("b", b) end
+  local p = a.isFromPlayerOrPlayerPet
+  if type(p) == "boolean" and not issecretvalue(p) then
+    if p then set("pp", true) else set("np", true) end
+  end
+  local src = a.sourceUnit
+  if type(src) == "string" and not issecretvalue(src) and (src == "player" or src == "pet" or src == "vehicle") then
+    set("m", true)
+  end
+  e.t = time and time() or 0   -- recency only: no re-registration for it
+  return changed
+end
+
 -- One fingerprint for a set of ids (the ranks of a spell): the longest duration, and every other
 -- property only where all known ranks agree. nil when none of them has been seen yet.
 local function FingerprintOf(ids)
@@ -364,6 +480,65 @@ local function LearnedDuration(ids)
   return best
 end
 
+-- The candidate filters for WeakAuras' property options of trigger t, or nil; plus a key and a
+-- description for the status line.
+local function PropertyFilters(t, no)
+  local cf, keys, words = {}, {}, {}
+  if t.use_debuffClass and type(t.debuffClass) == "table" then
+    local inc, names, none = {}, {}, false
+    for class, on in pairs(t.debuffClass) do
+      if on then
+        if class == "none" then
+          none = true
+        elseif DISPEL_NAMES[class] then
+          for _, dn in ipairs(DISPEL_NAMES[class]) do inc[dn] = true end
+          names[#names + 1] = DISPEL_NAMES[class][1]
+        else
+          no(T("Debuff Type '%s' cannot be expressed by the engine"):format(tostring(class)))
+        end
+      end
+    end
+    table.sort(names)
+    if none and #names > 0 then
+      no(T("Debuff Type 'None' together with other types cannot be expressed by the engine"))
+    elseif none then
+      cf.excludeDispelTypes = {}
+      for _, list in pairs(DISPEL_NAMES) do
+        for _, dn in ipairs(list) do cf.excludeDispelTypes[dn] = true end
+      end
+      keys[#keys + 1] = "t=none"
+      words[#words + 1] = T("without a dispel type")
+    elseif #names > 0 then
+      cf.includeDispelTypes = inc
+      keys[#keys + 1] = "t=" .. table.concat(names, "+")
+      words[#words + 1] = T("of type %s"):format(table.concat(names, T(" or ")))
+    end
+  end
+  local FLAG_WORDS = {
+    isStealable = { T("stealable"), T("not stealable") },
+    isBossAura = { T("a boss aura"), T("not a boss aura") },
+    isFromPlayerOrPlayerPet = { T("cast by a player"), T("not cast by a player") },
+  }
+  for _, pair in ipairs(PROPERTY_FLAGS) do
+    local v = t[pair[1]]
+    if v == true or v == false then
+      cf[pair[2]] = v
+      keys[#keys + 1] = pair[2] .. "=" .. tostring(v)
+      words[#words + 1] = FLAG_WORDS[pair[2]][v and 1 or 2]
+    end
+  end
+  if not next(cf) then return nil, "", nil end
+  return cf, table.concat(keys, ","), table.concat(words, ", ")
+end
+
+local function HasEntries(on, list)
+  if not on or type(list) ~= "table" then return false end
+  for _, v in ipairs(list) do
+    if Trim(tostring(v)) ~= "" then return true end
+  end
+  return false
+end
+
 local function AnalyseAuraTrigger(t, no, data)
   local unit = t.unit or "player"
   if not UNIT_OK[unit] then no(T("Unit must be Player, Target, Focus or Pet")) end
@@ -371,6 +546,13 @@ local function AnalyseAuraTrigger(t, no, data)
   if filter ~= "HELPFUL" and filter ~= "HARMFUL" then no(T("Aura Type must be Buff or Debuff (not Both)")) end
   local mode = MODE[t.matchesShowOn or "showOnActive"]
   if not mode then no(T("'Show On: Match Count' cannot be expressed by the engine")) end
+  -- WeakAuras applies the property options only where it checks matches (Found), like Remaining Time
+  local props, propsKey, propsText
+  if mode == "active" then props, propsKey, propsText = PropertyFilters(t, no) end
+  -- no spell list at all: any aura of the filter (and the properties) counts. An EMPTY list is not that:
+  -- WeakAuras then matches nothing.
+  local nameless = not (t.useName and type(t.auranames) == "table")
+               and not (t.useExactSpellId and type(t.auraspellids) == "table")
   local ids, sorted = {}, {}
   local byName, unresolved = false, {}
   if t.useExactSpellId then
@@ -392,7 +574,11 @@ local function AnalyseAuraTrigger(t, no, data)
     end
   end
   for id in pairs(ids) do sorted[#sorted + 1] = id end
-  if #sorted == 0 then
+  if nameless then
+    if mode ~= "active" then
+      no(T("an Aura trigger without spell names is engine-driven with 'Show On: Aura(s) Found' only"))
+    end
+  elseif #sorted == 0 then
     if #unresolved > 0 then
       no(T("'%s' is not one of your spells; the engine takes over once this aura has been seen once out of combat"):format(table.concat(unresolved, ", ")))
     else
@@ -426,8 +612,9 @@ local function AnalyseAuraTrigger(t, no, data)
   -- any player's aura, so another hunter's Serpent Sting passed it.
   local filterString = (t.ownOnly == true) and (filter .. "|PLAYER") or filter
   local candidate, byDuration, durationFromSetting, fingerprint = { includeSpellIDs = ids }, nil, nil, nil
+  if nameless then candidate = {} end
   local open = NeverSecret(sorted)
-  local friendlyDebuff = filter == "HARMFUL" and (unit == "player" or unit == "pet") and not open
+  local friendlyDebuff = not nameless and filter == "HARMFUL" and (unit == "player" or unit == "pet") and not open
   if friendlyDebuff then
     if unit == "player" and data and data.foreverEngineSelfDebuff == true then
       -- the approximation: a debuff on you with the same fingerprint (duration, dispel type, flags)
@@ -459,8 +646,10 @@ local function AnalyseAuraTrigger(t, no, data)
   end
   -- target / focus: allowed or not depending on who is targeted, so only a warning (Explain). Not for
   -- your own spells: your DoTs land on enemies and your buffs on friends, where the filter is allowed.
+  -- the property filters apply on every unit; the user's Debuff Type wins over a learned fingerprint's
+  for k, v in pairs(props or {}) do candidate[k] = v end
   local warn
-  if not open and (unit == "target" or unit == "focus") then
+  if not nameless and not open and (unit == "target" or unit == "focus") then
     local own = false
     local bank = (Enum.SpellBookSpellBank and Enum.SpellBookSpellBank.Player) or 0
     for _, id in ipairs(sorted) do
@@ -473,8 +662,8 @@ local function AnalyseAuraTrigger(t, no, data)
            candidate = candidate, ids = sorted, firstId = sorted[1], byDuration = byDuration, warn = warn,
            durationFromSetting = durationFromSetting,
            byName = byName, unresolved = unresolved, unseen = unseen,
-           fingerprint = fingerprint,
-           key = filterString .. ";" .. (byDuration and ("fp" .. byDuration .. ":" .. tostring(candidate.includeDispelTypes and next(candidate.includeDispelTypes))
+           fingerprint = fingerprint, nameless = nameless, propsText = propsText, propsKey = propsKey,
+           key = filterString .. ";" .. (props and (propsKey .. ";") or "") .. (nameless and "any" or byDuration and ("fp" .. byDuration .. ":" .. tostring(candidate.includeDispelTypes and next(candidate.includeDispelTypes))
              .. ":" .. (function() local f = {} for _, k in ipairs(FP_FLAGS) do f[#f + 1] = tostring(candidate[k]) end return table.concat(f, ",") end)())
              or table.concat(sorted, ",")) }
 end
@@ -581,6 +770,7 @@ function Engine.Classify(data)
     return { unit = unit, filter = inf.filter, filterString = inf.filterString, mode = inf.mode,
              candidate = inf.candidate, firstId = inf.firstId, key = key, byDuration = inf.byDuration, warn = inf.warn,
              durationFromSetting = inf.durationFromSetting, fingerprint = inf.fingerprint,
+             nameless = inf.nameless, propsText = inf.propsText, propsKey = inf.propsKey,
              ids = inf.ids, byName = inf.byName, gen = spellbookGen, unresolved = inf.unresolved, unseen = inf.unseen,
              auraTriggers = auraTriggers, gates = gates }
   end
@@ -643,6 +833,7 @@ function Engine.Classify(data)
   return { unit = unit, mode = "composite", parts = { missing = missing, found = found, remaining = remaining, lateTotal = lateTotal },
            warn = warn, byDuration = byDuration, durationFromSetting = durationFromSetting, fingerprint = fingerprint,
            filter = first.filter, filterString = first.filterString, firstId = first.firstId,
+           nameless = (#all == 0 and first.nameless) or nil, propsKey = first.propsKey, propsText = first.propsText,
            key = table.concat(keys, ";"), ids = all, byName = byName, gen = spellbookGen,
            unresolved = unresolved, unseen = unseen, auraTriggers = auraTriggers, gates = gates }
 end
@@ -681,6 +872,7 @@ end
 -- A gate that can never answer is worse than none (IsSpellInRange is nil for a spell you do not
 -- know, and a rangeless spell is never "in range"). Safe-time plain data. Returns ok, reason.
 local function ValidateRangeSpell(spell)
+  if spell == nil then return false, T("the display tracks no spell") end
   local ok, id = pcall(C_Spell.GetSpellIDForSpellIdentifier, spell)
   if not ok or type(id) ~= "number" or issecretvalue(id) then
     return false, T("'%s' is not a spell"):format(tostring(spell))
@@ -699,6 +891,54 @@ local function ValidateRangeSpell(spell)
   local okR, hasRange = pcall(C_Spell.SpellHasRange, spell)
   if not okR or hasRange ~= true then return false, T("'%s' has no range"):format(tostring(spell)) end
   return true
+end
+
+---------------------------------------------------------------------------- sounds on show / hide
+-- WeakAuras plays 'On Show' / 'On Hide' sounds when ITS state changes, but a delegated display's state
+-- is constant: the engine shows and hides the icon, so WeakAuras never sees the aura come or go.
+-- C_UnitAuras.AddAuraSound makes the game play a sound itself when an aura is added to or removed from a
+-- unit, also in combat. 'On Show' of a Missing display = the aura was removed, of a Found display = it
+-- was added; 'On Hide' the other way round. Sounds need spell ids (a display that matches by properties
+-- has none) and a sound FILE (the game cannot take a Sound Kit ID here).
+local SOUND_ROUTES = {
+  missing = { start = "Removed", finish = "Added" },
+  active = { start = "Added", finish = "Removed" },
+}
+
+-- The routes of a plan, or nil: Always shows all the time, so its sounds stay WeakAuras' own.
+local function SoundRoutes(plan)
+  if not plan or not plan.ids then return nil end
+  if #plan.ids == 0 and not plan.nameless then return nil end
+  if plan.parts then
+    if plan.parts.missing then return SOUND_ROUTES.missing end
+    if plan.parts.found then return SOUND_ROUTES.active end
+    return nil
+  end
+  return SOUND_ROUTES[plan.mode]
+end
+
+-- What the game should play for one WeakAuras action table: { soundFileName = ... } or
+-- { soundFileID = ... }, or nil plus "kit" when it is a Sound Kit ID.
+local function SoundSource(actions)
+  if type(actions) ~= "table" or not actions.do_sound or not actions.sound then return nil end
+  local snd = actions.sound
+  if snd == " KitID" then return nil, "kit" end
+  if snd == " custom" then snd = actions.sound_path end
+  local id = tonumber(snd)
+  if id then return { soundFileID = id } end
+  if type(snd) ~= "string" or Trim(snd) == "" then return nil end
+  return { soundFileName = Trim(snd) }
+end
+
+-- Part of the display's signature: a changed sound must re-register.
+local function SoundSig(data)
+  local a, out = data.actions or {}, {}
+  for _, when in ipairs({ "start", "finish" }) do
+    local x = a[when] or {}
+    out[#out + 1] = table.concat({ tostring(x.do_sound), tostring(x.sound), tostring(x.sound_path),
+      tostring(x.sound_kit_id), tostring(x.sound_channel) }, "/")
+  end
+  return table.concat(out, ";")
 end
 
 local MODE_TEXT = {
@@ -721,7 +961,8 @@ end
 function Engine.TracksSelfDebuff(data)
   for _, tr in ipairs(data and data.triggers or {}) do
     local t = tr and tr.trigger
-    if t and t.type == "aura2" and (t.unit or "player") == "player" and t.debuffType == "HARMFUL" then return true end
+    if t and t.type == "aura2" and (t.unit or "player") == "player" and t.debuffType == "HARMFUL"
+       and (HasEntries(t.useName, t.auranames) or HasEntries(t.useExactSpellId, t.auraspellids)) then return true end
   end
   return false
 end
@@ -752,10 +993,10 @@ function Engine.Explain(data, plan, reasons)
         and T("animated (the aura's total duration is known: %s s), also while it runs out"):format(tostring(plan.parts.lateTotal))
         or T("WeakAuras' own animated glow while the aura is missing, a static glow while it runs out (animated once the aura's total duration is known: seen out of combat, or read from the spell's description)")
       if plan.parts.found then
-        txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows the live aura while it is present and adds the glow %s. The game checks the time left itself, so it never has to be read. Kept: position, size, groups, %%p/%%s texts, static colour/desaturate/zoom, cooldown swipe; glow %s. Not available: the border (hidden while engine-driven), conditions and texts that read aura state, show/hide animations and actions on aura gain/loss.")
+        txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows the live aura while it is present and adds the glow %s. The game checks the time left itself, so it never has to be read. Kept: position, size, groups, %%p/%%s texts, static colour/desaturate/zoom, cooldown swipe; glow %s. Not available: the border (hidden while engine-driven), conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
           :format(plan.unit, plan.parts.found.filterString, table.concat(when, T(" or ")), glowTxt)
       else
-        txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s). It shows your icon %s, and nothing otherwise. The game checks the time left itself, so it never has to be read. Kept: position, size, groups, the %%p text, static colour/zoom; glow %s. Not available: the border (hidden while engine-driven), cooldown swipe, stack count and desaturation on the time-left icon, conditions and texts that read aura state, show/hide animations and actions on aura gain/loss.")
+        txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s). It shows your icon %s, and nothing otherwise. The game checks the time left itself, so it never has to be read. Kept: position, size, groups, the %%p text, static colour/zoom; glow %s. Not available: the border (hidden while engine-driven), cooldown swipe, stack count and desaturation on the time-left icon, conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
           :format(plan.unit, table.concat(when, T(" or ")), glowTxt)
       end
     else
@@ -763,7 +1004,7 @@ function Engine.Explain(data, plan, reasons)
       if data.regionType == "icon" and plan.mode ~= "always" then
         kept = T("the border (also while nothing is drawn), and the glow: shown only while the icon is, and animated like WeakAuras' own")
       end
-      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It %s. Kept: position, size, groups, %%n/%%i texts, static colour/desaturate/zoom, %s; cooldown numbers count like the buff frame. Not available: conditions and texts that read aura state (stacks, remaining, active), show/hide animations and actions on aura gain/loss.")
+      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It %s. Kept: position, size, groups, %%n/%%i texts, static colour/desaturate/zoom, %s; cooldown numbers count like the buff frame. Not available: conditions and texts that read aura state (stacks, remaining, active), show/hide animations and actions on aura gain/loss other than sounds.")
         :format(plan.unit, plan.filterString, T(MODE_TEXT[plan.mode]), kept)
     end
     if plan.parts and Engine.HasGlowPartChoice(data) and (data.foreverEngineGlowPart or "both") ~= "both" then
@@ -772,6 +1013,13 @@ function Engine.Explain(data, plan, reasons)
     end
     if (plan.gates or 0) > 0 then
       txt = txt .. " " .. T("Your other trigger(s) still decide when the display may show at all; WeakAuras checks them itself, which works in combat for plain data (combat state, target attackable or hostile, talents, items, cooldowns) but not for values Forever keeps secret, such as health or power amounts.")
+    end
+    if plan.nameless then
+      txt = txt .. " " .. T("|cff33ff99By properties:|r no spell is named, so any %s%s counts; the icon is that aura's own. When several match, the game shows one of them.")
+        :format(plan.filter == "HARMFUL" and T("debuff") or T("buff"),
+                plan.propsText and (" " .. T("that is %s"):format(plan.propsText)) or "")
+    elseif plan.propsText then
+      txt = txt .. " " .. T("Only auras that are %s count."):format(plan.propsText)
     end
     if plan.byName then
       txt = txt .. " " .. T("Spell name resolved to id(s) %s (your spellbook ranks and auras seen so far); re-resolved as you learn spells and see auras."):format(table.concat(plan.ids, ", "))
@@ -810,6 +1058,31 @@ function Engine.Explain(data, plan, reasons)
       txt = txt .. " " .. T("|cffff9933Note:|r Blizzard does not let addons pick debuffs on friendly units by spell while auras are secret: on a friendly target this display finds nothing (a 'missing' icon shows as missing).")
     elseif plan.warn == "hostile" then
       txt = txt .. " " .. T("|cffff9933Note:|r Blizzard does not let addons pick buffs on hostile units by spell while auras are secret: on an enemy target this display finds nothing (a 'missing' icon shows as missing).")
+    end
+    local routes = SoundRoutes(plan)
+    local actions = data.actions or {}
+    local sounds = {}
+    for _, when in ipairs({ "start", "finish" }) do
+      local src, why = SoundSource(actions[when])
+      local label = when == "start" and T("'On Show'") or T("'On Hide'")
+      if src and routes and plan.nameless then
+        local ids, n = SeenIds(plan)
+        if n > 0 then
+          sounds[#sounds + 1] = T("%s sound plays when a matching aura is %s, for the %d kind(s) EverAuras has seen so far%s; it learns more from every aura it can read out of combat (you, your pet, target, focus, group and nearby enemies)")
+            :format(label, routes[when] == "Added" and T("gained") or T("lost"), n,
+                    n > #ids and T(" (the newest %d)"):format(#ids) or "")
+        else
+          sounds[#sounds + 1] = T("%s sound waits until EverAuras has seen a matching aura once out of combat, on you, your pet, target, focus, group or a nearby enemy: the game plays aura sounds by spell only"):format(label)
+        end
+      elseif src and routes then
+        sounds[#sounds + 1] = T("%s sound plays when the aura is %s"):format(label,
+          routes[when] == "Added" and T("gained") or T("lost"))
+      elseif why == "kit" and routes then
+        sounds[#sounds + 1] = T("%s uses a Sound Kit ID, which the game cannot play here: pick a sound file"):format(label)
+      end
+    end
+    if #sounds > 0 then
+      txt = txt .. " " .. T("|cff33ff99Sounds:|r %s; the game plays them itself, also in combat."):format(table.concat(sounds, "; "))
     end
     if InertConditions(data, plan) then
       txt = txt .. " " .. T("|cffff9933Note:|r a condition reads trigger data other than 'Buffed'; it never fires on this display.")
@@ -1350,7 +1623,7 @@ local function DisplayTexture(data, firstId)
   local tex
   if data.iconSource == 0 and data.displayIcon and data.displayIcon ~= "" then
     tex = data.displayIcon
-  else
+  elseif firstId then
     tex = C_Spell and C_Spell.GetSpellTexture and C_Spell.GetSpellTexture(firstId)
   end
   if issecretvalue(tex) then tex = nil end
@@ -1766,6 +2039,81 @@ local function EnsureRangeTicker()
 end
 
 -- Every way out of "on" (off, preview, a failed engine build) hands the region back the same way.
+local soundReported = false
+local function ClearSounds(att)
+  for _, sid in ipairs(att.soundIDs or {}) do
+    pcall(C_UnitAuras.RemoveAuraSound, sid)
+  end
+  att.soundIDs, att.soundSig, att.soundRouted = nil, nil, nil
+end
+
+-- WeakAuras' own playback of a routed sound would play at login / reload; skip it while engine-driven.
+local function HookSoundPlay(att, region)
+  if not region.SoundPlay or region.SoundPlay == att.soundWrapper then return end
+  local orig = region.SoundPlay
+  att.soundWrapper = function(self, options, ...)
+    local a = attachments[self]
+    if a and a.active and a.soundRouted then
+      local d = WA.GetData(self.id)
+      local acts = d and d.actions
+      if acts and ((options == acts.start and a.soundRouted.start) or (options == acts.finish and a.soundRouted.finish)) then
+        return
+      end
+    end
+    return orig(self, options, ...)
+  end
+  region.SoundPlay = att.soundWrapper
+end
+
+local function ApplySounds(att, region, data, plan)
+  local routes = SoundRoutes(plan)
+  local api = C_UnitAuras and C_UnitAuras.AddAuraSound and Enum.UnitAuraSoundTrigger
+  local ids = plan.ids or {}
+  if #ids == 0 and plan.nameless then ids = SeenIds(plan) end
+  local want, sig = {}, { plan.unit, table.concat(ids, ",") }
+  if routes and api then
+    for _, when in ipairs({ "start", "finish" }) do
+      local acts = data.actions and data.actions[when]
+      local src = SoundSource(acts)
+      if src then
+        local channel = (acts.sound_channel and acts.sound_channel ~= "") and acts.sound_channel or "Master"
+        want[#want + 1] = { when = when, trigger = routes[when], src = src, channel = channel }
+        sig[#sig + 1] = table.concat({ when, routes[when], tostring(src.soundFileName or src.soundFileID), channel }, "/")
+      end
+    end
+  end
+  sig = table.concat(sig, ";")
+  if att.soundSig == sig then return end
+  ClearSounds(att)
+  att.soundSig, att.soundIDs, att.soundRouted = sig, {}, {}
+  if #want == 0 then return end
+  HookSoundPlay(att, region)
+  for _, w in ipairs(want) do
+    local okAll = true
+    -- nothing learned yet: silent, rather than WeakAuras playing it when the options close
+    if #ids == 0 then att.soundRouted[w.when] = true end
+    for _, id in ipairs(ids) do
+      local info = { unitToken = plan.unit, spellID = id, outputChannel = w.channel, throttleSeconds = 0.5,
+                     soundFileName = w.src.soundFileName, soundFileID = w.src.soundFileID }
+      local ok, sid = pcall(C_UnitAuras.AddAuraSound, Enum.UnitAuraSoundTrigger[w.trigger], info)
+      if ok and type(sid) == "number" and not issecretvalue(sid) then
+        att.soundIDs[#att.soundIDs + 1] = sid
+      else
+        okAll = false
+        if not soundReported then
+          soundReported = true
+          local handler = geterrorhandler and geterrorhandler()
+          if handler then handler(("engine (aura sound): %s"):format(ok and ("no sound id for spell " .. id) or tostring(sid))) end
+        end
+      end
+    end
+    -- only a sound the game took over is kept from WeakAuras; otherwise WeakAuras plays it as before
+    if okAll then att.soundRouted[w.when] = true end
+  end
+  -- a failed registration is tried again on the next apply (e.g. after combat)
+  if #ids > 0 and not (att.soundRouted.start or att.soundRouted.finish) then att.soundSig = nil end
+end
+
 local function TurnOff(att, region, data, mode)
   if att.host then att.host:Hide() end
   DisableKind(att, "slot"); DisableKind(att, "group"); DisableKind(att, "composite")
@@ -1774,6 +2122,7 @@ local function TurnOff(att, region, data, mode)
   RemoveGate(att)
   if att.isBar then SetBarVisuals(region, true) elseif region.icon then region.icon:Show() end
   SetMirroredShown(att, true)
+  ClearSounds(att)
   if region.tooltipFrame and data then region.tooltipFrame:EnableMouseMotion(data.useTooltip and true or false) end
   att.mode, att.active, att.sig, att.kind = mode, false, nil, nil
 end
@@ -1847,6 +2196,12 @@ local function ApplyUnguarded(region)
   end
   att.host:Show()
   att.mode, att.active, att.sig = "on", true, att.wantSig
+  local okS, errS = pcall(ApplySounds, att, region, data, plan)
+  if not okS and not soundReported then
+    soundReported = true
+    local handler = geterrorhandler and geterrorhandler()
+    if handler then handler("engine (aura sound): " .. tostring(errS)) end
+  end
   att.rangeSpell = nil
   if WantsRangeGate(data, plan) then
     local spell = RangeSpell(data, plan)
@@ -1914,6 +2269,7 @@ local function ComputeSig(region, data, plan)
     tostring(data.icon), tostring(data.icon_side), table.concat(data.barColor or {}, ","),
     table.concat(data.backgroundColor or {}, ","), table.concat(data.icon_color or {}, ","),
     tostring(data.foreverEngineRange), tostring(data.foreverEngineRangeSpell), tostring(data.foreverEngineGlowPart),
+    SoundSig(data),
     table.concat(data.color or {}, ","), table.concat({ region.icon:GetTexCoord() }, ",") }
   for _, sub in ipairs(data.subRegions or {}) do
     if sub.type == "subtext" then
@@ -2122,8 +2478,87 @@ local function LearnFingerprints(unit)
   end
 end
 
+-- Property-based displays with a sound take their spell ids from the shared memory: re-register them.
+local function RefreshPropertySounds()
+  for region, att in pairs(attachments) do
+    local plan = att.active and att.want
+    local data = plan and plan.nameless and WA.GetData(region.id)
+    local acts = data and data.actions
+    if data and SoundRoutes(plan) and acts and (SoundSource(acts.start) or SoundSource(acts.finish)) then
+      pcall(ApplySounds, att, region, data, plan)
+      SetWarning(att, data.uid, "info", (Engine.Explain(data, plan)))
+    end
+  end
+end
+
+-- Units whose auras feed the shared memory. Other players' nameplates are left out (a city would keep
+-- it busy for nothing); group members count.
+local function Learnable(unit)
+  if type(unit) ~= "string" then return false end
+  if unit == "player" or unit == "pet" or unit == "target" or unit == "focus" then return true end
+  if unit:match("^party%d$") or unit:match("^partypet%d$") or unit:match("^raid%d+$") then return true end
+  if unit:match("^nameplate%d+$") then return not UnitIsPlayer(unit) end
+  return false
+end
+
+local learnDirty, learnQueued = {}, false
+local LEARN_PER_SCAN = 12
+local function ScanLearnable()
+  learnQueued = false
+  if not Engine.IsSafe() then wipe(learnDirty); return end
+  local seen = AuraSeen()
+  if not (seen and C_UnitAuras and C_UnitAuras.GetAuraDataByIndex) then wipe(learnDirty); return end
+  local changed, done = false, 0
+  for unit in pairs(learnDirty) do
+    learnDirty[unit] = nil
+    done = done + 1
+    if UnitExists(unit) then
+      for _, filter in ipairs({ "HELPFUL", "HARMFUL" }) do
+        for i = 1, 40 do
+          local ok, a = pcall(C_UnitAuras.GetAuraDataByIndex, unit, i, filter)
+          if not ok or type(a) ~= "table" then break end
+          if RecordAura(seen, a, filter, unit) then changed = true end
+        end
+      end
+    end
+    if done >= LEARN_PER_SCAN then break end
+  end
+  if next(learnDirty) and not learnQueued then learnQueued = true; C_Timer.After(1, ScanLearnable) end
+  if changed then RefreshPropertySounds() end
+end
+
+local function QueueLearn(unit)
+  if not Learnable(unit) or not Engine.IsSafe() then return end
+  learnDirty[unit] = true
+  if not learnQueued then learnQueued = true; C_Timer.After(1, ScanLearnable) end
+end
+
+local function QueueLearnGroup()
+  for _, u in ipairs({ "player", "pet", "target", "focus" }) do QueueLearn(u) end
+  local n = GetNumGroupMembers and GetNumGroupMembers() or 0
+  local raid = IsInRaid and IsInRaid()
+  for i = 1, raid and math.min(n, 40) or math.min(n, 4) do QueueLearn((raid and "raid" or "party") .. i) end
+end
+
+local learnEv = CreateFrame("Frame")
+Private.frames["ForeverEngine Aura Memory"] = learnEv
+learnEv:RegisterEvent("UNIT_AURA")
+learnEv:RegisterEvent("PLAYER_REGEN_ENABLED")
+learnEv:RegisterEvent("PLAYER_TARGET_CHANGED")
+learnEv:RegisterEvent("PLAYER_FOCUS_CHANGED")
+learnEv:RegisterEvent("NAME_PLATE_UNIT_ADDED")
+learnEv:RegisterEvent("GROUP_ROSTER_UPDATE")
+learnEv:SetScript("OnEvent", function(_, event, unit)
+  if event == "UNIT_AURA" or event == "NAME_PLATE_UNIT_ADDED" then QueueLearn(unit)
+  elseif event == "PLAYER_TARGET_CHANGED" then QueueLearn("target")
+  elseif event == "PLAYER_FOCUS_CHANGED" then QueueLearn("focus")
+  else QueueLearnGroup() end   -- combat ended (debuffs still on are readable now), group changed
+end)
+
 local function LearnFromUnit(unit)
-  if UNIT_OK[unit] and C_UnitAuras and C_UnitAuras.GetAuraDataByIndex then LearnFingerprints(unit) end
+  if UNIT_OK[unit] and C_UnitAuras and C_UnitAuras.GetAuraDataByIndex then
+    LearnFingerprints(unit)
+  end
   if not UNIT_OK[unit] or not Engine.IsSafe() or not next(watchNames) then return end
   if not (C_UnitAuras and C_UnitAuras.GetAuraDataByIndex) then return end
   local learned = Learned()
@@ -2206,6 +2641,12 @@ ev:SetScript("OnEvent", function(_, event, arg1)
     wipe(descDurations)      -- a new rank changes the description
     LearnFromAllUnits()      -- buffs that procced in combat and are still up become readable now
     Engine.Flush()
+    for region, att in pairs(attachments) do
+      if att.active and att.want and att.soundSig == nil then
+        local d = WA.GetData(region.id)
+        if d then pcall(ApplySounds, att, region, d, att.want) end
+      end
+    end
   end
   local unit = REFRESH[event]
   if unit then LearnFromUnit(unit) end
