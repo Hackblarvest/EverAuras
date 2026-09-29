@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+- **Sounds that play at the right moment, in combat too.** An engine-driven display's *On Show* / *On Hide*
+  sound used to play only when you logged in or closed the options, never when the aura came or went:
+  the game draws these displays, so WeakAuras never sees the aura change. EverAuras now hands those sounds
+  to the game, which plays them itself: on a *Missing* display *On Show* plays when the aura drops off (your
+  Demon Skin ran out), on a *Found* display when it lands; *On Hide* the other way round. Works in combat and
+  for debuffs on you. A *Sound Kit ID* cannot be handed over; pick a sound file (the Trigger tab says so).
+  *Show On: Always* keeps WeakAuras' own sounds.
+- **Auras by dispel type, in combat.** *Debuff Type* (Magic, Curse, Disease, Poison, Enrage, None), *Is
+  Stealable*, *Is Boss Debuff* and *Cast by Player* now work on engine-driven displays, also for debuffs on
+  you, where Blizzard does not let addons pick auras by spell. Leave *Name(s)* and *Exact Spell ID(s)* off
+  and the display shows any matching aura with its own icon and countdown: "a poison on me", "a Magic
+  debuff on me", "a Magic buff on my target" for Purge / Dispel Magic.
+- **Their sounds work from the first time.** The game plays aura sounds by spell only, so EverAuras ships
+  the spell lists per dispel type, taken from the game's own spell tables (about 1,600 debuffs), and also
+  remembers every typed aura it can read out of combat on you, your pet, target, focus, group and nearby
+  enemies. A murloc's Frostbolt honks the first time. Registering the sounds takes a few milliseconds when
+  you log in or change a display; nothing runs while you play.
+
 ## 0.7.2-alpha (2026-09-28)
 
 - **Animated glow in the last X seconds.** A display with *Remaining Time* < X on an aura trigger now shows its
