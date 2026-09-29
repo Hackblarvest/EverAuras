@@ -8,3 +8,4 @@
 ForeverDevInfo.lua
 Probe_Late.lua
 Probe_Dispel.lua
+Probe_SoundLoad.lua
