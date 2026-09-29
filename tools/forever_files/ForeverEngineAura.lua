@@ -305,8 +305,9 @@ end
 -- or "", s = isStealable, b = isBossAura, pp / np = seen cast by a player / by a non-player, m = seen
 -- cast by you, t = last seen }. Property-based displays take their sound spell ids from here: the game
 -- plays aura sounds by spell id only.
-local MAX_SEEN_TOTAL, MAX_SOUND_IDS = 3000, 100
+local MAX_SEEN_TOTAL, MAX_SOUND_IDS = 3000, 5000
 local seenCount
+local seenVersion = 0   -- bumped whenever the memory learns something; invalidates cached id lists
 local function AuraSeen()
   local sv = SV()
   if not sv then return nil end
@@ -353,25 +354,58 @@ local function PlanCandidate(plan)
   return part and part.candidate
 end
 
--- The remembered spell ids a property-based plan matches: the newest MAX_SOUND_IDS, sorted by id; plus
--- how many match in all.
-local function SeenIds(plan)
-  local seen, out = AuraSeen(), {}
-  if not seen then return out, 0 end
-  local cand = PlanCandidate(plan)
-  local own = (plan.filterString or ""):find("PLAYER", 1, true) ~= nil
-  local list = {}
-  for id, e in pairs(seen) do
-    if e.k == plan.filter and (not own or e.m) and SeenMatches(e, cand) then list[#list + 1] = id end
+-- The game's own spell tables per dispel type (ForeverDispelData.lua, generated from the client's
+-- SpellCategories / SpellEffect tables): a "Poison debuff on you" display has its sounds from the first
+-- poison on, without learning. Only for plans whose filters are dispel types alone: the tables know
+-- nothing about stealable, boss auras, who cast it or 'Own Only'.
+local DATA_TYPE = { Magic = "Magic", Curse = "Curse", Disease = "Disease", Poison = "Poison", Enrage = "Enrage", [""] = "Enrage" }
+local ALL_TYPES = { Magic = true, Curse = true, Disease = true, Poison = true, Enrage = true }
+local function TableLists(plan, cand)
+  local data = Private.ForeverDispelData
+  local kinds = data and data[plan.filter]
+  if not (kinds and cand) then return nil end
+  if (plan.filterString or ""):find("PLAYER", 1, true) then return nil end
+  for k in pairs(cand) do
+    if k ~= "includeDispelTypes" then return nil end
   end
-  table.sort(list, function(x, y)
-    local tx, ty = seen[x].t or 0, seen[y].t or 0
-    if tx ~= ty then return tx > ty end
-    return x < y
-  end)
-  for i = 1, math.min(#list, MAX_SOUND_IDS) do out[i] = list[i] end
-  table.sort(out)
-  return out, #list
+  local lists, used = {}, {}
+  for dn in pairs(cand.includeDispelTypes or ALL_TYPES) do
+    local key = DATA_TYPE[dn]
+    if key and not used[key] and kinds[key] then used[key] = true; lists[#lists + 1] = kinds[key] end
+  end
+  return lists
+end
+
+-- The spell ids a property-based plan's sounds are registered for: the game's tables plus the learned
+-- memory, sorted. Returns ids, how many, how many came from the tables, and a checksum. Cached per plan
+-- until the memory learns something: the status line asks on every update.
+local idCache = setmetatable({}, { __mode = "k" })
+local function SeenIds(plan)
+  local c = idCache[plan]
+  if c and c.v == seenVersion then return c.ids, #c.ids, c.fromTables, c.sum end
+  local set, ids, fromTables = {}, {}, 0
+  local cand = PlanCandidate(plan)
+  for _, list in ipairs(TableLists(plan, cand) or {}) do
+    for _, id in ipairs(list) do
+      if not set[id] then set[id] = true; ids[#ids + 1] = id; fromTables = fromTables + 1 end
+    end
+  end
+  local seen = AuraSeen()
+  if seen then
+    local own = (plan.filterString or ""):find("PLAYER", 1, true) ~= nil
+    for id, e in pairs(seen) do
+      if #ids >= MAX_SOUND_IDS then break end
+      if not set[id] and e.k == plan.filter and (not own or e.m) and SeenMatches(e, cand) then
+        set[id] = true
+        ids[#ids + 1] = id
+      end
+    end
+  end
+  table.sort(ids)
+  local sum = 0
+  for i, id in ipairs(ids) do sum = (sum + id * (i % 7 + 1)) % 2147483647 end
+  idCache[plan] = { v = seenVersion, ids = ids, fromTables = fromTables, sum = sum }
+  return ids, #ids, fromTables, sum
 end
 
 -- Remember one plain aura; true when that changes which displays it matches.
@@ -405,6 +439,7 @@ local function RecordAura(seen, a, filter, unit)
     set("m", true)
   end
   e.t = time and time() or 0   -- recency only: no re-registration for it
+  if changed then seenVersion = seenVersion + 1 end
   return changed
 end
 
@@ -1066,11 +1101,14 @@ function Engine.Explain(data, plan, reasons)
       local src, why = SoundSource(actions[when])
       local label = when == "start" and T("'On Show'") or T("'On Hide'")
       if src and routes and plan.nameless then
-        local ids, n = SeenIds(plan)
-        if n > 0 then
-          sounds[#sounds + 1] = T("%s sound plays when a matching aura is %s, for the %d kind(s) EverAuras has seen so far%s; it learns more from every aura it can read out of combat (you, your pet, target, focus, group and nearby enemies)")
-            :format(label, routes[when] == "Added" and T("gained") or T("lost"), n,
-                    n > #ids and T(" (the newest %d)"):format(#ids) or "")
+        local _, n, fromTables = SeenIds(plan)
+        if n > 0 and fromTables > 0 then
+          sounds[#sounds + 1] = T("%s sound plays when a matching aura is %s: %d spells, %d of them from the game's own spell tables (client %s), %d learned from auras EverAuras has seen")
+            :format(label, routes[when] == "Added" and T("gained") or T("lost"), n, fromTables,
+                    tostring(Private.ForeverDispelData and Private.ForeverDispelData.build), n - fromTables)
+        elseif n > 0 then
+          sounds[#sounds + 1] = T("%s sound plays when a matching aura is %s, for the %d kind(s) EverAuras has seen so far; it learns more from every aura it can read out of combat (you, your pet, target, focus, group and nearby enemies)")
+            :format(label, routes[when] == "Added" and T("gained") or T("lost"), n)
         else
           sounds[#sounds + 1] = T("%s sound waits until EverAuras has seen a matching aura once out of combat, on you, your pet, target, focus, group or a nearby enemy: the game plays aura sounds by spell only"):format(label)
         end
@@ -2040,6 +2078,45 @@ end
 
 -- Every way out of "on" (off, preview, a failed engine build) hands the region back the same way.
 local soundReported = false
+
+-- How long registering took, for the record (SavedVariables foreverEngine.soundStats): nothing here
+-- runs per frame, only when a display's sounds or its spell list change.
+local function SoundStats(count, ms)
+  local sv = SV()
+  if not sv then return end
+  sv.foreverEngine = sv.foreverEngine or {}
+  local st = sv.foreverEngine.soundStats or {}
+  sv.foreverEngine.soundStats = st
+  st.runs = (st.runs or 0) + 1
+  st.lastCount, st.lastMs = count, math.floor(ms * 100 + 0.5) / 100
+  if count > (st.maxCount or 0) then st.maxCount, st.maxCountMs = count, st.lastMs end
+end
+
+-- Does the game keep aura sounds over a /reload? The ids of the last session are saved at logout; the
+-- first id the game hands out now tells: a counter that went on means the old sounds are still there,
+-- so they are removed (they are ours); a counter that started again means the game cleared them, and
+-- the old numbers may belong to other addons' new sounds, so they are left alone.
+local staleChecked = false
+local function CheckStaleSounds(firstNewId)
+  if staleChecked then return end
+  staleChecked = true
+  local sv = SV()
+  local fe = sv and sv.foreverEngine
+  local old = fe and fe.soundIDs
+  if type(old) ~= "table" or #old == 0 then return end
+  local maxOld = 0
+  for _, sid in ipairs(old) do
+    if type(sid) == "number" and sid > maxOld then maxOld = sid end
+  end
+  if firstNewId > maxOld then
+    for _, sid in ipairs(old) do pcall(C_UnitAuras.RemoveAuraSound, sid) end
+    fe.soundRegistry = ("kept over a reload: %d old sounds removed"):format(#old)
+  else
+    fe.soundRegistry = "cleared by the game on reload"
+  end
+  fe.soundIDs = nil
+end
+
 local function ClearSounds(att)
   for _, sid in ipairs(att.soundIDs or {}) do
     pcall(C_UnitAuras.RemoveAuraSound, sid)
@@ -2069,8 +2146,15 @@ local function ApplySounds(att, region, data, plan)
   local routes = SoundRoutes(plan)
   local api = C_UnitAuras and C_UnitAuras.AddAuraSound and Enum.UnitAuraSoundTrigger
   local ids = plan.ids or {}
-  if #ids == 0 and plan.nameless then ids = SeenIds(plan) end
-  local want, sig = {}, { plan.unit, table.concat(ids, ",") }
+  local idSig
+  if #ids == 0 and plan.nameless then
+    local n, fromTables, sum
+    ids, n, fromTables, sum = SeenIds(plan)
+    idSig = ("%d:%d"):format(n, sum)          -- a thousand ids: a checksum, not a string of them
+  else
+    idSig = table.concat(ids, ",")
+  end
+  local want, sig = {}, { plan.unit, idSig }
   if routes and api then
     for _, when in ipairs({ "start", "finish" }) do
       local acts = data.actions and data.actions[when]
@@ -2088,18 +2172,23 @@ local function ApplySounds(att, region, data, plan)
   att.soundSig, att.soundIDs, att.soundRouted = sig, {}, {}
   if #want == 0 then return end
   HookSoundPlay(att, region)
+  local t0 = debugprofilestop and debugprofilestop()
+  local info = { unitToken = plan.unit, throttleSeconds = 0.5 }   -- one table for the whole run
   for _, w in ipairs(want) do
-    local okAll = true
-    -- nothing learned yet: silent, rather than WeakAuras playing it when the options close
+    local okCount, failed = 0, 0
+    -- nothing known yet: silent, rather than WeakAuras playing it when the options close
     if #ids == 0 then att.soundRouted[w.when] = true end
+    info.outputChannel, info.soundFileName, info.soundFileID = w.channel, w.src.soundFileName, w.src.soundFileID
+    local trigger = Enum.UnitAuraSoundTrigger[w.trigger]
     for _, id in ipairs(ids) do
-      local info = { unitToken = plan.unit, spellID = id, outputChannel = w.channel, throttleSeconds = 0.5,
-                     soundFileName = w.src.soundFileName, soundFileID = w.src.soundFileID }
-      local ok, sid = pcall(C_UnitAuras.AddAuraSound, Enum.UnitAuraSoundTrigger[w.trigger], info)
+      info.spellID = id
+      local ok, sid = pcall(C_UnitAuras.AddAuraSound, trigger, info)
       if ok and type(sid) == "number" and not issecretvalue(sid) then
         att.soundIDs[#att.soundIDs + 1] = sid
+        okCount = okCount + 1
+        if okCount == 1 then CheckStaleSounds(sid) end
       else
-        okAll = false
+        failed = failed + 1
         if not soundReported then
           soundReported = true
           local handler = geterrorhandler and geterrorhandler()
@@ -2107,9 +2196,11 @@ local function ApplySounds(att, region, data, plan)
         end
       end
     end
-    -- only a sound the game took over is kept from WeakAuras; otherwise WeakAuras plays it as before
-    if okAll then att.soundRouted[w.when] = true end
+    -- a sound the game took over (for at least one spell) is kept from WeakAuras; otherwise WeakAuras
+    -- plays it as before
+    if okCount > 0 then att.soundRouted[w.when] = true end
   end
+  if t0 then SoundStats(#att.soundIDs, debugprofilestop() - t0) end
   -- a failed registration is tried again on the next apply (e.g. after combat)
   if #ids > 0 and not (att.soundRouted.start or att.soundRouted.finish) then att.soundSig = nil end
 end
@@ -2548,7 +2639,21 @@ learnEv:RegisterEvent("PLAYER_TARGET_CHANGED")
 learnEv:RegisterEvent("PLAYER_FOCUS_CHANGED")
 learnEv:RegisterEvent("NAME_PLATE_UNIT_ADDED")
 learnEv:RegisterEvent("GROUP_ROSTER_UPDATE")
+learnEv:RegisterEvent("PLAYER_LOGOUT")
 learnEv:SetScript("OnEvent", function(_, event, unit)
+  if event == "PLAYER_LOGOUT" then
+    -- keep our aura sound ids, so the next session can tell whether the game kept them (CheckStaleSounds)
+    local sv = SV()
+    if sv then
+      sv.foreverEngine = sv.foreverEngine or {}
+      local ids = {}
+      for _, att in pairs(attachments) do
+        for _, sid in ipairs(att.soundIDs or {}) do ids[#ids + 1] = sid end
+      end
+      sv.foreverEngine.soundIDs = #ids > 0 and ids or nil
+    end
+    return
+  end
   if event == "UNIT_AURA" or event == "NAME_PLATE_UNIT_ADDED" then QueueLearn(unit)
   elseif event == "PLAYER_TARGET_CHANGED" then QueueLearn("target")
   elseif event == "PLAYER_FOCUS_CHANGED" then QueueLearn("focus")

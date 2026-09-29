@@ -208,6 +208,7 @@ TOC_HUNKS = [
     ("M33kAuras/M33kAuras.toc", "ForeverManaRegen.lua\n", "ForeverManaRegen.lua\nForeverGate.lua\n"),
     ("M33kAuras/M33kAuras.toc", "ForeverGate.lua\n", "ForeverGate.lua\nForeverImport.lua\n"),
     ("M33kAuras/M33kAuras.toc", "ForeverImport.lua\n", "ForeverImport.lua\nForeverGlow.lua\n"),
+    ("M33kAuras/M33kAuras.toc", "ForeverGlow.lua\n", "ForeverGlow.lua\nForeverDispelData.lua\n"),
     ("M33kAurasOptions/M33kAurasOptions.toc", "\nRegionOptions\\ProgressTexture.lua\n",
      "\nRegionOptions\\ProgressTexture.lua\nForeverEngineAuraOptions.lua\n"),
 ]
@@ -219,6 +220,7 @@ NEW_FILES = [
     ("ForeverImport.lua", "M33kAuras/ForeverImport.lua"),
     ("ForeverManaRegen.lua", "M33kAuras/ForeverManaRegen.lua"),
     ("ForeverGlow.lua", "M33kAuras/ForeverGlow.lua"),
+    ("ForeverDispelData.lua", "M33kAuras/ForeverDispelData.lua"),
     ("ForeverEngineAuraOptions.lua", "M33kAurasOptions/ForeverEngineAuraOptions.lua"),
 ]
 
@@ -250,6 +252,7 @@ CHECKS = {
     "M33kAurasOptions/M33kAurasOptions.toc": ["\nForeverEngineAuraOptions.lua\n"],
     "M33kAuras/ForeverEngineAura.lua": ["Private.ForeverEngine = Engine"],
     "M33kAuras/ForeverGlow.lua": ["Private.ForeverGlow = G"],
+    "M33kAuras/ForeverDispelData.lua": ["Private.ForeverDispelData = {"],
     "M33kAurasOptions/ForeverEngineAuraOptions.lua": ["foreverEngineNotice"],
 }
 
