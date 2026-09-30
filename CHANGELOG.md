@@ -18,7 +18,10 @@
   the spell lists per dispel type, taken from the game's own spell tables (about 1,600 debuffs), and also
   remembers every typed aura it can read out of combat on you, your pet, target, focus, group and nearby
   enemies. A murloc's Frostbolt honks the first time. Registering the sounds takes a few milliseconds when
-  you log in or change a display; nothing runs while you play.
+  you log in or change a display; nothing runs while you play. The game keeps aura sounds over a `/reload`;
+  EverAuras removes its old ones when it starts, so a sound never plays twice.
+- New developer tool: `tools/gen_dispel_data.py` regenerates the spell lists from an installed client (a
+  small WDC5 reader, `tools/wdc5.py`, reads the client's own spell tables).
 
 ## 0.7.2-alpha (2026-09-28)
 
