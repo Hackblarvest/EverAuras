@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.1-alpha (2026-09-30)
+
+- **Packaging fix, nothing changes in game.** CurseForge rejected 0.8.0-alpha: the EverAurasTemplates folder
+  carried upstream's `M33AurasTemplates.toc`, a name that does not match the folder, so the game never
+  loaded that folder in any release (the options said "Templates could not be loaded"). The release no
+  longer contains it; its templates are retail class setups that were never checked on Forever. 0.8.1 is
+  0.8.0 otherwise.
+
 ## 0.8.0-alpha (2026-09-30)
 
 - **Sounds that play at the right moment, in combat too.** An engine-driven display's *On Show* / *On Hide*

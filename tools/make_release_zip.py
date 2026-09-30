@@ -2,15 +2,17 @@
 
 Usage: python tools/make_release_zip.py <AddOns dir> <version> [out.zip]
 
-Packs the five EverAuras folders a player copies into Interface/AddOns. Left out on purpose: the
-settings-migration stubs upstream ships (M33Auras, WeakAuras - nothing to migrate from on Forever, and
+Packs the four EverAuras folders a player copies into Interface/AddOns. Left out on purpose:
+EverAurasTemplates (upstream names its TOC M33AurasTemplates.toc, so the game never loaded it and
+CurseForge rejects a folder whose TOC does not match its name; its templates are retail class
+setups that were never checked on Forever), the settings-migration stubs upstream ships (M33Auras, WeakAuras - nothing to migrate from on Forever, and
 the folder names belong to other addons; media paths of imported auras are rewritten instead, see
 tools/forever_files/ForeverImport.lua), and the development addons in addons/ (!ForeverCompat,
 ForeverDevInfo, !ForeverSVCanary) as well as the generated !ForeverSVBridge.
 """
 import os, sys, zipfile
 
-FOLDERS = ["EverAuras", "EverAurasOptions", "EverAurasArchive", "EverAurasModelPaths", "EverAurasTemplates"]
+FOLDERS = ["EverAuras", "EverAurasOptions", "EverAurasArchive", "EverAurasModelPaths"]
 SKIP_SUFFIX = (".bak", ".orig", ".tmp")
 
 

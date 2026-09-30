@@ -43,8 +43,9 @@ its spell should be cast, in combat, correctly. See the [design notes](#how-it-w
 1. Have a working Forever install and the Battle.net app running.
 2. Download the latest `EverAuras-<version>.zip` from
    [Releases](https://github.com/Hackblarvest/EverAuras/releases) and unzip it into
-   `_classic_beta_\Interface\AddOns`. It holds `EverAuras`, `EverAurasOptions`, `EverAurasArchive`,
-   `EverAurasModelPaths` and `EverAurasTemplates`. Textures in auras imported from WeakAuras, M33kAuras
+   `_classic_beta_\Interface\AddOns`. It holds `EverAuras`, `EverAurasOptions`, `EverAurasArchive` and
+   `EverAurasModelPaths` (an `EverAurasTemplates` folder from 0.8.0 or earlier never loaded and can be
+   deleted). Textures in auras imported from WeakAuras, M33kAuras
    or ForeverAuras are pointed at EverAuras' own copy of the same media automatically.
    Upgrading from 0.4.0 or earlier: delete the `M33Auras` and `WeakAuras` folders those zips added, if the
    addon list calls them "EverAuras Settings Migration" (other addons use the same folder names).
