@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.0-alpha (2026-09-30)
 
 - **Sounds that play at the right moment, in combat too.** An engine-driven display's *On Show* / *On Hide*
   sound used to play only when you logged in or closed the options, never when the aura came or went:
