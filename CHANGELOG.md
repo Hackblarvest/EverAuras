@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.5-alpha (2026-10-01)
+
+- **Progress Textures that work in combat.** A Progress Texture display with an aura trigger (*Show On:
+  Aura(s) Found*) is now drawn by the game's aura engine, like Icons and Progress Bars, so it keeps
+  counting down in combat while auras are secret. Straight ones (vertical, horizontal, either way) empty
+  as the aura runs out with your texture, colours, crop, rotation, mirror, *Compress* and background;
+  circular ones are the game's cooldown swipe drawn with your texture. `%p`, `%s` and `%n` texts count
+  along. Asked for by JakeD, who times his buffs and debuffs with them. Thanks, JakeD!
+- The game's swipe only turns clockwise: circular textures set to *Anticlockwise* (or *Clockwise* with
+  *Inverse*) look exactly as in WeakAuras; the other two run out the mirror way, and the status line says
+  so. Not engine-driven yet, with the reason in the status line: part circles (*Start* / *End Angle*),
+  atlas textures on circles, adjusted minimum / maximum progress and other progress sources. While a
+  texture is engine-driven its glow and border are hidden, and slanted ends are drawn straight.
+
 ## 0.8.1-alpha (2026-09-30)
 
 - **Packaging fix, nothing changes in game.** CurseForge rejected 0.8.0-alpha: the EverAurasTemplates folder

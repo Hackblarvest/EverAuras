@@ -23,6 +23,7 @@ and lets the client draw it.
 | **Other triggers next to an aura trigger** — e.g. *in combat*, *target attackable*, *talent known* | The engine draws the aura part; WeakAuras evaluates the other triggers itself, which works for plain data (health and power amounts stay secret). |
 | **Animated glow** on engine-driven icons — Button Glow, Pixel Glow, Autocast Shine and Proc Glow, with your colours and settings — shown only while the icon is (aura present, missing, or running out) | The glow runs inside a frame whose width the engine controls from the aura, so it is clipped away exactly when the icon is. Everything is created inside that frame, because Blizzard refuses to move frames into it, and everything moves by animation (Path, FlipBook), because the game refuses to let addon code re-position anything anchored to its aura frames while an aura is shown. For the last X seconds of an aura, a clip anchored to the fill edge of a bar the game sizes by the remaining time opens exactly when X seconds are left. A display with a missing and a time-left part chooses where the glow goes. |
 | **Cooldown icons** with swipe and countdown, **progress bars**, and `%p` remaining-time text | Duration objects: the engine formats and animates values the addon cannot read. |
+| **Progress Textures** for aura timers, straight and circular, with your texture, colours, crop, rotation and background | Straight: a clip anchored to the fill of an invisible bar the engine fills by the aura's duration reveals a copy of the texture with WeakAuras' own texture coordinates. Circular: the game's cooldown swipe drawn with the texture; its edge only turns clockwise, so two of WeakAuras' four direction settings run out the mirror way (the status line says which). |
 | **Show On: Ready / On Cooldown** | Exact, from fields Blizzard left readable. |
 | **Conditions on secret state** — e.g. *Is Ready (Secret)* → *Alpha (Boolean)* | The secret boolean goes straight to the engine via `SetAlphaFromBoolean`; the addon never sees it. |
 | **Range gate** on engine-driven displays — *only while the spell is in range of the unit* (e.g. Serpent Sting missing **and** target within 8–35 yd) | `C_Spell.IsSpellInRange` answers with a plain boolean on Forever, in combat too, and honours the spell's own min/max range. Sampled 5x per second; the display's own alpha, conditions and animations still apply on top. |
@@ -103,8 +104,8 @@ What it *can* do is configure engine-drawn UI:
   the client allows tainted code to use.
 
 What is lost for engine-driven displays: conditions and texts that *read* aura state (stacks,
-remaining time, active), show/hide animations and actions on aura gain/loss, dynamic-group layout
-that reacts to secret visibility, and progress textures (no duration-object path yet). A sorted
+remaining time, active), show/hide animations and actions on aura gain/loss other than sounds,
+dynamic-group layout that reacts to secret visibility, and part-circle progress textures. A sorted
 priority list is not possible; a fixed priority row is.
 
 The full research trail — every API flag, probe result and dead end — is in `docs/`.
