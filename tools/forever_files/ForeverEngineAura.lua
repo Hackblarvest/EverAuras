@@ -17,6 +17,9 @@
 --
 -- Progress Bars (Show On: Found) are engine-driven too: the slot button carries its own StatusBar that
 -- Blizzard fills with the aura's duration (SetDurationBar), plus icon, name, timer and stack texts.
+-- Progress Textures (Show On: Found): straight ones ride on the same StatusBar, kept invisible: a clipping
+-- frame anchored to its fill reveals a copy of the display's texture as the aura runs out. Circular
+-- ones are the game's cooldown swipe drawn with the display's texture.
 --
 -- Time left (icons): 'Remaining Time' on a Found trigger becomes a slot whose duration text is the
 -- display's icon, coloured by a Step curve over the remaining duration (alpha 0 outside the range).
@@ -756,6 +759,40 @@ end
 --   composite plan : plan.parts = { missing = part | nil, remaining = { {part, op, x}, ... } }, icons only.
 --                    Shows the icon while the missing part's aura is absent OR a remaining part's aura
 --                    has the given time left. Built from Found + 'Remaining Time' triggers.
+local ENGINE_REGIONS = { icon = true, aurabar = true, progresstexture = true }
+local FOUND_ONLY = { aurabar = "Progress Bars", progresstexture = "Progress Textures" }
+
+-- A Progress Texture follows the aura's own duration: progress source Automatic, or the Aura
+-- trigger's duration, and no adjusted minimum / maximum.
+local function IsCircular(data)
+  local o = data.orientation or "VERTICAL"
+  return o == "CLOCKWISE" or o == "ANTICLOCKWISE"
+end
+
+local function TextureFollowsAura(data, no)
+  if IsCircular(data) then
+    if (tonumber(data.startAngle) or 0) % 360 ~= (tonumber(data.endAngle) or 360) % 360 then
+      no(T("circular Progress Textures that draw part of a circle (Start / End Angle) are not engine-driven yet"))
+    end
+    local fg = data.foregroundTexture
+    if type(fg) == "string" and C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo(fg) then
+      no(T("circular Progress Textures need a texture file, not an atlas"))
+    end
+  end
+  if data.useAdjustededMin or data.useAdjustededMax then
+    no(T("the Progress Texture uses an adjusted minimum or maximum progress"))
+  end
+  local ps = type(data.progressSource) == "table" and data.progressSource or nil
+  local src = ps and ps[1] or -1
+  if src ~= -1 then
+    local t = type(src) == "number" and type(data.triggers) == "table" and data.triggers[src]
+    t = t and t.trigger
+    if not (t and t.type == "aura2" and ps[3] == "expirationTime") then
+      no(T("the Progress Texture's progress source is not the aura's duration"))
+    end
+  end
+end
+
 function Engine.Classify(data)
   local r = {}
   local function no(msg)
@@ -763,7 +800,8 @@ function Engine.Classify(data)
     r[#r + 1] = msg
   end
   local rt = data and data.regionType
-  if rt ~= "icon" and rt ~= "aurabar" then return nil, { T("the display is not an Icon or a Progress Bar") } end
+  if not ENGINE_REGIONS[rt] then return nil, { T("the display is not an Icon, a Progress Bar or a Progress Texture") } end
+  if rt == "progresstexture" then TextureFollowsAura(data, no) end
   if not GloballyEnabled() then no(T("the engine is switched off (/faengine on)")) end
   if data.foreverEngine == false then no(T("'Let the game engine draw this aura' is off for this display (Display tab)")) end
   if not Engine.IsAvailable() then no(T("Blizzard_AuraContainer is not available")) end
@@ -797,8 +835,8 @@ function Engine.Classify(data)
 
   if #infos == 1 and not infos[1].rem then
     local inf = infos[1]
-    if rt == "aurabar" and inf.mode and inf.mode ~= "active" then   -- MODE maps showOnActive -> "active"
-      no(T("Progress Bars are engine-driven with 'Show On: Aura(s) Found' only (so far)"))
+    if FOUND_ONLY[rt] and inf.mode and inf.mode ~= "active" then   -- MODE maps showOnActive -> "active"
+      no(T("%s are engine-driven with 'Show On: Aura(s) Found' only (so far)"):format(T(FOUND_ONLY[rt])))
     end
     if #r > 0 then return nil, r end
     local key = table.concat({ unit, inf.mode, inf.key }, ";")
@@ -811,7 +849,7 @@ function Engine.Classify(data)
   end
 
   if rt ~= "icon" then
-    no(T("Progress Bars are engine-driven with one Aura trigger without 'Remaining Time' only (so far)"))
+    no(T("%s are engine-driven with one Aura trigger without 'Remaining Time' only (so far)"):format(T(FOUND_ONLY[rt])))
   end
   if data.uid then lateUsers[data.uid] = true end
   local missing, found, remaining = nil, nil, {}
@@ -1034,6 +1072,15 @@ function Engine.Explain(data, plan, reasons)
         txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s). It shows your icon %s, and nothing otherwise. The game checks the time left itself, so it never has to be read. Kept: position, size, groups, the %%p text, static colour/zoom; glow %s. Not available: the border (hidden while engine-driven), cooldown swipe, stack count and desaturation on the time-left icon, conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
           :format(plan.unit, table.concat(when, T(" or ")), glowTxt)
       end
+    elseif data.regionType == "progresstexture" and IsCircular(data) then
+      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows the texture while the aura is present and the game's cooldown swipe sweeps it away as the aura runs out (draws the time gone with 'Inverse'); the game checks the time left itself, so it never has to be read. Kept: position, size, groups, textures, colours, crop, mirror, rotation, start angle, the background, %%p/%%s/%%n texts. Not drawn on the sweeping part: desaturate, blend mode, legacy rotation. Not drawn: additional progress, the glow and the border (hidden while engine-driven). Not available: conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
+        :format(plan.unit, plan.filterString)
+      if not Engine.SwipeMatchesDirection(data) then
+        txt = txt .. " " .. T("|cffff9933Note:|r the game's swipe only moves clockwise, so this texture runs out the mirror way of WeakAuras' own. 'Anticlockwise' (or 'Clockwise' with 'Inverse') matches exactly.")
+      end
+    elseif data.regionType == "progresstexture" then
+      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows the texture while the aura is present and empties it as the aura runs out (fills it with 'Inverse'); the game checks the time left itself, so it never has to be read. Kept: position, size, groups, textures, colours, desaturate, blend mode, crop, rotation, mirror, 'Compress', the background, %%p/%%s/%%n texts. Not drawn: slanted ends (drawn straight), additional progress, the glow and the border (hidden while engine-driven). Not available: conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
+        :format(plan.unit, plan.filterString)
     else
       local kept = T("border and glow")
       if data.regionType == "icon" and plan.mode ~= "always" then
@@ -1221,6 +1268,53 @@ local function BuildSlot(att, region, plan)
         att.barDirection = dirs and dirs.RemainingTime
         button:SetDurationBar(s.bar, { direction = att.barDirection })
         button:SetIcon(s.icon)
+        button:SetDurationText(s.duration, nil)
+        button:SetApplicationCount(s.count, nil)
+        button:SetSpellName(s.name)
+        return
+      end
+      if att.isTex then
+        -- an invisible StatusBar the engine fills; the clip follows its fill and reveals the texture
+        s.texBg = button:CreateTexture(nil, "BACKGROUND")
+        s.texBg:SetAllPoints(button)
+        s.bar = CreateFrame("StatusBar", nil, button)
+        s.bar:SetAllPoints(button)
+        s.bar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
+        s.bar:SetStatusBarColor(1, 1, 1, 0)
+        s.bar:SetFrameLevel(button:GetFrameLevel() + 1)
+        s.fill = s.bar:GetStatusBarTexture()
+        s.fill:SetAlpha(0)
+        s.texClip = CreateFrame("Frame", nil, button)
+        s.texClip:SetClipsChildren(true)
+        s.texClip:SetAllPoints(s.fill)
+        s.texClip:SetFrameLevel(button:GetFrameLevel() + 1)
+        s.texFg = s.texClip:CreateTexture(nil, "ARTWORK")
+        s.texFg:SetAllPoints(button)
+        -- circular ones: the game's cooldown swipe, drawn with the display's texture
+        s.swipe = CreateFrame("Cooldown", nil, button)
+        s.swipe:SetAllPoints(button)
+        s.swipe:SetFrameLevel(button:GetFrameLevel() + 1)
+        pcall(s.swipe.SetDrawBling, s.swipe, false)
+        pcall(s.swipe.SetDrawEdge, s.swipe, false)
+        pcall(s.swipe.SetHideCountdownNumbers, s.swipe, true)
+        button:SetDurationCooldown(s.swipe)
+        for _, tex in ipairs({ s.texBg, s.texFg }) do
+          pcall(tex.SetSnapToPixelGrid, tex, false)
+          pcall(tex.SetTexelSnappingBias, tex, 0)
+        end
+        att.texBgOffset, att.texCompress = 0, false
+        s.texts = CreateFrame("Frame", nil, button)
+        s.texts:SetAllPoints(button)
+        s.texts:SetFrameLevel(button:GetFrameLevel() + 2)
+        s.duration = s.texts:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        s.duration:SetPoint("CENTER")
+        s.count = s.texts:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        s.count:SetPoint("CENTER")
+        s.name = s.texts:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        s.name:SetPoint("CENTER")
+        local dirs = Enum and Enum.StatusBarTimerDirection
+        att.barDirection = dirs and dirs.RemainingTime
+        button:SetDurationBar(s.bar, { direction = att.barDirection })
         button:SetDurationText(s.duration, nil)
         button:SetApplicationCount(s.count, nil)
         button:SetSpellName(s.name)
@@ -1628,8 +1722,125 @@ local function ApplyBarLook(att, region, data)
   pcall(att.button.EnableMouseMotion, att.button, data.useTooltip and true or false)
 end
 
+-- Progress Textures. Straight ones: the slot button carries an invisible StatusBar the engine fills like a
+-- Progress Bar's, and a clipping frame anchored to that bar's fill texture, so the clip grows and shrinks
+-- with the aura's time left (geometry driven by a value we cannot read, like the Missing clip). Inside
+-- the clip sits a copy of WA's foreground at full progress, with WA's own texture coordinates (crop,
+-- rotation, mirror), so the clip reveals it the way WA's vertex offsets do; 'Compress' squeezes the copy
+-- into the fill instead. Circular ones: the game's cooldown swipe on the same button, drawn with the
+-- display's texture. Its edge only ever moves clockwise, so 'Anticlockwise' (and 'Clockwise' + 'Inverse')
+-- match WA exactly and the other two run out the mirror way. The background is drawn whole. WA's own
+-- textures are hidden (alpha, which WA never touches on them) while the display is engine-driven.
+local TEX_FILL = { HORIZONTAL = { "HORIZONTAL", false }, HORIZONTAL_INVERSE = { "HORIZONTAL", true },
+                   VERTICAL = { "VERTICAL", false }, VERTICAL_INVERSE = { "VERTICAL", true } }
+
+local function SetTexVisuals(region, shown)
+  local a = shown and 1 or 0
+  for _, lin in ipairs({ region.foreground, region.background }) do
+    if lin and lin.texture then lin.texture:SetAlpha(a) end
+  end
+  for _, lin in ipairs(region.extraTextures or {}) do
+    if lin.texture then lin.texture:SetAlpha(a) end
+  end
+  for _, spin in ipairs({ region.foregroundSpinner, region.backgroundSpinner }) do
+    for _, tex in ipairs(spin and spin.textures or {}) do tex:SetAlpha(a) end
+  end
+  for _, spin in ipairs(region.extraSpinners or {}) do
+    for _, tex in ipairs(spin.textures or {}) do tex:SetAlpha(a) end
+  end
+end
+
+-- the swipe runs the right way round: WA's arc shrinks towards its start when it drains clockwise
+function Engine.SwipeMatchesDirection(data)
+  return (data.orientation == "ANTICLOCKWISE") == (not data.inverse)
+end
+
+local function StyleTexCopy(tex, coord, data, path, desaturate, color, circular)
+  local wrap = data.textureWrapMode
+  Private.SetTextureOrAtlas(tex, path, wrap, wrap)
+  pcall(tex.SetDesaturated, tex, desaturate and true or false)
+  pcall(tex.SetBlendMode, tex, data.blendMode or "BLEND")
+  pcall(tex.SetRotation, tex, (tonumber(data.auraRotation) or 0) / 180 * math.pi)
+  -- WA's texture at full progress: SetFull, then WA's transform (ProgressTexture.lua modify; the
+  -- circular base leaves out the centre shift)
+  coord:SetFull()
+  coord:Transform(1 + (tonumber(data.crop_x) or 0.41), 1 + (tonumber(data.crop_y) or 0.41),
+    tonumber(data.rotation) or 0, data.mirror and true or false, false,
+    circular and 0 or -1 * (tonumber(data.user_x) or 0), circular and 0 or tonumber(data.user_y) or 0)
+  coord:Apply()
+  tex:SetVertexColor(color[1] or 1, color[2] or 1, color[3] or 1, color[4] or 1)
+end
+
+local function StyleSwipe(swipe, data)
+  local c = data.foregroundColor or { 1, 1, 1, 1 }
+  local path = data.foregroundTexture
+  pcall(swipe.SetSwipeTexture, swipe, tonumber(path) or path, c[1] or 1, c[2] or 1, c[3] or 1, c[4] or 1)
+  pcall(swipe.SetSwipeColor, swipe, c[1] or 1, c[2] or 1, c[3] or 1, c[4] or 1)
+  -- WA's crop: texture coordinates spread 1.4142 / (1 + crop) around the centre
+  local hx = 0.7071 / (1 + (tonumber(data.crop_x) or 0.41))
+  local hy = 0.7071 / (1 + (tonumber(data.crop_y) or 0.41))
+  local lx, rx = 0.5 - hx, 0.5 + hx
+  if data.mirror then lx, rx = rx, lx end
+  if CreateVector2D then
+    pcall(swipe.SetTexCoordRange, swipe, CreateVector2D(lx, 0.5 - hy), CreateVector2D(rx, 0.5 + hy))
+  end
+  -- the arc starts at the start angle (clockwise from the top); 'Rotation' turns the whole texture
+  local rad = ((tonumber(data.auraRotation) or 0) - (tonumber(data.startAngle) or 0)) / 180 * math.pi
+  pcall(swipe.SetRotation, swipe, rad)
+  -- not reversed, the swipe covers the time left; 'Inverse' draws the time gone
+  pcall(swipe.SetReverse, swipe, data.inverse and true or false)
+end
+
+local function ApplyTexLook(att, region, data)
+  local s = att.shadows
+  local circular = IsCircular(data)
+  s.texFgCoord = s.texFgCoord or Private.TextureCoords.create(s.texFg)
+  s.texBgCoord = s.texBgCoord or Private.TextureCoords.create(s.texBg)
+  local fgPath = data.foregroundTexture
+  StyleTexCopy(s.texFg, s.texFgCoord, data, fgPath, data.desaturateForeground, data.foregroundColor or { 1, 1, 1, 1 }, circular)
+  StyleTexCopy(s.texBg, s.texBgCoord, data, data.sameTexture and fgPath or data.backgroundTexture,
+    data.desaturateBackground, data.backgroundColor or { 0.5, 0.5, 0.5, 0.5 }, circular)
+  local off = tonumber(data.backgroundOffset) or 2
+  if att.texBgOffset ~= off then
+    local ok = pcall(function()
+      s.texBg:ClearAllPoints()
+      s.texBg:SetPoint("BOTTOMLEFT", att.button, "BOTTOMLEFT", -off, -off)
+      s.texBg:SetPoint("TOPRIGHT", att.button, "TOPRIGHT", off, off)
+    end)
+    if ok then att.texBgOffset = off end
+  end
+  s.texClip:SetAlpha(circular and 0 or 1)
+  s.swipe:SetAlpha(circular and 1 or 0)
+  if circular then
+    StyleSwipe(s.swipe, data)
+  else
+    local compress = data.compress and true or false
+    if att.texCompress ~= compress then
+      local ok = pcall(function()
+        s.texFg:ClearAllPoints()
+        s.texFg:SetAllPoints(compress and s.fill or att.button)
+      end)
+      if ok then att.texCompress = compress end
+    end
+    local fill = TEX_FILL[data.orientation or "VERTICAL"] or TEX_FILL.VERTICAL
+    pcall(s.bar.SetOrientation, s.bar, fill[1])
+    pcall(s.bar.SetReverseFill, s.bar, fill[2])
+    -- WA drains the texture as the aura runs out unless 'Inverse'
+    local dirs = Enum and Enum.StatusBarTimerDirection
+    local dir = dirs and (data.inverse and dirs.ElapsedTime or dirs.RemainingTime)
+    if att.barDirection ~= dir then
+      local ok = pcall(att.button.SetDurationBar, att.button, s.bar, { direction = dir })
+      if ok then att.barDirection = dir end
+    end
+  end
+  MirrorTexts(att, region, data, true)
+  HideStaticDecor(att, region, data, true)     -- WA's region is always shown: its glow and border would be too
+  pcall(att.button.EnableMouseMotion, att.button, data.useTooltip and true or false)
+end
+
 local function ApplySlotLook(att, region, data, plan)
   if att.isBar then return ApplyBarLook(att, region, data) end
+  if att.isTex then return ApplyTexLook(att, region, data) end
   local s = att.shadows
   s.icon:SetTexCoord(region.icon:GetTexCoord())     -- WA already applied zoom/aspect/offset to its own texture
   pcall(s.icon.SetDesaturation, s.icon, data.desaturate and 1 or 0)
@@ -1705,6 +1916,7 @@ function Engine.OnLayout(region)          -- after every ApplyFrameLevel (Expand
   if not (att and att.active) then return end
   SetMirroredShown(att, false)
   if att.isBar then SetBarVisuals(region, false)
+  elseif att.isTex then SetTexVisuals(region, false)
   elseif (att.kind == "group" or att.kind == "composite") and region.icon then region.icon:Hide() end
   if att.kind == "composite" and att.want and att.want.parts and att.want.parts.found and region.icon then region.icon:Hide() end
 end
@@ -2211,7 +2423,9 @@ local function TurnOff(att, region, data, mode)
   StopAnimatedGlow(att.pglow); StopAnimatedGlow(att.mglowHolder)
   for _, rs in pairs(att.rslots or {}) do if rs.glowHolder then StopAnimatedGlow(rs.glowHolder) end end
   RemoveGate(att)
-  if att.isBar then SetBarVisuals(region, true) elseif region.icon then region.icon:Show() end
+  if att.isBar then SetBarVisuals(region, true)
+  elseif att.isTex then SetTexVisuals(region, true)
+  elseif region.icon then region.icon:Show() end
   SetMirroredShown(att, true)
   ClearSounds(att)
   if region.tooltipFrame and data then region.tooltipFrame:EnableMouseMotion(data.useTooltip and true or false) end
@@ -2246,7 +2460,7 @@ local function ApplyUnguarded(region)
       if att.slotKey ~= plan.key then c:SetAuraSlotCandidateFilters(KEY, plan.candidate); att.slotKey = plan.key end
       c:SetAuraSlotEnabled(KEY, true)
     end
-    local glowSub = plan.mode == "active" and not att.isBar and GlowSub(data)
+    local glowSub = plan.mode == "active" and not att.isBar and not att.isTex and GlowSub(data)
     if glowSub then
       local w, h = RegionSize(region)
       att.pclipShown = EnsurePresentClip(att, region, plan, AnimatedGlowMargin(w, h, glowSub))
@@ -2273,7 +2487,9 @@ local function ApplyUnguarded(region)
 
   -- Underlay policy: Found = nothing beneath; Always = the WA icon beneath the live aura;
   -- Missing = the WA icon is replaced by our clipped copy.
-  if att.isBar then SetBarVisuals(region, false) else region.icon:SetShown(plan.mode == "always") end
+  if att.isBar then SetBarVisuals(region, false)
+  elseif att.isTex then SetTexVisuals(region, false)
+  else region.icon:SetShown(plan.mode == "always") end
   if region.tooltipFrame then region.tooltipFrame:EnableMouseMotion(false) end
   if kind == "slot" then pcall(att.button.SetFrameLevel, att.button, c:GetFrameLevel()) end
   if kind == "composite" then
@@ -2283,6 +2499,11 @@ local function ApplyUnguarded(region)
   if att.isBar and att.shadows.bar then                  -- keep bar under texts, both above the button
     local sh = att.shadows
     pcall(sh.bar.SetFrameLevel, sh.bar, c:GetFrameLevel() + 1)
+    pcall(sh.texts.SetFrameLevel, sh.texts, c:GetFrameLevel() + 2)
+  elseif att.isTex and att.shadows.texClip then         -- texture under texts, both above the button
+    local sh = att.shadows
+    pcall(sh.bar.SetFrameLevel, sh.bar, c:GetFrameLevel() + 1)
+    pcall(sh.texClip.SetFrameLevel, sh.texClip, c:GetFrameLevel() + 1)
     pcall(sh.texts.SetFrameLevel, sh.texts, c:GetFrameLevel() + 2)
   end
   att.host:Show()
@@ -2361,7 +2582,16 @@ local function ComputeSig(region, data, plan)
     table.concat(data.backgroundColor or {}, ","), table.concat(data.icon_color or {}, ","),
     tostring(data.foreverEngineRange), tostring(data.foreverEngineRangeSpell), tostring(data.foreverEngineGlowPart),
     SoundSig(data),
-    table.concat(data.color or {}, ","), table.concat({ region.icon:GetTexCoord() }, ",") }
+    table.concat(data.color or {}, ","), region.icon and table.concat({ region.icon:GetTexCoord() }, ",") or "" }
+  if data.regionType == "progresstexture" then
+    for _, k in ipairs({ "foregroundTexture", "backgroundTexture", "sameTexture", "desaturateForeground",
+                         "desaturateBackground", "blendMode", "textureWrapMode", "backgroundOffset", "compress",
+                         "crop_x", "crop_y", "rotation", "auraRotation", "mirror", "user_x", "user_y",
+                         "startAngle", "endAngle" }) do
+      parts[#parts + 1] = tostring(data[k])
+    end
+    parts[#parts + 1] = table.concat(data.foregroundColor or {}, ",")
+  end
   for _, sub in ipairs(data.subRegions or {}) do
     if sub.type == "subtext" then
       parts[#parts + 1] = table.concat({ tostring(sub.text_text), tostring(sub.text_visible), tostring(sub.text_font),
@@ -2397,7 +2627,10 @@ function Engine.Sync(region, data)
     if other ~= region and other.id == region.id and oatt.want then oatt.want = nil; Schedule(other) end
   end
   local att = attachments[region]
-  if not att then att = { region = region, shadows = {}, isBar = data.regionType == "aurabar" }; attachments[region] = att end
+  if not att then
+    att = { region = region, shadows = {}, isBar = data.regionType == "aurabar", isTex = data.regionType == "progresstexture" }
+    attachments[region] = att
+  end
   local plan = decided[data.uid]
   local isAura2 = false
   for _, tr in ipairs(data.triggers or {}) do
@@ -2416,7 +2649,7 @@ function Engine.Sync(region, data)
   end
   if not plan then
     if att.want or att.active then att.want = nil; Schedule(region) end
-    if isAura2 and (data.regionType == "icon" or data.regionType == "aurabar") then
+    if isAura2 and ENGINE_REGIONS[data.regionType] then
       SetWarning(att, data.uid, "info", (Engine.Explain(data)))
     else
       SetWarning(att, data.uid, nil, nil)
@@ -2461,17 +2694,19 @@ icon.default.foreverEngineGlowPart = "both"  -- missing + time left: where the s
 icon.default.foreverEngineSelfDebuff = false  -- debuffs on yourself: match any own debuff by duration
 icon.default.foreverEngineSelfDebuffMax = ""  -- its longest duration in seconds (blank = as seen)
 
-local aurabar = Private.regionTypes and Private.regionTypes.aurabar
-if aurabar and aurabar.modify and aurabar.default then
-  aurabar.default.foreverEngine = true
-  aurabar.default.foreverEngineRange = false
-  aurabar.default.foreverEngineRangeSpell = ""
-  aurabar.default.foreverEngineSelfDebuff = false
-  aurabar.default.foreverEngineSelfDebuffMax = ""
-  local origBarModify = aurabar.modify
-  aurabar.modify = function(parent, region, data)
-    origBarModify(parent, region, data)
-    Guard("sync", Engine.Sync, region, data)
+for _, rt in ipairs({ "aurabar", "progresstexture" }) do
+  local regionType = Private.regionTypes and Private.regionTypes[rt]
+  if regionType and regionType.modify and regionType.default then
+    regionType.default.foreverEngine = true
+    regionType.default.foreverEngineRange = false
+    regionType.default.foreverEngineRangeSpell = ""
+    regionType.default.foreverEngineSelfDebuff = false
+    regionType.default.foreverEngineSelfDebuffMax = ""
+    local origModify = regionType.modify
+    regionType.modify = function(parent, region, data)
+      origModify(parent, region, data)
+      Guard("sync", Engine.Sync, region, data)
+    end
   end
 end
 
