@@ -1073,18 +1073,20 @@ function Engine.Explain(data, plan, reasons)
           :format(plan.unit, table.concat(when, T(" or ")), glowTxt)
       end
     elseif data.regionType == "progresstexture" and IsCircular(data) then
-      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows the texture while the aura is present and the game's cooldown swipe sweeps it away as the aura runs out (draws the time gone with 'Inverse'); the game checks the time left itself, so it never has to be read. Kept: position, size, groups, textures, colours, crop, mirror, rotation, start angle, the background, %%p/%%s/%%n texts. Not drawn on the sweeping part: desaturate, blend mode, legacy rotation. Not drawn: additional progress, the glow and the border (hidden while engine-driven). Not available: conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
+      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows the texture while the aura is present and the game's cooldown swipe sweeps it away as the aura runs out (draws the time gone with 'Inverse'); the game checks the time left itself, so it never has to be read. Kept: position, size, groups, textures, colours, crop, mirror, rotation, start angle, the background, %%p/%%s/%%n texts, the glow (shown only while the texture is, animated like WeakAuras' own). Not drawn on the sweeping part: desaturate, blend mode, legacy rotation. Not drawn: additional progress and the border (hidden while engine-driven). Not available: conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
         :format(plan.unit, plan.filterString)
       if not Engine.SwipeMatchesDirection(data) then
         txt = txt .. " " .. T("|cffff9933Note:|r the game's swipe only moves clockwise, so this texture runs out the mirror way of WeakAuras' own. 'Anticlockwise' (or 'Clockwise' with 'Inverse') matches exactly.")
       end
     elseif data.regionType == "progresstexture" then
-      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows the texture while the aura is present and empties it as the aura runs out (fills it with 'Inverse'); the game checks the time left itself, so it never has to be read. Kept: position, size, groups, textures, colours, desaturate, blend mode, crop, rotation, mirror, 'Compress', the background, %%p/%%s/%%n texts. Not drawn: slanted ends (drawn straight), additional progress, the glow and the border (hidden while engine-driven). Not available: conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
+      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows the texture while the aura is present and empties it as the aura runs out (fills it with 'Inverse'); the game checks the time left itself, so it never has to be read. Kept: position, size, groups, textures, colours, desaturate, blend mode, crop, rotation, mirror, 'Compress', the background, %%p/%%s/%%n texts, the glow (shown only while the texture is, animated like WeakAuras' own). Not drawn: slanted ends (drawn straight), additional progress and the border (hidden while engine-driven). Not available: conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
         :format(plan.unit, plan.filterString)
     else
       local kept = T("border and glow")
       if data.regionType == "icon" and plan.mode ~= "always" then
         kept = T("the border (also while nothing is drawn), and the glow: shown only while the icon is, and animated like WeakAuras' own")
+      elseif data.regionType == "aurabar" then
+        kept = T("the border (also while nothing is drawn), and the glow: shown only while the bar is, and animated like WeakAuras' own (a glow on the bar's fill goes around the whole bar)")
       end
       txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It %s. Kept: position, size, groups, %%n/%%i texts, static colour/desaturate/zoom, %s; cooldown numbers count like the buff frame. Not available: conditions and texts that read aura state (stacks, remaining, active), show/hide animations and actions on aura gain/loss other than sounds.")
         :format(plan.unit, plan.filterString, T(MODE_TEXT[plan.mode]), kept)
@@ -1632,11 +1634,13 @@ local function AnimatedGlowMargin(w, h, sub)
   return math.ceil(math.max(w, h) * 0.5 * (tonumber(sub.glowScale) or 1)) + off + (tonumber(sub.glowThickness) or 1) + 4
 end
 
-local function GlowHolder(att, key, clip)
+-- anchor: the rect the glow goes around (default the whole display). Each holder keeps its anchor for
+-- good, so a display whose glow moves to another area gets another holder (see PGLOW_KEYS).
+local function GlowHolder(att, key, clip, anchor)
   local holder = att[key]
   if not holder then
     holder = CreateFrame("Frame", nil, clip)   -- created in the clip: never re-parented
-    holder:SetAllPoints(att.host)              -- a plain rect, so its size is readable
+    holder:SetAllPoints(anchor or att.host)    -- a plain rect, so its size is readable
     holder:Hide()
     att[key] = holder
   end
@@ -1646,6 +1650,14 @@ end
 
 local function StopAnimatedGlow(holder)
   if holder and FG() then pcall(FG().Stop, holder) end
+end
+
+-- Holders in the Found clip: the whole display, a Progress Bar's icon, a Progress Bar's bar.
+local PGLOW_KEYS = { "pglow", "pglowIcon", "pglowBar" }
+local function StopPresentGlows(att, except)
+  for _, k in ipairs(PGLOW_KEYS) do
+    if k ~= except then StopAnimatedGlow(att[k]) end
+  end
 end
 
 local glowReported = false
@@ -1671,6 +1683,31 @@ local function ClipMargin(w, h, data, staticGlow)
   return math.max(GlowMargin(w, h, staticGlow), AnimatedGlowMargin(w, h, GlowSub(data)))
 end
 
+-- Found Progress Bars and Progress Textures: WA's glow, animated, in the Found clip, so it shows only
+-- with the aura. The area is WA's own: the whole display, or on a bar its icon or bar ('fg', the moving
+-- fill, has no plain size: drawn around the bar). WA's own glow is hidden while engine-driven.
+local function GlowArea(att, region, data, sub)
+  if att.isBar then
+    local area = sub and sub.anchor_area or "bar"
+    if area == "icon" and region.icon then return "pglowIcon", region.icon end
+    if (area == "bg" or area == "fg") and region.bar and region.bar.bg then return "pglowBar", region.bar.bg end
+  end
+  return "pglow", att.host
+end
+
+local function ApplyFoundGlow(att, region, data, plan)
+  local sub = plan.mode == "active" and not plan.noGlow and GlowSub(data) or nil
+  local key, anchor = GlowArea(att, region, data, sub)
+  StopPresentGlows(att, key)
+  local animated = false
+  if sub and att.pclipShown then
+    local w, h = RegionSize(anchor)
+    animated = StartAnimatedGlow(GlowHolder(att, key, att.pclip, anchor), sub, w, h)
+  end
+  if not animated then StopAnimatedGlow(att[key]) end
+  HideStaticDecor(att, region, data, att.isTex)   -- textures: the border too (the display is always shown)
+end
+
 -- Progress Bars: the engine drives its own StatusBar inside the slot button (SetDurationBar ->
 -- StatusBar:SetTimerDuration with the aura's duration). WA's own bar, background and icon are hidden
 -- while the display is engine-driven, and restored when it stops being so.
@@ -1683,7 +1720,7 @@ local function SetBarVisuals(region, shown)
   if region.secretBar then region.secretBar:SetShown(shown) end
 end
 
-local function ApplyBarLook(att, region, data)
+local function ApplyBarLook(att, region, data, plan)
   local s = att.shadows
   local fg = region.bar and region.bar.fg
   local atlas = fg and fg.GetAtlas and fg:GetAtlas()
@@ -1719,6 +1756,7 @@ local function ApplyBarLook(att, region, data)
   s.icon:SetVertexColor(ic[1] or 1, ic[2] or 1, ic[3] or 1, ic[4] or 1)
   pcall(s.icon.SetDesaturation, s.icon, data.desaturate and 1 or 0)
   MirrorTexts(att, region, data, true)
+  ApplyFoundGlow(att, region, data, plan)
   pcall(att.button.EnableMouseMotion, att.button, data.useTooltip and true or false)
 end
 
@@ -1791,7 +1829,7 @@ local function StyleSwipe(swipe, data)
   pcall(swipe.SetReverse, swipe, data.inverse and true or false)
 end
 
-local function ApplyTexLook(att, region, data)
+local function ApplyTexLook(att, region, data, plan)
   local s = att.shadows
   local circular = IsCircular(data)
   s.texFgCoord = s.texFgCoord or Private.TextureCoords.create(s.texFg)
@@ -1834,13 +1872,13 @@ local function ApplyTexLook(att, region, data)
     end
   end
   MirrorTexts(att, region, data, true)
-  HideStaticDecor(att, region, data, true)     -- WA's region is always shown: its glow and border would be too
+  ApplyFoundGlow(att, region, data, plan)
   pcall(att.button.EnableMouseMotion, att.button, data.useTooltip and true or false)
 end
 
 local function ApplySlotLook(att, region, data, plan)
-  if att.isBar then return ApplyBarLook(att, region, data) end
-  if att.isTex then return ApplyTexLook(att, region, data) end
+  if att.isBar then return ApplyBarLook(att, region, data, plan) end
+  if att.isTex then return ApplyTexLook(att, region, data, plan) end
   local s = att.shadows
   s.icon:SetTexCoord(region.icon:GetTexCoord())     -- WA already applied zoom/aspect/offset to its own texture
   pcall(s.icon.SetDesaturation, s.icon, data.desaturate and 1 or 0)
@@ -2420,7 +2458,7 @@ end
 local function TurnOff(att, region, data, mode)
   if att.host then att.host:Hide() end
   DisableKind(att, "slot"); DisableKind(att, "group"); DisableKind(att, "composite")
-  StopAnimatedGlow(att.pglow); StopAnimatedGlow(att.mglowHolder)
+  StopPresentGlows(att); StopAnimatedGlow(att.mglowHolder)
   for _, rs in pairs(att.rslots or {}) do if rs.glowHolder then StopAnimatedGlow(rs.glowHolder) end end
   RemoveGate(att)
   if att.isBar then SetBarVisuals(region, true)
@@ -2460,7 +2498,7 @@ local function ApplyUnguarded(region)
       if att.slotKey ~= plan.key then c:SetAuraSlotCandidateFilters(KEY, plan.candidate); att.slotKey = plan.key end
       c:SetAuraSlotEnabled(KEY, true)
     end
-    local glowSub = plan.mode == "active" and not att.isBar and not att.isTex and GlowSub(data)
+    local glowSub = plan.mode == "active" and GlowSub(data)
     if glowSub then
       local w, h = RegionSize(region)
       att.pclipShown = EnsurePresentClip(att, region, plan, AnimatedGlowMargin(w, h, glowSub))
@@ -2603,7 +2641,7 @@ local function ComputeSig(region, data, plan)
         sub.glowColor and table.concat(sub.glowColor, ",") or "", tostring(sub.glowScale),
         tostring(sub.glowXOffset), tostring(sub.glowYOffset), tostring(sub.glowType), tostring(sub.glowLines),
         tostring(sub.glowFrequency), tostring(sub.glowLength), tostring(sub.glowThickness), tostring(sub.glowBorder),
-        tostring(sub.glowStartAnim), tostring(sub.glowDuration) }, "/")
+        tostring(sub.glowStartAnim), tostring(sub.glowDuration), tostring(sub.anchor_area) }, "/")
     elseif sub.type == "subborder" then
       parts[#parts + 1] = "border/" .. tostring(sub.border_visible)
     end
@@ -2742,7 +2780,9 @@ ApplyEngineFrameLevels = function(region, frameLevel)
   if att.shadows.clip then att.shadows.clip:SetFrameLevel(att.host:GetFrameLevel()) end
   if att.container2 then att.container2:SetFrameLevel(att.host:GetFrameLevel()) end
   if att.pclip then att.pclip:SetFrameLevel(att.host:GetFrameLevel() + 2) end
-  if att.pglow and att.pclip then att.pglow:SetFrameLevel(att.pclip:GetFrameLevel() + 2) end
+  for _, k in ipairs(PGLOW_KEYS) do
+    if att[k] and att.pclip then att[k]:SetFrameLevel(att.pclip:GetFrameLevel() + 2) end
+  end
   if att.mglowHolder and att.shadows.clip then att.mglowHolder:SetFrameLevel(att.shadows.clip:GetFrameLevel() + 2) end
   SetRemainLevels(att)
   if region.subRegions then
