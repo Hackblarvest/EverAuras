@@ -79,7 +79,7 @@ table.insert(OptionsPrivate.registerRegions, function()
     }
   end
 
-  -- Engine section (status, opt-out, range gate) for Icons, Progress Bars and Progress Textures alike.
+  -- Engine section (status, opt-out, range gate) for Icons, Progress Bars, Progress Textures and Textures.
   local function AddEngineOptions(group, data)
     group.foreverEngineHeader = {
       type = "header", order = 100.1,
@@ -92,7 +92,7 @@ table.insert(OptionsPrivate.registerRegions, function()
     group.foreverEngine = {
       type = "toggle", order = 100.3, width = WA.doubleWidth,
       name = T("Let the game engine draw this aura"),
-      desc = T("Aura triggers (spell names or Exact Spell IDs) on Player, Target, Focus or Pet, Buff or Debuff (not Both). Icons: Show On Found / Missing / Always, Found with 'Remaining Time', or one Missing trigger plus Found + 'Remaining Time' triggers through 'Any Triggered'. Progress Bars and Progress Textures: Show On Found (circular textures: whole circles). Other triggers may sit next to them. The status line above says what applies. Off = the classic scanner, which is blind while auras are secret (combat)."),
+      desc = T("Aura triggers (spell names or Exact Spell IDs) on Player, Target, Focus or Pet, Buff or Debuff (not Both). Icons: Show On Found / Missing / Always, Found with 'Remaining Time', or one Missing trigger plus Found + 'Remaining Time' triggers through 'Any Triggered'. Progress Bars and Progress Textures: Show On Found (circular textures: whole circles). Textures: Show On Found or Missing. Other triggers may sit next to them. The status line above says what applies. Off = the classic scanner, which is blind while auras are secret (combat)."),
       get = function() return data.foreverEngine ~= false end,
       -- A full (non-simple) re-add so BuffTrigger.Add re-classifies the trigger; the plain
       -- framework setter would only re-run the region modify and leave the trigger side stale.
@@ -202,15 +202,17 @@ table.insert(OptionsPrivate.registerRegions, function()
     end
   end
 
-  local texOptions = Private.regionOptions and Private.regionOptions.progresstexture
-  if texOptions and texOptions.create and not texOptions.foreverEngineWrapped then
-    texOptions.foreverEngineWrapped = true
-    local origTexCreate = texOptions.create
-    texOptions.create = function(id, data)
-      local options = origTexCreate(id, data)
-      local group = type(options) == "table" and options.progresstexture
-      if type(group) == "table" then AddEngineOptions(group, data) end
-      return options
+  for _, rt in ipairs({ "progresstexture", "texture" }) do
+    local texOptions = Private.regionOptions and Private.regionOptions[rt]
+    if texOptions and texOptions.create and not texOptions.foreverEngineWrapped then
+      texOptions.foreverEngineWrapped = true
+      local origTexCreate = texOptions.create
+      texOptions.create = function(id, data)
+        local options = origTexCreate(id, data)
+        local group = type(options) == "table" and options[rt]
+        if type(group) == "table" then AddEngineOptions(group, data) end
+        return options
+      end
     end
   end
 

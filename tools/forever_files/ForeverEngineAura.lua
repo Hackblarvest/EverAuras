@@ -19,7 +19,8 @@
 -- Blizzard fills with the aura's duration (SetDurationBar), plus icon, name, timer and stack texts.
 -- Progress Textures (Show On: Found): straight ones ride on the same StatusBar, kept invisible: a clipping
 -- frame anchored to its fill reveals a copy of the display's texture as the aura runs out. Circular
--- ones are the game's cooldown swipe drawn with the display's texture.
+-- ones are the game's cooldown swipe drawn with the display's texture. Texture displays (Show On: Found
+-- or Missing) are icons without a timer: a copy of their texture on the slot button or in the Missing clip.
 --
 -- Time left (icons): 'Remaining Time' on a Found trigger becomes a slot whose duration text is the
 -- display's icon, coloured by a Step curve over the remaining duration (alpha 0 outside the range).
@@ -759,8 +760,9 @@ end
 --   composite plan : plan.parts = { missing = part | nil, remaining = { {part, op, x}, ... } }, icons only.
 --                    Shows the icon while the missing part's aura is absent OR a remaining part's aura
 --                    has the given time left. Built from Found + 'Remaining Time' triggers.
-local ENGINE_REGIONS = { icon = true, aurabar = true, progresstexture = true }
-local FOUND_ONLY = { aurabar = "Progress Bars", progresstexture = "Progress Textures" }
+local ENGINE_REGIONS = { icon = true, aurabar = true, progresstexture = true, texture = true }
+local KIND_NAME = { aurabar = "Progress Bars", progresstexture = "Progress Textures", texture = "Textures" }
+local FOUND_ONLY = { aurabar = true, progresstexture = true }
 
 -- A Progress Texture follows the aura's own duration: progress source Automatic, or the Aura
 -- trigger's duration, and no adjusted minimum / maximum.
@@ -800,7 +802,7 @@ function Engine.Classify(data)
     r[#r + 1] = msg
   end
   local rt = data and data.regionType
-  if not ENGINE_REGIONS[rt] then return nil, { T("the display is not an Icon, a Progress Bar or a Progress Texture") } end
+  if not ENGINE_REGIONS[rt] then return nil, { T("the display is not an Icon, a Progress Bar, a Progress Texture or a Texture") } end
   if rt == "progresstexture" then TextureFollowsAura(data, no) end
   if not GloballyEnabled() then no(T("the engine is switched off (/faengine on)")) end
   if data.foreverEngine == false then no(T("'Let the game engine draw this aura' is off for this display (Display tab)")) end
@@ -836,7 +838,10 @@ function Engine.Classify(data)
   if #infos == 1 and not infos[1].rem then
     local inf = infos[1]
     if FOUND_ONLY[rt] and inf.mode and inf.mode ~= "active" then   -- MODE maps showOnActive -> "active"
-      no(T("%s are engine-driven with 'Show On: Aura(s) Found' only (so far)"):format(T(FOUND_ONLY[rt])))
+      no(T("%s are engine-driven with 'Show On: Aura(s) Found' only (so far)"):format(T(KIND_NAME[rt])))
+    end
+    if rt == "texture" and inf.mode == "always" then
+      no(T("a Texture with 'Show On: Always' shows all the time and needs no engine; pick 'Aura(s) Found' or 'Aura(s) Missing'"))
     end
     if #r > 0 then return nil, r end
     local key = table.concat({ unit, inf.mode, inf.key }, ";")
@@ -849,7 +854,7 @@ function Engine.Classify(data)
   end
 
   if rt ~= "icon" then
-    no(T("%s are engine-driven with one Aura trigger without 'Remaining Time' only (so far)"):format(T(FOUND_ONLY[rt])))
+    no(T("%s are engine-driven with one Aura trigger without 'Remaining Time' only (so far)"):format(T(KIND_NAME[rt])))
   end
   if data.uid then lateUsers[data.uid] = true end
   local missing, found, remaining = nil, nil, {}
@@ -1072,6 +1077,11 @@ function Engine.Explain(data, plan, reasons)
         txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s). It shows your icon %s, and nothing otherwise. The game checks the time left itself, so it never has to be read. Kept: position, size, groups, the %%p text, static colour/zoom; glow %s. Not available: the border (hidden while engine-driven), cooldown swipe, stack count and desaturation on the time-left icon, conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
           :format(plan.unit, table.concat(when, T(" or ")), glowTxt)
       end
+    elseif data.regionType == "texture" then
+      local when = plan.mode == "missing" and T("while the aura is absent and disappears completely while it is present")
+                                         or T("while the aura is present and nothing while it is absent")
+      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows your texture %s. Kept: position, size, groups, texture, colour, rotation, mirror, desaturate, blend mode, %%p/%%s/%%n texts, the glow (shown only while the texture is, animated like WeakAuras' own). Not drawn: the border (hidden while engine-driven). Not available: conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
+        :format(plan.unit, plan.filterString, when)
     elseif data.regionType == "progresstexture" and IsCircular(data) then
       txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows the texture while the aura is present and the game's cooldown swipe sweeps it away as the aura runs out (draws the time gone with 'Inverse'); the game checks the time left itself, so it never has to be read. Kept: position, size, groups, textures, colours, crop, mirror, rotation, start angle, the background, %%p/%%s/%%n texts, the glow (shown only while the texture is, animated like WeakAuras' own). Not drawn on the sweeping part: desaturate, blend mode, legacy rotation. Not drawn: additional progress and the border (hidden while engine-driven). Not available: conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
         :format(plan.unit, plan.filterString)
@@ -1270,6 +1280,26 @@ local function BuildSlot(att, region, plan)
         att.barDirection = dirs and dirs.RemainingTime
         button:SetDurationBar(s.bar, { direction = att.barDirection })
         button:SetIcon(s.icon)
+        button:SetDurationText(s.duration, nil)
+        button:SetApplicationCount(s.count, nil)
+        button:SetSpellName(s.name)
+        return
+      end
+      if att.isPic then
+        -- a Texture display: a copy of its texture, shown with the button (= while the aura is present)
+        s.pic = button:CreateTexture(nil, "ARTWORK")
+        s.pic:SetAllPoints(button)
+        pcall(s.pic.SetSnapToPixelGrid, s.pic, false)
+        pcall(s.pic.SetTexelSnappingBias, s.pic, 0)
+        s.texts = CreateFrame("Frame", nil, button)
+        s.texts:SetAllPoints(button)
+        s.texts:SetFrameLevel(button:GetFrameLevel() + 2)
+        s.duration = s.texts:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        s.duration:SetPoint("CENTER")
+        s.count = s.texts:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        s.count:SetPoint("CENTER")
+        s.name = s.texts:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        s.name:SetPoint("CENTER")
         button:SetDurationText(s.duration, nil)
         button:SetApplicationCount(s.count, nil)
         button:SetSpellName(s.name)
@@ -1705,7 +1735,7 @@ local function ApplyFoundGlow(att, region, data, plan)
     animated = StartAnimatedGlow(GlowHolder(att, key, att.pclip, anchor), sub, w, h)
   end
   if not animated then StopAnimatedGlow(att[key]) end
-  HideStaticDecor(att, region, data, att.isTex)   -- textures: the border too (the display is always shown)
+  HideStaticDecor(att, region, data, att.isTex or att.isPic)   -- textures: the border too (always shown)
 end
 
 -- Progress Bars: the engine drives its own StatusBar inside the slot button (SetDurationBar ->
@@ -1876,7 +1906,34 @@ local function ApplyTexLook(att, region, data, plan)
   pcall(att.button.EnableMouseMotion, att.button, data.useTooltip and true or false)
 end
 
+-- Texture displays: a copy of WA's texture, on the slot button (Found) or in the Missing clip. WA turns
+-- and mirrors it with texture coordinates, so the copy takes them from WA's own texture. WA's texture is
+-- hidden (alpha, which WA never sets on it) while the display is engine-driven.
+local function SetPicVisuals(region, shown)
+  local wa = region.texture and region.texture.texture
+  if wa and wa.SetAlpha then wa:SetAlpha(shown and 1 or 0) end
+end
+
+local function CopyPictureLook(tex, region, data)
+  local wrap = data.textureWrapMode
+  Private.SetTextureOrAtlas(tex, data.texture, wrap, wrap)
+  local wa = region.texture and region.texture.texture
+  if wa and wa.GetTexCoord then tex:SetTexCoord(wa:GetTexCoord()) end
+  pcall(tex.SetDesaturated, tex, data.desaturate and true or false)
+  pcall(tex.SetBlendMode, tex, data.blendMode or "BLEND")
+  local c = data.color or { 1, 1, 1, 1 }
+  tex:SetVertexColor(c[1] or 1, c[2] or 1, c[3] or 1, c[4] or 1)
+end
+
+local function ApplyPicLook(att, region, data, plan)
+  CopyPictureLook(att.shadows.pic, region, data)
+  MirrorTexts(att, region, data, true)
+  ApplyFoundGlow(att, region, data, plan)
+  pcall(att.button.EnableMouseMotion, att.button, data.useTooltip and true or false)
+end
+
 local function ApplySlotLook(att, region, data, plan)
+  if att.isPic then return ApplyPicLook(att, region, data, plan) end
   if att.isBar then return ApplyBarLook(att, region, data, plan) end
   if att.isTex then return ApplyTexLook(att, region, data, plan) end
   local s = att.shadows
@@ -1920,16 +1977,20 @@ end
 -- The underlay copies the WA icon's static look.
 local function ApplyUnderlayLook(att, region, data, plan, noGlow)
   local u = att.shadows.underlay
-  local tex = DisplayTexture(data, plan.firstId)
-  if type(tex) == "string" and C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo(tex) then
-    u:SetAtlas(tex)
+  if att.isPic then
+    CopyPictureLook(u, region, data)
   else
-    u:SetTexture(tex)
+    local tex = DisplayTexture(data, plan.firstId)
+    if type(tex) == "string" and C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo(tex) then
+      u:SetAtlas(tex)
+    else
+      u:SetTexture(tex)
+    end
+    u:SetTexCoord(region.icon:GetTexCoord())
+    pcall(u.SetDesaturation, u, data.desaturate and 1 or 0)
+    local col = data.color or { 1, 1, 1, 1 }
+    u:SetVertexColor(col[1] or 1, col[2] or 1, col[3] or 1, col[4] or 1)
   end
-  u:SetTexCoord(region.icon:GetTexCoord())
-  pcall(u.SetDesaturation, u, data.desaturate and 1 or 0)
-  local col = data.color or { 1, 1, 1, 1 }
-  u:SetVertexColor(col[1] or 1, col[2] or 1, col[3] or 1, col[4] or 1)
   local glowSub = not noGlow and GlowSub(data) or nil
   local gw, gh = RegionSize(region)
   local animated = glowSub and att.shadows.clip and StartAnimatedGlow(GlowHolder(att, "mglowHolder", att.shadows.clip), glowSub, gw, gh)
@@ -1939,7 +2000,7 @@ local function ApplyUnderlayLook(att, region, data, plan, noGlow)
     StyleGlowTexture(att.shadows.mglow, att.host, w, h, (not noGlow and not animated) and GlowSpec(data) or nil)
   end
   MirrorTexts(att, region, data, false)
-  HideStaticDecor(att, region, data, false)
+  HideStaticDecor(att, region, data, att.isPic)   -- a Texture's border would frame an empty spot
 end
 
 local function SetMirroredShown(att, shown)
@@ -1955,6 +2016,7 @@ function Engine.OnLayout(region)          -- after every ApplyFrameLevel (Expand
   SetMirroredShown(att, false)
   if att.isBar then SetBarVisuals(region, false)
   elseif att.isTex then SetTexVisuals(region, false)
+  elseif att.isPic then SetPicVisuals(region, false)
   elseif (att.kind == "group" or att.kind == "composite") and region.icon then region.icon:Hide() end
   if att.kind == "composite" and att.want and att.want.parts and att.want.parts.found and region.icon then region.icon:Hide() end
 end
@@ -2463,6 +2525,7 @@ local function TurnOff(att, region, data, mode)
   RemoveGate(att)
   if att.isBar then SetBarVisuals(region, true)
   elseif att.isTex then SetTexVisuals(region, true)
+  elseif att.isPic then SetPicVisuals(region, true)
   elseif region.icon then region.icon:Show() end
   SetMirroredShown(att, true)
   ClearSounds(att)
@@ -2527,6 +2590,7 @@ local function ApplyUnguarded(region)
   -- Missing = the WA icon is replaced by our clipped copy.
   if att.isBar then SetBarVisuals(region, false)
   elseif att.isTex then SetTexVisuals(region, false)
+  elseif att.isPic then SetPicVisuals(region, false)
   else region.icon:SetShown(plan.mode == "always") end
   if region.tooltipFrame then region.tooltipFrame:EnableMouseMotion(false) end
   if kind == "slot" then pcall(att.button.SetFrameLevel, att.button, c:GetFrameLevel()) end
@@ -2538,6 +2602,8 @@ local function ApplyUnguarded(region)
     local sh = att.shadows
     pcall(sh.bar.SetFrameLevel, sh.bar, c:GetFrameLevel() + 1)
     pcall(sh.texts.SetFrameLevel, sh.texts, c:GetFrameLevel() + 2)
+  elseif att.isPic and kind == "slot" and att.shadows.texts then
+    pcall(att.shadows.texts.SetFrameLevel, att.shadows.texts, c:GetFrameLevel() + 2)
   elseif att.isTex and att.shadows.texClip then         -- texture under texts, both above the button
     local sh = att.shadows
     pcall(sh.bar.SetFrameLevel, sh.bar, c:GetFrameLevel() + 1)
@@ -2629,6 +2695,12 @@ local function ComputeSig(region, data, plan)
       parts[#parts + 1] = tostring(data[k])
     end
     parts[#parts + 1] = table.concat(data.foregroundColor or {}, ",")
+  elseif data.regionType == "texture" then
+    for _, k in ipairs({ "texture", "rotation", "rotate", "mirror", "desaturate", "blendMode", "textureWrapMode" }) do
+      parts[#parts + 1] = tostring(data[k])
+    end
+    local wa = region.texture and region.texture.texture
+    if wa and wa.GetTexCoord then parts[#parts + 1] = table.concat({ wa:GetTexCoord() }, ",") end
   end
   for _, sub in ipairs(data.subRegions or {}) do
     if sub.type == "subtext" then
@@ -2666,7 +2738,8 @@ function Engine.Sync(region, data)
   end
   local att = attachments[region]
   if not att then
-    att = { region = region, shadows = {}, isBar = data.regionType == "aurabar", isTex = data.regionType == "progresstexture" }
+    att = { region = region, shadows = {}, isBar = data.regionType == "aurabar", isTex = data.regionType == "progresstexture",
+            isPic = data.regionType == "texture" }
     attachments[region] = att
   end
   local plan = decided[data.uid]
@@ -2732,7 +2805,7 @@ icon.default.foreverEngineGlowPart = "both"  -- missing + time left: where the s
 icon.default.foreverEngineSelfDebuff = false  -- debuffs on yourself: match any own debuff by duration
 icon.default.foreverEngineSelfDebuffMax = ""  -- its longest duration in seconds (blank = as seen)
 
-for _, rt in ipairs({ "aurabar", "progresstexture" }) do
+for _, rt in ipairs({ "aurabar", "progresstexture", "texture" }) do
   local regionType = Private.regionTypes and Private.regionTypes[rt]
   if regionType and regionType.modify and regionType.default then
     regionType.default.foreverEngine = true
