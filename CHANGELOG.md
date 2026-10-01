@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.8.6-alpha (2026-10-01)
+
+- **Textures for procs, in combat.** A Texture display with an aura trigger is now drawn by the game's aura
+  engine: *Show On: Aura(s) Found* shows it while your proc or buff is up, *Aura(s) Missing* while it is
+  gone (your Demon Skin dropped off), in combat too. Your texture, colour, rotation, mirror, desaturate and
+  blend mode look exactly as in WeakAuras. *Show On: Always* needs no engine for a texture and stays with
+  WeakAuras. JakeD's other wish. Thanks again, JakeD!
+- **Glow on Progress Textures and Progress Bars** shows and hides with the aura, animated like WeakAuras'
+  own (Button, Pixel, Autocast, Proc), in combat too. Bars keep the glow's *Anchor Area* (the whole bar,
+  its icon or its bar). Before, the glow was hidden on textures and shown all the time on bars.
+- While a texture is engine-driven its border is hidden: WeakAuras keeps the display in place even when
+  the aura is gone, so the border would frame an empty spot.
+
 ## 0.8.5-alpha (2026-10-01)
 
 - **Progress Textures that work in combat.** A Progress Texture display with an aura trigger (*Show On:
