@@ -1691,16 +1691,23 @@ local function DisablePresentClip(att)
   att.pclipShown = false
 end
 
--- WA's SubText resolves selfPoint "AUTO" from the anchor: inside the icon the text hugs that corner,
--- outside it hangs off the opposite side.
+-- WA's SubText (SubText.lua modify) resolves selfPoint "AUTO" per region type: an icon's text hugs the
+-- inner corner or hangs off the opposite side of an outer one; a bar's takes the anchor itself (without
+-- ICON_ / INNER_); anything else (textures) takes the opposite point of its anchor.
 local MIRROR = { LEFT = "RIGHT", RIGHT = "LEFT", TOP = "BOTTOM", BOTTOM = "TOP",
   TOPLEFT = "BOTTOMRIGHT", TOPRIGHT = "BOTTOMLEFT", BOTTOMLEFT = "TOPRIGHT", BOTTOMRIGHT = "TOPLEFT", CENTER = "CENTER" }
-local function ResolveSelfPoint(sub)
+local function ResolveSelfPoint(sub, regionType)
   local sp, ap = sub.text_selfPoint, sub.anchor_point or "CENTER"
   if sp and sp ~= "AUTO" then return sp end
-  if ap:sub(1, 6) == "INNER_" then return ap:sub(7) end
-  if ap:sub(1, 6) == "OUTER_" then return MIRROR[ap:sub(7)] or "CENTER" end
-  return "CENTER"
+  if regionType == "icon" then
+    if ap:sub(1, 6) == "INNER_" then return ap:sub(7) end
+    if ap:sub(1, 6) == "OUTER_" then return MIRROR[ap:sub(7)] or "CENTER" end
+    return "CENTER"
+  elseif regionType == "aurabar" then
+    if ap:sub(1, 5) == "ICON_" then ap = ap:sub(6) elseif ap:sub(1, 6) == "INNER_" then ap = ap:sub(7) end
+    return MIRROR[ap] and ap or "CENTER"
+  end
+  return MIRROR[ap] or "CENTER"
 end
 
 local function StyleShadowText(region, fs, sub, isCount)
@@ -1712,7 +1719,9 @@ local function StyleShadowText(region, fs, sub, isCount)
   if sub.text_shadowColor then fs:SetShadowColor(unpack(sub.text_shadowColor)) end
   fs:SetShadowOffset(sub.text_shadowXOffset or 0, sub.text_shadowYOffset or 0)
   fs:SetJustifyH(sub.text_justify or "CENTER")
-  region:AnchorSubRegion(fs, "point", sub.anchor_point, ResolveSelfPoint(sub), sub.anchorXOffset, sub.anchorYOffset)
+  -- the offsets WA's options set are text_anchorX/YOffset (SubText.lua's Anchor); anchorX/YOffset is unused
+  region:AnchorSubRegion(fs, "point", sub.anchor_point, ResolveSelfPoint(sub, region.regionType),
+    tonumber(sub.text_anchorXOffset) or 0, tonumber(sub.text_anchorYOffset) or 0)
 end
 
 -- region.subRegions is built from data.subRegions skipping unknown types (RegionPrototype), so walk
@@ -3130,7 +3139,7 @@ local function ComputeSig(region, data, plan)
     if sub.type == "subtext" then
       parts[#parts + 1] = table.concat({ tostring(sub.text_text), tostring(sub.text_visible), tostring(sub.text_font),
         tostring(sub.text_fontSize), tostring(sub.text_fontType), tostring(sub.anchor_point), tostring(sub.text_selfPoint),
-        tostring(sub.anchorXOffset), tostring(sub.anchorYOffset), tostring(sub.text_justify),
+        tostring(sub.text_anchorXOffset), tostring(sub.text_anchorYOffset), tostring(sub.text_justify),
         sub.text_color and table.concat(sub.text_color, ",") or "" }, "/")
     elseif sub.type == "subglow" then
       parts[#parts + 1] = table.concat({ "glow", tostring(sub.glow), tostring(sub.useGlowColor),
