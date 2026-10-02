@@ -1387,7 +1387,9 @@ local function RegionSize(region)
 end
 
 local function BuildHost(region)
-  local host = CreateFrame("Frame", nil, region)
+  -- with the aura containers' ban on layout scripts from the start, so it can hang on a Dynamic Group's
+  -- chain of containers; everything of ours is created inside it and inherits the ban
+  local host = CreateFrame("Frame", nil, region, "DisableUntrustedLayoutScriptsTemplate")
   host:SetAllPoints(region)
   host:SetFrameLevel(region:GetFrameLevel() + 1)
   host:Hide()
@@ -1415,12 +1417,12 @@ local function BuildSlot(att, region, plan)
         -- geometry follows WA's own bar and icon frames, which already account for icon side and size
         s.barBg = button:CreateTexture(nil, "BACKGROUND")
         s.bar = CreateFrame("StatusBar", nil, button)
-        s.bar:SetAllPoints(region.bar)
+        Engine.SetAnchors(att, s.bar, { { "TOPLEFT", region.bar, "TOPLEFT" }, { "BOTTOMRIGHT", region.bar, "BOTTOMRIGHT" } })
         s.bar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
         s.bar:SetFrameLevel(button:GetFrameLevel() + 1)
         s.barBg:SetAllPoints(s.bar)
         s.icon = button:CreateTexture(nil, "ARTWORK")
-        s.icon:SetAllPoints(region.icon)
+        Engine.SetAnchors(att, s.icon, { { "TOPLEFT", region.icon, "TOPLEFT" }, { "BOTTOMRIGHT", region.icon, "BOTTOMRIGHT" } })
         pcall(s.icon.SetSnapToPixelGrid, s.icon, false)
         s.texts = CreateFrame("Frame", nil, button)
         s.texts:SetAllPoints(button)
@@ -1710,7 +1712,19 @@ local function ResolveSelfPoint(sub, regionType)
   return MIRROR[ap] or "CENTER"
 end
 
-local function StyleShadowText(region, fs, sub, isCount)
+-- Anchors one of our objects and remembers the anchors (att.anchors), so a packed Dynamic Group child can
+-- move it onto its host. They are never read back: the game answers GetPoint with secrets on a text it
+-- binds to an aura (seen 2026-10-02, "cannot be indexed with secret keys"), even out of combat.
+function Engine.SetAnchors(att, obj, pts)
+  obj:ClearAllPoints()
+  for _, p in ipairs(pts) do obj:SetPoint(p[1], p[2], p[3], p[4] or 0, p[5] or 0) end
+  if att then
+    att.anchors = att.anchors or setmetatable({}, { __mode = "k" })
+    att.anchors[obj] = pts
+  end
+end
+
+local function StyleShadowText(region, fs, sub, isCount, att)
   local font = (sub.text_font and LSM:Fetch("font", sub.text_font)) or STANDARD_TEXT_FONT
   local ft = sub.text_fontType
   local flags = (not ft or ft == "None") and "" or ft:gsub("|?SLUG", "")
@@ -1719,9 +1733,18 @@ local function StyleShadowText(region, fs, sub, isCount)
   if sub.text_shadowColor then fs:SetShadowColor(unpack(sub.text_shadowColor)) end
   fs:SetShadowOffset(sub.text_shadowXOffset or 0, sub.text_shadowYOffset or 0)
   fs:SetJustifyH(sub.text_justify or "CENTER")
-  -- the offsets WA's options set are text_anchorX/YOffset (SubText.lua's Anchor); anchorX/YOffset is unused
-  region:AnchorSubRegion(fs, "point", sub.anchor_point, ResolveSelfPoint(sub, region.regionType),
+  -- WA picks the frame and points (it only ever clears and sets points): taken down on a stand-in, then
+  -- set on ours. The offsets WA's options set are text_anchorX/YOffset (SubText.lua); anchorX/YOffset is unused.
+  local rec = { pts = {} }
+  setmetatable(rec, { __index = function() return function() end end })
+  function rec.ClearAllPoints(self) self.pts = {} end
+  function rec.SetPoint(self, p, rel, rp, x, y) self.pts[#self.pts + 1] = { p, rel, rp or p, x or 0, y or 0 } end
+  function rec.SetAllPoints(self, rel)
+    self.pts = { { "TOPLEFT", rel, "TOPLEFT", 0, 0 }, { "BOTTOMRIGHT", rel, "BOTTOMRIGHT", 0, 0 } }
+  end
+  region:AnchorSubRegion(rec, "point", sub.anchor_point, ResolveSelfPoint(sub, region.regionType),
     tonumber(sub.text_anchorXOffset) or 0, tonumber(sub.text_anchorYOffset) or 0)
+  Engine.SetAnchors(att, fs, rec.pts)
 end
 
 -- region.subRegions is built from data.subRegions skipping unknown types (RegionPrototype), so walk
@@ -1741,15 +1764,15 @@ local function MirrorTexts(att, region, data, useShadows)
         if not haveP and txt == "%p" then
           haveP = true
           if live then att.mirrored[live] = true end
-          if useShadows then StyleShadowText(region, s.duration, sub, false); s.duration:Show() end
+          if useShadows then StyleShadowText(region, s.duration, sub, false, att); s.duration:Show() end
         elseif not haveS and txt == "%s" then
           haveS = true
           if live then att.mirrored[live] = true end
-          if useShadows then StyleShadowText(region, s.count, sub, true); s.count:SetAlpha(1) end
+          if useShadows then StyleShadowText(region, s.count, sub, true, att); s.count:SetAlpha(1) end
         elseif not haveN and txt == "%n" and useShadows and s.name then
           haveN = true
           if live then att.mirrored[live] = true end
-          StyleShadowText(region, s.name, sub, true); s.name:SetAlpha(1)
+          StyleShadowText(region, s.name, sub, true, att); s.name:SetAlpha(1)
         end
       end
     end
@@ -1849,7 +1872,8 @@ local function GlowHolder(att, key, clip, anchor)
   local holder = att[key]
   if not holder then
     holder = CreateFrame("Frame", nil, clip)   -- created in the clip: never re-parented
-    holder:SetAllPoints(anchor or att.host)    -- a plain rect, so its size is readable
+    -- a plain rect, so its size is readable
+    Engine.SetAnchors(att, holder, { { "TOPLEFT", anchor or att.host, "TOPLEFT" }, { "BOTTOMRIGHT", anchor or att.host, "BOTTOMRIGHT" } })
     holder:Hide()
     att[key] = holder
   end
@@ -2759,7 +2783,7 @@ local function ApplyCompositeLook(att, region, data, plan)
     end
     local rt = att.rslotsUsed["feT" .. i] and att.rslots["feT" .. i]
     if rt and psub then
-      StyleShadowText(region, rt.fs, psub, false)
+      StyleShadowText(region, rt.fs, psub, false, att)
       local tc = psub.text_color or { 1, 1, 1, 1 }
       rt.button:SetDurationText(rt.fs, {
         textColor = { curve = RemainCurve(rp.op, rp.x, tc[1] or 1, tc[2] or 1, tc[3] or 1, tc[4] or 1), property = property },
@@ -2938,8 +2962,462 @@ local function ApplySounds(att, region, data, plan)
   if #ids > 0 and not (att.soundRouted.start or att.soundRouted.finish) then att.soundSig = nil end
 end
 
+---------------------------------------------------------------------------- dynamic groups
+-- A Dynamic Group closes the gap when a child hides. Engine-driven children never hide for WeakAuras (their
+-- trigger is handed to the game), so WA lays the group out as if every child were shown. When every child
+-- is an engine-driven Found display, the game packs them instead (probe /fddyn chain, 2026-10-02): a chain
+-- of invisible containers, one LINK per child in layout order, each a group of at most one button on that
+-- child's aura with 1 px of padding, so a link is 1 px long plus the child and the spacing while the aura
+-- is up and 1 px while it is not (AnchorUtil.ApplyFlowLayout reports max(size, 1)). Link k hangs on the far
+-- end of link k-1 (less that 1 px) and child k's host hangs 1 px into link k: right after every earlier
+-- child that is up. Centred groups hang the chain from a container that holds every child (2 px of
+-- padding plus the row), by its middle. The chain starts where WA puts the first child.
+-- Whatever hangs on an aura container must carry its ban on layout scripts (DisableUntrustedLayoutScripts-
+-- Template). Our hosts do and everything of ours is created inside them; WA's own frames are refused
+-- ("Anchoring disallowed as dependent object would inherit forbidden aspects", /fddyn chain). So a packed
+-- child shows what the engine draws (icon, bar or texture, %p/%s/%n texts, glow), our copies that sat on
+-- WA's frames move onto the host, and WA's other texts and the border are hidden.
+local Dyn = {}
+do
+  local GROW = {
+    RIGHT = { axis = "x", sign = 1 }, LEFT = { axis = "x", sign = -1 },
+    UP = { axis = "y", sign = 1 }, DOWN = { axis = "y", sign = -1 },
+    HORIZONTAL = { axis = "x", sign = 1, centred = true }, VERTICAL = { axis = "y", sign = 1, centred = true },
+  }
+  -- sub-elements a packed child hides (the ones that are on); any other kind keeps the group from packing
+  local HIDE_ON = { subtext = "text_visible", subborder = "border_visible", subglow = "glow" }
+  local FRAC = { TOPLEFT = { 0, 1 }, TOP = { 0.5, 1 }, TOPRIGHT = { 1, 1 }, LEFT = { 0, 0.5 }, CENTER = { 0.5, 0.5 },
+                 RIGHT = { 1, 0.5 }, BOTTOMLEFT = { 0, 0 }, BOTTOM = { 0.5, 0 }, BOTTOMRIGHT = { 1, 0 } }
+  local states = {}      -- group id -> the chain
+  local lastSig = {}     -- group id -> plan signature (or reason) last acted on
+  local queued = {}      -- group id -> true while its children are queued to re-apply
+  local failReported = false
+
+  local function RegionOf(id)
+    local r = Private.regions[id]
+    return r and r.region
+  end
+
+  local function Rect(f)
+    if not (f and f.GetLeft) then return nil end
+    local l, b, w, h = f:GetLeft(), f:GetBottom(), f:GetWidth(), f:GetHeight()
+    if not (l and b and w and h) or issecretvalue(l) or issecretvalue(b) or issecretvalue(w) or issecretvalue(h) then
+      return nil
+    end
+    return l, b, w, h
+  end
+
+  -- The packing plan of a dynamic group (plain data): nil + reason when WA keeps laying it out.
+  function Dyn.Plan(gdata)
+    if not (gdata and gdata.regionType == "dynamicgroup") then return nil end
+    local grow = gdata.grow or "DOWN"
+    local g = GROW[grow]
+    if not g then return nil, T("it grows in a circle, a grid or by custom code") end
+    if gdata.useAnchorPerUnit then return nil, T("it anchors per unit") end
+    if (gdata.sort or "none") ~= "none" then
+      return nil, T("it sorts its children (only 'None' can be packed: the time left is secret in combat)")
+    end
+    if gdata.useLimit then return nil, T("it limits how many children it shows") end
+    if (tonumber(gdata.stagger) or 0) ~= 0 then return nil, T("it staggers its children") end
+    local ct = gdata.centerType or "LR"
+    if g.centred and ct ~= "LR" and ct ~= "RL" then return nil, T("it fills from the centre outwards") end
+    local space = tonumber(gdata.space) or 0
+    if g.centred and space < 0 then return nil, T("its spacing is negative") end
+    local ids = {}
+    for _, id in ipairs(gdata.controlledChildren or {}) do ids[#ids + 1] = id end
+    if #ids == 0 then return nil, T("it has no children") end
+    if g.centred and ct == "RL" then
+      local rev = {}
+      for i = #ids, 1, -1 do rev[#rev + 1] = ids[i] end
+      ids = rev
+    end
+    local unit
+    local sizes = {}
+    for _, id in ipairs(ids) do
+      local cd = WA.GetData(id)
+      if not cd then return nil, T("a child is missing") end
+      sizes[#sizes + 1] = tostring(cd.width) .. "x" .. tostring(cd.height)
+      local p = ENGINE_REGIONS[cd.regionType] and cd.uid and decided[cd.uid] or nil
+      if not p then return nil, T("'%s' is not engine-driven"):format(tostring(id)) end
+      if p.parts or p.mode ~= "active" then
+        return nil, T("'%s' is not shown on Aura(s) Found (only those leave a gap to close)"):format(tostring(id))
+      end
+      for _, sub in ipairs(cd.subRegions or {}) do
+        if Private.subRegionTypes[sub.type] and not HIDE_ON[sub.type] and sub.type ~= "subbackground" then
+          return nil, T("'%s' has a %s (a packed display keeps only texts, glows and borders)"):format(tostring(id), tostring(sub.type))
+        end
+      end
+      if g.centred then
+        if unit and unit ~= p.unit then return nil, T("its children watch different units (a centred group is measured on one)") end
+        unit = p.unit
+      end
+    end
+    return { axis = g.axis, sign = g.sign, centred = g.centred, ids = ids, space = space, unit = unit,
+             sig = table.concat({ grow, ct, tostring(space), tostring(gdata.align), tostring(gdata.selfPoint),
+                                  table.concat(ids, "\1"), table.concat(sizes, ",") }, "|") }
+  end
+
+  local function Retire(st)
+    if not st then return end
+    for _, link in pairs(st.links) do pcall(link.SetUnit, link, nil); link:Hide() end
+    if st.total then pcall(st.total.SetUnit, st.total, nil); st.total:Hide() end
+    st.root:Hide()
+  end
+
+  local function NewContainer(st)
+    return CreateFrame("AuraContainer", nil, st.root, "CustomAuraContainerTemplate")
+  end
+
+  -- The chain of a group: links in layout order, hung on each other. Rebuilt when the plan changes.
+  local function State(gregion, gid, gp)
+    local st = states[gid]
+    if st and st.sig == gp.sig and st.gregion == gregion then return st end
+    Retire(st)
+    st = { sig = gp.sig, gregion = gregion, gp = gp, links = {}, lg = {}, tg = {} }
+    st.root = CreateFrame("Frame", nil, gregion, "DisableUntrustedLayoutScriptsTemplate")
+    st.root:SetSize(1, 1)
+    st.root:SetPoint("CENTER", gregion, "CENTER")
+    local horiz = gp.axis == "x"
+    if gp.centred then
+      local t = NewContainer(st)
+      if horiz then
+        t:SetFlowLayoutPadding(1, 1, 0, 0)
+      else
+        t:SetFlowLayoutAxis(AnchorUtil.FlowLayoutAxis.Vertical)
+        t:SetFlowLayoutPadding(0, 0, 1, 1)
+      end
+      st.total = t
+    end
+    for k, id in ipairs(gp.ids) do
+      local link = NewContainer(st)
+      if horiz then link:SetFlowLayoutPadding(1, 0, 0, 0) else link:SetFlowLayoutPadding(0, 0, 1, 0) end
+      local prev = k > 1 and st.links[gp.ids[k - 1]]
+      if prev then
+        if horiz and gp.sign > 0 then link:SetPoint("TOPLEFT", prev, "TOPRIGHT", -1, 0)
+        elseif horiz then link:SetPoint("TOPRIGHT", prev, "TOPLEFT", 1, 0)
+        elseif gp.sign > 0 then link:SetPoint("BOTTOMLEFT", prev, "TOPLEFT", 0, -1)
+        else link:SetPoint("TOPLEFT", prev, "BOTTOMLEFT", 0, 1) end
+      end
+      st.links[id] = link
+    end
+    states[gid] = st
+    return st
+  end
+
+  -- The chain starts where WA puts the first child it shows (WA leaves out children that are not loaded;
+  -- their links stay 1 px, their aura being nowhere); a centred one hangs by the middle of WA's row.
+  local function AnchorStart(st)
+    local gp = st.gp
+    local first, last
+    for _, id in ipairs(gp.ids) do
+      local r = RegionOf(id)
+      if r and r:IsShown() and Rect(r) then first = first or r; last = r end
+    end
+    if not first then return false end
+    st.ref = first
+    local fl, fb = Rect(first)
+    local ll, lb, lw, lh = Rect(last)
+    -- the chain measures in the children's own units (a group anchored to a scaled frame scales them)
+    local want = first:GetEffectiveScale() / st.gregion:GetEffectiveScale()
+    if math.abs(st.root:GetScale() - want) > 0.0001 then st.root:SetScale(want) end
+    local k = 1
+    local link = st.links[gp.ids[1]]
+    link:ClearAllPoints()
+    if gp.centred then
+      local t = st.total
+      t:ClearAllPoints()
+      if gp.axis == "x" then
+        t:SetPoint("TOP", first, "TOPLEFT", (ll + lw - fl) / 2 * k, 0)
+        link:SetPoint("TOPLEFT", t, "TOPLEFT", 0, 0)
+      else
+        t:SetPoint("LEFT", first, "BOTTOMLEFT", 0, (lb + lh - fb) / 2 * k)
+        link:SetPoint("BOTTOMLEFT", t, "BOTTOMLEFT", 0, 0)
+      end
+    elseif gp.axis == "x" and gp.sign > 0 then link:SetPoint("TOPLEFT", first, "TOPLEFT", -1, 0)
+    elseif gp.axis == "x" then link:SetPoint("TOPRIGHT", first, "TOPRIGHT", 1, 0)
+    elseif gp.sign > 0 then link:SetPoint("BOTTOMLEFT", first, "BOTTOMLEFT", 0, -1)
+    else link:SetPoint("TOPLEFT", first, "TOPLEFT", 0, 1) end
+    return true
+  end
+
+  -- A group of at most one invisible button on the child's aura (its slot's filter and candidates).
+  local function MeasureGroup(c, key, plan, ew, eh, extra)
+    local layout = { elementWidth = ew, elementHeight = eh }
+    for k2, v in pairs(extra or {}) do layout[k2] = v end
+    return pcall(c.AddAuraGroup, c, key, plan.filterString, {
+      candidateFilters = plan.candidate,
+      maxFrameCount = 1,
+      layout = layout,
+      initializeFrame = function(button)
+        button:SetSize(ew, eh)
+        pcall(button.SetMouseClickEnabled, button, false)
+        pcall(button.EnableMouseMotion, button, false)
+      end,
+    })
+  end
+
+  local function SyncMeasure(c, key, rec, plan, ew, eh, extra)
+    if rec.filter ~= plan.filterString then c:SetAuraGroupFilterString(key, plan.filterString); rec.filter = plan.filterString end
+    if rec.pkey ~= plan.key then c:SetAuraGroupCandidateFilters(key, plan.candidate); rec.pkey = plan.key end
+    if rec.ew ~= ew or rec.eh ~= eh then
+      local layout = { elementWidth = ew, elementHeight = eh }
+      for k2, v in pairs(extra or {}) do layout[k2] = v end
+      c:SetAuraGroupLayout(key, layout); rec.ew, rec.eh = ew, eh
+    end
+    c:SetAuraGroupEnabled(key, true)
+  end
+
+  local function EnsureLink(st, id, k, plan, w, h)
+    local gp = st.gp
+    local horiz = gp.axis == "x"
+    local link = st.links[id]
+    local ew, eh = horiz and (w + gp.space) or w, horiz and h or (h + gp.space)
+    local rec = st.lg[id]
+    if not rec then
+      local ok, err = MeasureGroup(link, KEY, plan, ew, eh)
+      if not ok then return false, err end
+      st.lg[id] = { filter = plan.filterString, pkey = plan.key, ew = ew, eh = eh }
+      rec = st.lg[id]
+    else
+      SyncMeasure(link, KEY, rec, plan, ew, eh)
+    end
+    if rec.unit ~= plan.unit then link:SetUnit(plan.unit); rec.unit = plan.unit end
+    pcall(link.UpdateAllAuras, link)
+    if st.total then
+      local key, extra = "t" .. k, { groupSpacing = gp.space }
+      local trec = st.tg[id]
+      if not trec then
+        local ok, err = MeasureGroup(st.total, key, plan, w, h, extra)
+        if not ok then return false, err end
+        st.tg[id] = { filter = plan.filterString, pkey = plan.key, ew = w, eh = h }
+      else
+        SyncMeasure(st.total, key, trec, plan, w, h, extra)
+      end
+      if st.totalUnit ~= gp.unit then st.total:SetUnit(gp.unit); st.totalUnit = gp.unit end
+      pcall(st.total.UpdateAllAuras, st.total)
+    end
+    return true
+  end
+
+  -- The host hangs 1 px into its link; across the chain it keeps WA's own place (WA's alignment).
+  local function PlaceHost(att, region, st, id, w, h)
+    local gp = st.gp
+    local link = st.links[id]
+    local rl, rb, _, rh = Rect(region)
+    local fl, fb, _, fh = Rect(st.ref)
+    if not (rl and fl) then return false end
+    local host = att.host
+    host:ClearAllPoints()
+    host:SetSize(w, h)
+    if gp.axis == "x" then
+      local dy = (rb + rh) - (fb + fh)
+      if gp.sign > 0 then host:SetPoint("TOPLEFT", link, "TOPLEFT", 1, dy)
+      else host:SetPoint("TOPRIGHT", link, "TOPRIGHT", -1, dy) end
+    else
+      local dx = rl - fl
+      if gp.sign > 0 then host:SetPoint("BOTTOMLEFT", link, "BOTTOMLEFT", dx, 1)
+      else host:SetPoint("TOPLEFT", link, "TOPLEFT", dx, -1) end
+    end
+    return true
+  end
+
+  local function Under(f, top)
+    for _ = 1, 12 do
+      if f == top then return true end
+      if not (f and f.GetParent) then return false end
+      f = f:GetParent()
+    end
+    return false
+  end
+
+  -- Our copies that hang on WA's frames (a bar's bar and icon, the sub-texts, a glow around a bar's icon)
+  -- move onto the host, at the same place within the display. Their anchors come from Engine.SetAnchors
+  -- (att.anchors): reading them back is not possible on texts the game binds to an aura.
+  local function OnWA(att, region, rel)
+    return type(rel) == "table" and rel ~= att.host and Under(rel, region) and not Under(rel, att.host)
+  end
+
+  local function Rebase(att, region, obj, pts)
+    local any = false
+    for _, p in ipairs(pts) do if OnWA(att, region, p[2]) then any = true end end
+    if not any then return end
+    local gl, gb = Rect(region)
+    if not gl then return end
+    local out = {}
+    for i, p in ipairs(pts) do
+      if OnWA(att, region, p[2]) then
+        local l, b, w, h = Rect(p[2])
+        if not l then return end
+        local fr = FRAC[tostring(p[3] or p[1]):upper()] or FRAC.CENTER
+        out[i] = { p[1], att.host, "BOTTOMLEFT", l - gl + fr[1] * w + (p[4] or 0), b - gb + fr[2] * h + (p[5] or 0) }
+      else
+        out[i] = p
+      end
+    end
+    obj:ClearAllPoints()
+    for _, p in ipairs(out) do obj:SetPoint(p[1], p[2], p[3], p[4] or 0, p[5] or 0) end
+    att.rebased = att.rebased or {}
+    att.rebased[obj] = true
+  end
+
+  -- back on WA's frames, as last set (a fresh look may have set them again since)
+  local function Unbase(att)
+    for obj in pairs(att.rebased or {}) do
+      local pts = att.anchors and att.anchors[obj]
+      if pts then
+        obj:ClearAllPoints()
+        for _, p in ipairs(pts) do obj:SetPoint(p[1], p[2], p[3], p[4] or 0, p[5] or 0) end
+      end
+    end
+    att.rebased = nil
+  end
+
+  -- WA's sub-elements that stay where WA puts the child: hidden (only the ones that are on).
+  local function HideWASubs(att, region, data)
+    att.dynHidden = att.dynHidden or {}
+    att.mirrored = att.mirrored or {}
+    local ri = 0
+    for _, sub in ipairs(data.subRegions or {}) do
+      if Private.subRegionTypes[sub.type] then
+        ri = ri + 1
+        local live = region.subRegions and region.subRegions[ri]
+        local flag = HIDE_ON[sub.type]
+        if live and flag and sub[flag] ~= false and (sub.type ~= "subglow" or sub.glow) then
+          att.mirrored[live] = true
+          att.dynHidden[live] = true
+        end
+      end
+    end
+  end
+
+  -- Every child of the group syncs again next frame: its status line says whether it is packed (WA shows
+  -- a group's status lines from its children), and a child whose packing changed applies again, on the
+  -- new chain or back in its own place.
+  local function Requeue(gdata)
+    if queued[gdata.id] then return end
+    queued[gdata.id] = true
+    local ids = {}
+    for _, id in ipairs(gdata.controlledChildren or {}) do ids[#ids + 1] = id end
+    C_Timer.After(0, function()
+      queued[gdata.id] = nil
+      for _, id in ipairs(ids) do
+        local r, cd = RegionOf(id), WA.GetData(id)
+        if r and cd and attachments[r] then
+          local ok = pcall(Engine.Sync, r, cd)
+          if not ok then Dyn.Schedule(r) end
+        end
+      end
+    end)
+  end
+
+  -- Re-plans a group; when the plan changed, retires the old chain and re-applies every child.
+  function Dyn.Refresh(gdata)
+    if not (gdata and gdata.regionType == "dynamicgroup") then return nil end
+    local gp, why = Dyn.Plan(gdata)
+    local sig = gp and gp.sig or ("-" .. tostring(why))
+    if lastSig[gdata.id] ~= sig then
+      lastSig[gdata.id] = sig
+      if not gp and states[gdata.id] then Retire(states[gdata.id]); states[gdata.id] = nil end
+      Requeue(gdata)
+    end
+    return gp, why
+  end
+
+  local function ParentOf(data)
+    local gdata = data and data.parent and WA.GetData(data.parent)
+    return gdata and gdata.regionType == "dynamicgroup" and gdata or nil
+  end
+
+  -- Status line of a child (appended to its own), nil outside dynamic groups.
+  function Dyn.Note(data)
+    local gdata = ParentOf(data)
+    if not gdata then return nil end
+    local gp, why = Dyn.Plan(gdata)
+    if gp then
+      return T("|cff33ff99Dynamic Group:|r packed by the game, so it leaves no gap while its aura is absent, in combat too. While packed, its border and texts other than %p/%s/%n are hidden.")
+    end
+    return T("|cffff9933Dynamic Group:|r keeps its place while its aura is absent, because %s."):format(tostring(why))
+  end
+
+  -- For the signature: a child re-applies when its group's packing changes.
+  function Dyn.Sig(data)
+    local gdata = ParentOf(data)
+    if not gdata then return "" end
+    local gp, why = Dyn.Plan(gdata)
+    return gp and gp.sig or ("-" .. tostring(why))
+  end
+
+  function Dyn.Release(att, region)
+    if att.rebased then Unbase(att) end
+    if att.dynHidden then
+      for live in pairs(att.dynHidden) do
+        if not (att.mirrored and att.mirrored[live]) and live.SetShown then live:SetShown(true) end
+      end
+      att.dynHidden = nil
+    end
+    if att.dyn then
+      att.dyn = nil
+      if att.host then att.host:ClearAllPoints(); att.host:SetAllPoints(region) end
+    end
+  end
+
+  -- An engine-driven Found slot: packed when its group can be. Called at safe time, after the look.
+  function Dyn.Place(att, region, data, plan)
+    local gdata = ParentOf(data)
+    local gp = gdata and Dyn.Refresh(gdata)
+    local gregion = gp and RegionOf(gdata.id)
+    local k
+    for i, id in ipairs(gp and gp.ids or {}) do if id == data.id then k = i end end
+    if not (gp and gregion and k) then Dyn.Release(att, region); return false end
+    local st = State(gregion, gdata.id, gp)
+    local w, h = RegionSize(region)
+    local ok, err = AnchorStart(st)
+    if ok then ok, err = EnsureLink(st, data.id, k, plan, w, h) end
+    if ok then
+      att.dyn = st                                   -- from here on, Release puts the host back
+      ok = PlaceHost(att, region, st, data.id, w, h)
+    end
+    if not ok then
+      if err and not failReported then
+        failReported = true
+        WA.prettyPrint(("%s: engine dynamic group failed: %s"):format(tostring(region.id), tostring(err)))
+      end
+      -- no place to read yet (nothing of the group shown): tried again when WA lays the display out
+      if not err then att.dynRetry = (att.dynRetry or 0) + 1 end
+      Dyn.Release(att, region)
+      return false
+    end
+    att.dynRetry = nil
+    for obj, pts in pairs(att.anchors or {}) do Rebase(att, region, obj, pts) end
+    HideWASubs(att, region, data)
+    return true
+  end
+
+  -- A display that stops being a packed slot (off, preview, Missing, ...): its group re-plans.
+  function Dyn.Leave(att, region, data)
+    att.dynRetry = nil
+    Dyn.Release(att, region)
+    local gdata = ParentOf(data)
+    if gdata then Dyn.Refresh(gdata) end
+  end
+
+  Engine.DynPlan, Engine.DynNote = Dyn.Plan, Dyn.Note   -- for the tests
+
+  -- A child that could not be placed (its group not shown yet) tries again once WA shows it, a few times.
+  local onLayout = Engine.OnLayout
+  function Engine.OnLayout(region)
+    onLayout(region)
+    local att = attachments[region]
+    if att and att.dynRetry and att.dynRetry <= 3 and not att.dynQueued and region:IsVisible() then
+      att.dynQueued = true
+      C_Timer.After(0, function() att.dynQueued = nil; Dyn.Schedule(region) end)
+    end
+  end
+end
+
 local function TurnOff(att, region, data, mode)
   if att.host then att.host:Hide() end
+  pcall(Dyn.Leave, att, region, data)
   DisableKind(att, "slot"); DisableKind(att, "group"); DisableKind(att, "composite")
   StopPresentGlows(att); StopAnimatedGlow(att.mglowHolder)
   for _, rs in pairs(att.rslots or {}) do if rs.glowHolder then StopAnimatedGlow(rs.glowHolder) end end
@@ -3036,6 +3514,16 @@ local function ApplyUnguarded(region)
     pcall(sh.texClip.SetFrameLevel, sh.texClip, c:GetFrameLevel() + 1)
     pcall(sh.texts.SetFrameLevel, sh.texts, c:GetFrameLevel() + 2)
   end
+  -- in a Dynamic Group of engine-driven Found displays, the game packs the children (after the look:
+  -- the copies the look hung on WA's frames move onto the host)
+  local okD, errD = pcall((kind == "slot" and plan.mode == "active") and Dyn.Place or Dyn.Leave, att, region, data, plan)
+  if not okD then
+    pcall(Dyn.Release, att, region)
+    if not att.dynWarned then
+      att.dynWarned = true
+      WA.prettyPrint(("%s: engine dynamic group failed: %s"):format(tostring(region.id), tostring(errD)))
+    end
+  end
   att.host:Show()
   att.mode, att.active, att.sig = "on", true, att.wantSig
   local okS, errS = pcall(ApplySounds, att, region, data, plan)
@@ -3080,6 +3568,7 @@ local function Apply(region) Guard("apply", ApplyUnguarded, region) end
 local function Schedule(region)
   if Engine.IsSafe() then pending[region] = nil; Apply(region) else pending[region] = true end
 end
+Dyn.Schedule = Schedule
 
 -- A display whose spell was unknown at load is not engine-driven; once the spell is learned only a
 -- full re-add lets the trigger side re-classify it. Done at safe time, like everything else.
@@ -3111,7 +3600,7 @@ local function ComputeSig(region, data, plan)
     tostring(data.icon), tostring(data.icon_side), table.concat(data.barColor or {}, ","),
     table.concat(data.backgroundColor or {}, ","), table.concat(data.icon_color or {}, ","),
     tostring(data.foreverEngineRange), tostring(data.foreverEngineRangeSpell), tostring(data.foreverEngineGlowPart),
-    SoundSig(data),
+    SoundSig(data), tostring(data.parent), Dyn.Sig(data),
     table.concat(data.color or {}, ","), region.icon and table.concat({ region.icon:GetTexCoord() }, ",") or "" }
   if data.regionType == "progresstexture" then
     for _, k in ipairs({ "foregroundTexture", "backgroundTexture", "sameTexture", "desaturateForeground",
@@ -3202,7 +3691,10 @@ function Engine.Sync(region, data)
   end
   local sig = ComputeSig(region, data, plan)
   att.want, att.wantSig = plan, sig
-  SetWarning(att, data.uid, "info", (Engine.Explain(data, plan)))
+  local status = (Engine.Explain(data, plan))
+  local note = Dyn.Note(data)
+  if note and status then status = status .. "\n\n" .. note end
+  SetWarning(att, data.uid, "info", status)
   if att.active and att.sig == sig and not pending[region] then return end
   Schedule(region)
 end
@@ -3250,6 +3742,18 @@ for _, rt in ipairs({ "aurabar", "progresstexture", "texture", "text" }) do
     regionType.modify = function(parent, region, data)
       origModify(parent, region, data)
       Guard("sync", Engine.Sync, region, data)
+    end
+  end
+end
+
+do
+  -- a Dynamic Group re-plans its packing whenever WA sets it up (grow, spacing, children, ...)
+  local dyn = Private.regionTypes and Private.regionTypes.dynamicgroup
+  if dyn and dyn.modify then
+    local origDyn = dyn.modify
+    dyn.modify = function(parent, region, data)
+      origDyn(parent, region, data)
+      Guard("dynamic group", Dyn.Refresh, data)
     end
   end
 end
