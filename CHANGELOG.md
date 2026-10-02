@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.8.7-alpha (2026-10-02)
+
+- **Texts that work in combat.** A Text display with an aura trigger is now drawn by the game's aura
+  engine: a "NO DEMON SKIN!" warning (*Show On: Aura(s) Missing*) shows while your buff is gone, a
+  "Corruption: %p" timer (*Found*) counts down, also in combat. Plain text, `%p` (time left), `%t` (total),
+  `%s` (stacks) and `%n` (name) work, also with other words around them ("Corruption: 12 s"); `%n` and
+  `%i` of the one spell a display tracks are filled in ("%n is missing!" reads "Demon Skin is missing!").
+  Font, size, outline, colour, shadow, justify, width and animations are kept. The game formats the time
+  itself ("12 s"), so WeakAuras' `%p` format options do not apply; with other words, 0 stacks read 0; a
+  SLUG outline is drawn as a normal outline. Not engine-driven yet, with the reason in the status line:
+  two kinds of values in one text (time and stacks), `%c`, and *Show On: Always*.
+- **Texts on engine-driven icons, bars and textures sit where you put them.** The `%p` / `%s` / `%n`
+  text of an engine-driven display ignored its X/Y offset and anchored *Automatic* the icon way on every
+  display, so it could show elsewhere in combat than in the options. Reported by JakeD. Thanks!
+- Dispel spell lists regenerated for client 1.60.1.70170 (three entries changed).
+
 ## 0.8.6-alpha (2026-10-01)
 
 - **Textures for procs, in combat.** A Texture display with an aura trigger is now drawn by the game's aura
