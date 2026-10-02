@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.8.8-alpha (2026-10-02)
+
+- **Dynamic Groups that close up in combat.** When every child of a Dynamic Group is an engine-driven
+  display (Icon, Progress Bar, Progress Texture, Texture or Text with *Show On: Aura(s) Found*), the game
+  packs them: a child whose aura is absent leaves no gap, also in combat. Grow left, right, up, down or
+  centred (horizontal or vertical), with your spacing, order and alignment; children may watch different
+  units (a centred group needs one). Before, engine-driven children kept their place, so a DoT row had
+  holes. While packed, a child shows its icon, bar or texture, its `%p` / `%s` / `%n` texts and its glow;
+  its border and other texts are hidden. Not packed, with the reason in the children's status line: groups
+  that sort by time left (secret in combat), limit or stagger their children, grow in a circle, a grid or
+  by custom code, anchor per unit, or have a child that is not engine-driven, not *Found*, or carries a
+  model, texture or tick.
+
 ## 0.8.7-alpha (2026-10-02)
 
 - **Texts that work in combat.** A Text display with an aura trigger is now drawn by the game's aura

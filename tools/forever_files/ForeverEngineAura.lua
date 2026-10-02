@@ -22,6 +22,8 @@
 -- ones are the game's cooldown swipe drawn with the display's texture. Texture displays (Show On: Found
 -- or Missing) are icons without a timer: a copy of their texture on the slot button or in the Missing clip.
 -- Text displays: plain text the same way, or exactly %p / %s / %n as the engine's own texts (Found).
+-- Dynamic Groups whose children are all engine-driven Found displays are packed by the game: a chain of
+-- containers sized by the children's auras places them (see "dynamic groups" below).
 --
 -- Time left (icons): 'Remaining Time' on a Found trigger becomes a slot whose duration text is the
 -- display's icon, coloured by a Step curve over the remaining duration (alpha 0 outside the range).

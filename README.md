@@ -26,6 +26,7 @@ and lets the client draw it.
 | **Texts** for warnings and timers — "NO DEMON SKIN!" while a buff is missing, "Corruption: 12 s" while a DoT runs — plain text, `%p`, `%t`, `%s`, `%n`, also with other words | WeakAuras' text is hidden and drawn again on the engine's aura button (Found) or in the Missing clip, in its font, size, outline, colour and width. Time inside other words is the engine's duration text with a format string ("Corruption: {}"); stacks inside other words a rule formatter. A Missing text's clip is sized by the engine's own measure of the text. |
 | **Textures** for procs and missing buffs (*Show On: Aura(s) Found* or *Missing*), with your texture, colour, rotation and mirror | Icons without a timer: a copy of the texture on the engine's aura button (Found) or in the Missing clip. The copy takes WeakAuras' own texture coordinates, so rotation and mirror match. |
 | **Progress Textures** for aura timers, straight and circular, with your texture, colours, crop, rotation and background | Straight: a clip anchored to the fill of an invisible bar the engine fills by the aura's duration reveals a copy of the texture with WeakAuras' own texture coordinates. Circular: the game's cooldown swipe drawn with the texture; its edge only turns clockwise, so two of WeakAuras' four direction settings run out the mirror way (the status line says which). |
+| **Dynamic Groups** of engine-driven icons, bars, textures or texts (*Show On: Aura(s) Found*): a child whose aura is absent leaves no gap, in combat too — grow left, right, up, down or centred, with your spacing, order and alignment | A chain of invisible aura containers, one per child, each 1 px plus the child and the spacing while its aura is up and 1 px while it is not. Every child hangs on the end of the one before it, so the game itself packs the row; a centred row hangs by the middle of a container that holds every child. While packed, a child shows what the engine draws (icon, bar, texture, `%p`/`%s`/`%n` texts, glow); its border and other texts are hidden. |
 | **Show On: Ready / On Cooldown** | Exact, from fields Blizzard left readable. |
 | **Conditions on secret state** — e.g. *Is Ready (Secret)* → *Alpha (Boolean)* | The secret boolean goes straight to the engine via `SetAlphaFromBoolean`; the addon never sees it. |
 | **Range gate** on engine-driven displays — *only while the spell is in range of the unit* (e.g. Serpent Sting missing **and** target within 8–35 yd) | `C_Spell.IsSpellInRange` answers with a plain boolean on Forever, in combat too, and honours the spell's own min/max range. Sampled 5x per second; the display's own alpha, conditions and animations still apply on top. |
@@ -99,6 +100,11 @@ What it *can* do is configure engine-drawn UI:
 - **"Missing"** cannot be inverted in Lua, so EverAuras uses an aura *group* whose container width
   the engine sets to a secret 1 px (absent) or W+1 px (present), and hangs a clipping frame off
   that edge: full width while absent, zero width while present. Pure geometry, no reads.
+- **Dynamic Groups** use the same geometry in a chain: one such container per child, each hung on the
+  end of the one before it, and each child's display hung on its own link. The game resizes the links,
+  so the children close up without the addon ever knowing which aura is up. Frames hung on an aura
+  container must carry its ban on layout scripts (`DisableUntrustedLayoutScriptsTemplate`), so
+  WeakAuras' own frames can never join the chain; EverAuras draws a packed child itself.
 - **Cooldowns** come as `LuaDurationObject`s. Their own methods format text and evaluate curves
   internally, and `Cooldown:SetCooldownFromDurationObject` animates the swipe — all from tainted
   code, verified in combat.
@@ -107,8 +113,9 @@ What it *can* do is configure engine-drawn UI:
 
 What is lost for engine-driven displays: conditions and texts that *read* aura state (stacks,
 remaining time, active), show/hide animations and actions on aura gain/loss other than sounds,
-dynamic-group layout that reacts to secret visibility, and part-circle progress textures. A sorted
-priority list is not possible; a fixed priority row is.
+dynamic groups that sort by time left, limit their children, stagger them or grow in a circle or a
+grid, and part-circle progress textures. A list sorted by time left is not possible; a packed
+priority row is.
 
 The full research trail — every API flag, probe result and dead end — is in `docs/`.
 
@@ -136,6 +143,11 @@ objects, boolean-driven properties, secret-aware cooldown triggers) EverAuras bu
 The CurseForge link inside the addon still points at upstream on purpose.
 
 Community: [EverAuras Discord](https://discord.gg/HdRNYvKbY).
+
+EverAuras is free and stays free. If you would like to say thanks, you can
+[buy me a coffee](https://buymeacoffee.com/hackblarvest).
+
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-hackblarvest-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/hackblarvest)
 
 Licensed under the **GNU General Public License v2.0**, like the projects it derives from.
 See [LICENSE](LICENSE).

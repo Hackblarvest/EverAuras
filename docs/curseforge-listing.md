@@ -18,6 +18,7 @@ Copy-ready texts for the EverAuras project page. Keep in sync with README.md whe
 | Project image | `logo/build/preview_256.png` (dark edges suit CurseForge's dark theme; `curseforge_400.png` has white edges) |
 | Distribution | Allow distribution to 3rd party (WowUp and similar clients) |
 | Comments | Off: questions and bug reports go to Discord and GitHub Issues |
+| Donation | Buy Me a Coffee: https://buymeacoffee.com/hackblarvest (also `.github/FUNDING.yml` and the README) |
 | File | `EverAuras-<version>.zip` from the GitHub release (four folders at the zip root) |
 | Game version | CurseForge's own "WoW Forever" group, version matching the client (1.60.1 for build 1.60.1.70009). Do not pick Retail or Classic: the addon only targets Forever. |
 
@@ -35,6 +36,7 @@ Forever runs on the modern engine with its "secret values" system: the moment yo
 - **Time left:** an icon that shows only while a DoT or buff has less than X seconds left, or the classic "missing or about to run out" icon for refreshing DoTs, with its countdown and a glow.
 - **Textures for procs**: show a texture while your proc or buff is up, or while it is missing.
 - **Texts**: "NO DEMON SKIN!" while a buff is missing, "Corruption: 12 s" while a DoT runs, in combat too.
+- **Dynamic Groups** that close up in combat: a DoT row without holes, growing left, right, up, down or from the centre.
 - **Animated glows** (Button, Pixel, Autocast, Proc) on these icons, textures and bars, shown only while they are, also in combat, including a glow that starts when an aura has X seconds left.
 - **Debuffs on you** such as Weakened Soul or Forbearance, matched by their properties, since Blizzard hides which debuff it is in combat.
 - **Auras by dispel type**: "a poison on me", "a Magic debuff on me", "a Magic buff on my target" for Purge, with the aura's own icon and countdown.
@@ -55,6 +57,8 @@ Type `/ea` in game (also `/everauras` or `/wa`). Questions, bug reports and aura
 ### Credits
 
 Built on [WeakAuras 2](https://github.com/WeakAuras/WeakAuras2) and [M33kAuras](https://github.com/m33shoq/M33kAuras). Open source under GPL-2.0: [source on GitHub](https://github.com/Hackblarvest/EverAuras).
+
+EverAuras is free and stays free. If you would like to say thanks, you can [buy me a coffee](https://buymeacoffee.com/hackblarvest).
 
 ## Release type
 
