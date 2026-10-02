@@ -5,8 +5,8 @@
 EverAuras is a fork of [M33kAuras](https://github.com/m33shoq/M33kAuras) (itself a fork of
 [WeakAuras 2](https://github.com/WeakAuras/WeakAuras2)), rebuilt for the *World of Warcraft: Forever*
 client. Forever runs on the mainline (retail) engine and inherits the 12.1 "secret values" system,
-which makes ordinary aura and cooldown data unreadable to addons the moment you enter combat —
-even in the open world, even at level 2. Ported-as-is, WeakAuras is blind exactly when you need it.
+which makes ordinary aura and cooldown data unreadable to addons the moment you enter combat,
+anywhere: questing, dungeons or raids. Ported-as-is, WeakAuras is blind exactly when you need it.
 
 EverAuras is not blind. It never reads the secret data; it hands the display to the game engine
 and lets the client draw it.

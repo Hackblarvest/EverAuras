@@ -26,7 +26,7 @@ Copy-ready texts for the EverAuras project page. Keep in sync with README.md whe
 
 EverAuras is a WeakAuras-style addon for **World of Warcraft: Forever** that keeps working **in combat**.
 
-Forever runs on the modern engine with its "secret values" system: the moment you enter combat, aura and cooldown data become unreadable to addons, even in the open world at level 2. A plain port of WeakAuras goes blind exactly when you need it. EverAuras hands those displays to the game engine instead, so they keep working.
+Forever runs on the modern engine with its "secret values" system: the moment you enter combat, anywhere (questing, dungeons or raids), aura and cooldown data become unreadable to addons. A plain port of WeakAuras goes blind exactly when you need it. EverAuras hands those displays to the game engine instead, so they keep working.
 
 ### What works in combat
 
