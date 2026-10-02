@@ -21,6 +21,7 @@
 -- frame anchored to its fill reveals a copy of the display's texture as the aura runs out. Circular
 -- ones are the game's cooldown swipe drawn with the display's texture. Texture displays (Show On: Found
 -- or Missing) are icons without a timer: a copy of their texture on the slot button or in the Missing clip.
+-- Text displays: plain text the same way, or exactly %p / %s / %n as the engine's own texts (Found).
 --
 -- Time left (icons): 'Remaining Time' on a Found trigger becomes a slot whose duration text is the
 -- display's icon, coloured by a Step curve over the remaining duration (alpha 0 outside the range).
@@ -76,6 +77,10 @@ local PROPERTY_FLAGS = { { "use_stealable", "isStealable" }, { "use_isBossDebuff
                          { "use_castByPlayer", "isFromPlayerOrPlayerPet" } }
 
 local attachments = setmetatable({}, { __mode = "k" })   -- region -> att
+-- read by the dev probes (ForeverDevInfo /fdtext); nothing in the addon uses it
+if type(WA) == "table" then
+  WA.ForeverEngineDebug = function(region) if region == nil then return attachments end return attachments[region] end
+end
 local pending = setmetatable({}, { __mode = "k" })       -- region -> true
 local decided = {}                                       -- uid -> plan | false (written by the trigger side)
 local nameWatch = {}                                     -- uid -> true for aura2 triggers written with spell NAMES
@@ -760,8 +765,127 @@ end
 --   composite plan : plan.parts = { missing = part | nil, remaining = { {part, op, x}, ... } }, icons only.
 --                    Shows the icon while the missing part's aura is absent OR a remaining part's aura
 --                    has the given time left. Built from Found + 'Remaining Time' triggers.
-local ENGINE_REGIONS = { icon = true, aurabar = true, progresstexture = true, texture = true }
-local KIND_NAME = { aurabar = "Progress Bars", progresstexture = "Progress Textures", texture = "Textures" }
+local ENGINE_REGIONS = { icon = true, aurabar = true, progresstexture = true, texture = true, text = true }
+local KIND_NAME = { aurabar = "Progress Bars", progresstexture = "Progress Textures", texture = "Textures", text = "Texts" }
+
+-- What a Text display shows: "plain" (no placeholders), or exactly one aura value the engine can draw
+-- itself: "p" (time left), "s" (stacks), "n" (spell name). nil = something else (mixed text, %c, ...).
+local TextPlan
+do
+  -- WA's placeholder grammar (M33kAuras.lua nextState): "%%" is a literal %, "%{...}" and "%" followed by
+  -- [0-9A-Za-z.]+ are symbols, a % before anything else stays a literal %. Returns { {lit=}, {sym=}, ... }.
+  local function ParseText(s)
+    local parts, buf, i, n = {}, {}, 1, #s
+    local function flush()
+      if #buf > 0 then parts[#parts + 1] = { lit = table.concat(buf) }; buf = {} end
+    end
+    while i <= n do
+      local c = s:sub(i, i)
+      local nx = s:sub(i + 1, i + 1)
+      if c ~= "%" then
+        buf[#buf + 1] = c; i = i + 1
+      elseif nx == "%" then
+        buf[#buf + 1] = "%"; i = i + 2
+      elseif nx == "{" then
+        local close = s:find("}", i + 2, true) or (n + 1)
+        flush(); parts[#parts + 1] = { sym = s:sub(i + 2, close - 1) }; i = close + 1
+      elseif nx:match("^[%w%.]$") then
+        local j = i + 1
+        while j <= n and s:sub(j, j):match("^[%w%.]$") do j = j + 1 end
+        flush(); parts[#parts + 1] = { sym = s:sub(i + 1, j - 1) }; i = j
+      else
+        buf[#buf + 1] = "%"; i = i + 1
+      end
+    end
+    flush()
+    return parts
+  end
+
+  -- The one spell a display's Aura trigger names ({ name = } or { id = }), or nil when it names none or several.
+  local function SingleSpell(data)
+    for i, tr in ipairs(type(data.triggers) == "table" and data.triggers or {}) do
+      local t = tr and tr.trigger
+      if t and t.type == "aura2" then
+        local list = {}
+        if t.useName and type(t.auranames) == "table" then
+          for _, v in ipairs(t.auranames) do if Trim(v) ~= "" then list[#list + 1] = { name = Trim(v) } end end
+        end
+        if t.useExactSpellId and type(t.auraspellids) == "table" then
+          for _, v in ipairs(t.auraspellids) do if tonumber(v) then list[#list + 1] = { id = tonumber(v) } end end
+        end
+        return #list == 1 and list[1] or nil, i
+      end
+    end
+  end
+
+  -- What a Text display shows, or nil + the reason the engine cannot draw it:
+  --   kind "plain": text only; %n and %i become the tracked spell's name and icon when it is one spell
+  --   kind "dur"  : text with %p (time left) and/or %t (total time): the engine's duration text, whose
+  --                 format string takes the text around them ("Corruption: {}")
+  --   kind "count": text with one %s: the engine's stack count, through a rule formatter ("Stacks: %d")
+  --   kind "name" : exactly %n: the engine's spell name (any aura the display matches)
+  -- tp.pure: the text is that one placeholder alone.
+  local DURATION_SYMS = { p = true, t = true }
+  function TextPlan(data)
+    local parts = ParseText(tostring(data.displayText or ""))
+    local single, auraIdx = SingleSpell(data)
+    local kinds, nsyms, lits = {}, 0, false
+    for _, part in ipairs(parts) do
+      if part.sym then
+        local sym = part.sym
+        local tn, rest = sym:match("^(%d+)%.(.+)$")
+        if tn then
+          if tonumber(tn) ~= auraIdx then
+            return nil, T("the text reads trigger %s; the engine draws only the Aura trigger's values"):format(tn)
+          end
+          sym = rest
+        end
+        part.key = sym
+        nsyms = nsyms + 1
+        if DURATION_SYMS[sym] then kinds.dur = true
+        elseif sym == "s" then kinds.count = (kinds.count or 0) + 1
+        elseif sym == "n" then if not single then kinds.name = true end
+        elseif sym == "i" then
+          if not single then return nil, T("%i needs a display that tracks one spell (the engine cannot show the icon inside a text)") end
+        else
+          return nil, T("the text uses %%%s, which the engine cannot draw (it draws %%p, %%t, %%s, %%n and %%i)"):format(sym)
+        end
+      elseif part.lit:find("%S") then
+        lits = true
+      end
+    end
+    if kinds.name and not (nsyms == 1 and not lits) then
+      return nil, T("a text with other words can show the aura's name only when the display tracks one spell")
+    end
+    local n = (kinds.dur and 1 or 0) + (kinds.count and 1 or 0) + (kinds.name and 1 or 0)
+    if n > 1 or (kinds.count or 0) > 1 then
+      return nil, T("the text shows more than one kind of aura value (time, stacks, name); one per text (so far)")
+    end
+    local tp = { parts = parts, single = single, pure = nsyms == 1 and not lits }
+    if tp.pure then
+      for _, part in ipairs(parts) do if part.key == "n" then kinds.name = true end end   -- the engine's name
+    end
+    if kinds.dur then tp.kind = "dur"
+    elseif kinds.count then tp.kind = "count"
+    elseif kinds.name then
+      if not tp.pure then return nil, T("a text with other words can show the aura's name only when the display tracks one spell") end
+      tp.kind = "name"
+    else tp.kind = "plain" end
+    if tp.kind == "dur" then
+      for _, part in ipairs(parts) do
+        local lit = part.lit and (WA.ReplaceRaidMarkerSymbols and WA.ReplaceRaidMarkerSymbols(part.lit) or part.lit)
+        if lit and lit:find("[{}]") then return nil, T("the text around %p contains { or }, which the game's time format uses itself") end
+      end
+    end
+    return tp
+  end
+end
+
+-- compatibility for callers that only need the kind
+local function TextKind(data)
+  local tp = TextPlan(data)
+  return tp and tp.kind or nil
+end
 local FOUND_ONLY = { aurabar = true, progresstexture = true }
 
 -- A Progress Texture follows the aura's own duration: progress source Automatic, or the Aura
@@ -802,7 +926,7 @@ function Engine.Classify(data)
     r[#r + 1] = msg
   end
   local rt = data and data.regionType
-  if not ENGINE_REGIONS[rt] then return nil, { T("the display is not an Icon, a Progress Bar, a Progress Texture or a Texture") } end
+  if not ENGINE_REGIONS[rt] then return nil, { T("the display is not an Icon, a Progress Bar, a Progress Texture, a Texture or a Text") } end
   if rt == "progresstexture" then TextureFollowsAura(data, no) end
   if not GloballyEnabled() then no(T("the engine is switched off (/faengine on)")) end
   if data.foreverEngine == false then no(T("'Let the game engine draw this aura' is off for this display (Display tab)")) end
@@ -842,6 +966,16 @@ function Engine.Classify(data)
     end
     if rt == "texture" and inf.mode == "always" then
       no(T("a Texture with 'Show On: Always' shows all the time and needs no engine; pick 'Aura(s) Found' or 'Aura(s) Missing'"))
+    end
+    if rt == "text" then
+      local tp, why = TextPlan(data)
+      if inf.mode == "always" then
+        no(T("a Text with 'Show On: Always' is left to WeakAuras; pick 'Aura(s) Found' or 'Aura(s) Missing'"))
+      elseif not tp then
+        no(why)
+      elseif tp.kind ~= "plain" and inf.mode == "missing" then
+        no(T("a text shown while the aura is missing has no time, stacks or name to show; use plain text (%n and %i of a single tracked spell are fine)"))
+      end
     end
     if #r > 0 then return nil, r end
     local key = table.concat({ unit, inf.mode, inf.key }, ";")
@@ -1077,6 +1211,25 @@ function Engine.Explain(data, plan, reasons)
         txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s). It shows your icon %s, and nothing otherwise. The game checks the time left itself, so it never has to be read. Kept: position, size, groups, the %%p text, static colour/zoom; glow %s. Not available: the border (hidden while engine-driven), cooldown swipe, stack count and desaturation on the time-left icon, conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
           :format(plan.unit, table.concat(when, T(" or ")), glowTxt)
       end
+    elseif data.regionType == "text" then
+      local tp = TextPlan(data)
+      local kind = tp and tp.kind
+      local lone = tp and tp.pure and tp.parts[1].key
+      local what = T("your text")
+      if kind == "dur" then
+        what = lone == "p" and T("the aura's time left, counted down by the game")
+               or lone == "t" and T("the aura's total duration")
+               or T("your text with the aura's time, counted down by the game")
+      elseif kind == "count" then
+        what = lone and T("the aura's stacks") or T("your text with the aura's stacks (0 stacks read 0)")
+      elseif kind == "name" then
+        what = T("the aura's name")
+      end
+      local when = plan.mode == "missing" and T("while the aura is absent and nothing while it is present")
+                                         or T("while the aura is present and nothing while it is absent")
+      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows %s %s. Kept: position, size, groups, font, size, outline (SLUG drawn as a normal outline), colour, shadow, justify and width. Not available: %sconditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
+        :format(plan.unit, plan.filterString, what, when,
+                kind == "dur" and T("WeakAuras' %p formatting options (the game formats the time itself), ") or "")
     elseif data.regionType == "texture" then
       local when = plan.mode == "missing" and T("while the aura is absent and disappears completely while it is present")
                                          or T("while the aura is present and nothing while it is absent")
@@ -1226,6 +1379,8 @@ end
 
 ---------------------------------------------------------------------------- engine objects (safe time only)
 local function RegionSize(region)
+  local att = attachments[region]
+  if att and att.textW then return att.textW, att.textH end
   local w, h = region:GetWidth(), region:GetHeight()
   if issecretvalue(w) or issecretvalue(h) then return 32, 32 end
   return math.max(math.floor(w + 0.5), 1), math.max(math.floor(h + 0.5), 1)
@@ -1280,6 +1435,21 @@ local function BuildSlot(att, region, plan)
         att.barDirection = dirs and dirs.RemainingTime
         button:SetDurationBar(s.bar, { direction = att.barDirection })
         button:SetIcon(s.icon)
+        button:SetDurationText(s.duration, nil)
+        button:SetApplicationCount(s.count, nil)
+        button:SetSpellName(s.name)
+        return
+      end
+      if att.isText then
+        -- a Text display: plain text, or the engine's own time left / stacks / name, on the button
+        s.texts = CreateFrame("Frame", nil, button)
+        s.texts:SetAllPoints(button)
+        s.texts:SetFrameLevel(button:GetFrameLevel() + 2)
+        s.label = s.texts:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        s.duration = s.texts:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        s.count = s.texts:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        s.name = s.texts:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        for _, fs in ipairs({ s.label, s.duration, s.count, s.name }) do fs:SetPoint("CENTER") end
         button:SetDurationText(s.duration, nil)
         button:SetApplicationCount(s.count, nil)
         button:SetSpellName(s.name)
@@ -1932,7 +2102,244 @@ local function ApplyPicLook(att, region, data, plan)
   pcall(att.button.EnableMouseMotion, att.button, data.useTooltip and true or false)
 end
 
+-- Text displays: WA's text is hidden (alpha; WA colours it with SetTextColor, never SetAlpha) and drawn
+-- again on the slot button (Found) or in the Missing clip, in WA's font, size, outline, shadow, justify
+-- and width. Plain text is copied as WA shows it (raid markers included); %p / %s / %n are the engine's
+-- own duration text, stack count and spell name.
+-- (a do-block: the file's main chunk is close to Lua 5.1's limit of 200 locals)
+local SetTextVisuals, ApplyTextLook, StyleUnderlayText, PlainText, FitTextHost
+do
+  -- Hidden by its Shown state, never by alpha: on a FontString, SetTextColor sets the alpha too, and WA
+  -- recolours its text whenever an animation starts (ColorAnim), which made the text show again (seen in
+  -- game 2026-10-02 with /fdtext mark). WA never calls Show / Hide on a Text display's text.
+  function SetTextVisuals(region, shown)
+    if region.text and region.text.SetShown then region.text:SetShown(shown) end
+  end
+
+  local function StyleTextLike(fs, region, data, anchor, isEngineText)
+    local font, size, flags = region.text:GetFont()
+    -- SLUG (vector) text ignores the Missing clip (seen in game 2026-10-01: an OUTLINE|SLUG text stayed
+    -- visible while the aura was up); the copy is drawn as a normal font, like the icons' texts
+    flags = tostring(flags or ""):gsub("[|,]?%s*SLUG", ""):gsub("^[|,]%s*", "")
+    if font then fs:SetFont(font, size, flags) end
+    if not isEngineText then
+      local c = data.color or { 1, 1, 1, 1 }
+      fs:SetTextColor(c[1] or 1, c[2] or 1, c[3] or 1, c[4] or 1)
+    end
+    if data.shadowColor then fs:SetShadowColor(unpack(data.shadowColor)) end
+    local slug = data.outline == "OUTLINE|SLUG" or data.outline == "THICKOUTLINE|SLUG"
+    fs:SetShadowOffset(slug and 0 or (data.shadowXOffset or 1), slug and 0 or (data.shadowYOffset or -1))
+    local justify = data.justify or "LEFT"
+    fs:SetJustifyH(justify)
+    if data.automaticWidth == "Fixed" then
+      fs:SetWidth(tonumber(data.fixedWidth) or 200)
+      fs:SetWordWrap(data.wordWrap == "WordWrap")
+    else
+      fs:SetWidth(0)
+      fs:SetWordWrap(true)
+    end
+    fs:ClearAllPoints()
+    fs:SetPoint(justify, anchor, justify)
+  end
+
+  -- WA's own text as shown, for plain text (no state in it, so readable)
+  function PlainText(region, data)
+    local ok, t = pcall(region.text.GetText, region.text)
+    if ok and type(t) == "string" and not issecretvalue(t) and t ~= "" then return t end
+    return tostring(data.displayText or "")
+  end
+
+  local function ConstantColorCurve(c)
+    local cc = C_CurveUtil.CreateColorCurve()
+    cc:SetType(Enum.LuaCurveType.Step)
+    cc:AddPoint(0, CreateColor(c[1] or 1, c[2] or 1, c[3] or 1, c[4] or 1))
+    return cc
+  end
+
+  -- %n / %i of the one spell a display tracks: its name and icon (plain data, safe time)
+  local function StaticSymbol(key, tp, plan)
+    local sp = tp.single
+    local id = (sp and sp.id) or (plan and plan.firstId)
+    if key == "n" then
+      if sp and sp.name then return sp.name end
+      local ok, nm = pcall(C_Spell.GetSpellName, id)
+      if ok and type(nm) == "string" and not issecretvalue(nm) then return nm end
+    elseif key == "i" then
+      local ok, tex = pcall(C_Spell.GetSpellTexture, id)
+      if ok and tex and not issecretvalue(tex) then return ("|T%s:0|t"):format(tostring(tex)) end
+    end
+    return ""
+  end
+
+  -- The display text with its static parts filled in (raid markers like WA); dyn(key) supplies the rest.
+  local function TextWith(tp, plan, dyn)
+    local out = {}
+    for _, part in ipairs(tp.parts) do
+      if part.lit then
+        out[#out + 1] = WA.ReplaceRaidMarkerSymbols and WA.ReplaceRaidMarkerSymbols(part.lit) or part.lit
+      elseif part.key == "n" or part.key == "i" then
+        out[#out + 1] = StaticSymbol(part.key, tp, plan)
+      else
+        out[#out + 1] = dyn(part.key)
+      end
+    end
+    return table.concat(out)
+  end
+
+  local function HasSymbols(tp)
+    for _, part in ipairs(tp.parts) do if part.sym then return true end end
+    return false
+  end
+
+  -- Time inside other words: Blizzard's own aura duration format (Blizzard_AuraContainerShared.lua), so a
+  -- "Corruption: %p" text counts like a lone "%p" one: whole seconds up to 90 s, then minutes, hours, days.
+  local auraDurationFormatter
+  local function AuraDurationFormatter()
+    if auraDurationFormatter ~= nil then return auraDurationFormatter or nil end
+    auraDurationFormatter = false
+    if not (C_StringUtil and C_StringUtil.CreateSecondsFormatter) then return nil end
+    local ok, f = pcall(C_StringUtil.CreateSecondsFormatter)
+    if not ok or not f then return nil end
+    local E = Enum or {}
+    local I = E.SecondsFormatterInterval or {}
+    pcall(f.SetDefaultAbbreviation, f, E.SecondsFormatterAbbreviation and E.SecondsFormatterAbbreviation.OneLetter or 2)
+    pcall(f.SetRounding, f, E.SecondsFormatterRounding and E.SecondsFormatterRounding.Truncate or 1)
+    pcall(f.SetCanRoundUpLastUnit, f, true)
+    if I.Seconds then pcall(f.SetMinInterval, f, I.Seconds) end
+    if I.Seconds and I.Minutes and C_CurveUtil and C_CurveUtil.CreateCurve then
+      local okC, curve = pcall(C_CurveUtil.CreateCurve)
+      if okC and curve then
+        curve:SetType(Enum.LuaCurveType.Step)
+        curve:AddPoint(0, I.Seconds)
+        curve:AddPoint(1 + 1.5 * 60, I.Minutes)
+        if I.Hours then curve:AddPoint(1 + 1.5 * 3600, I.Hours) end
+        if I.Days then curve:AddPoint(1 + 1.5 * 86400, I.Days) end
+        pcall(f.SetMaxIntervalCurve, f, curve)
+      end
+    end
+    pcall(f.SetDesiredUnitCount, f, 1)
+    auraDurationFormatter = f
+    return f
+  end
+
+  -- Stacks inside other words: one rule ("Stacks: %d"). WA leaves %s empty at 0 stacks; a rule without a
+  -- number would do that too, but Blizzard formats inside its own aura update, where a bad format would
+  -- break the display in combat, so this keeps to one plain %d (0 stacks read "Stacks: 0").
+  local stackFormatters = {}
+  local function StackFormatter(prefix, suffix)
+    local key = prefix .. "\1" .. suffix
+    if stackFormatters[key] ~= nil then return stackFormatters[key] or nil end
+    stackFormatters[key] = false
+    if not (C_StringUtil and C_StringUtil.CreateNumericRuleFormatter) then return nil end
+    local ok, f = pcall(C_StringUtil.CreateNumericRuleFormatter)
+    if not ok or not f then return nil end
+    local function esc(x) return (x:gsub("%%", "%%%%")) end
+    local R = (Enum and Enum.NumericRuleFormatRounding) or {}
+    local okB = pcall(f.SetBreakpoints, f, {
+      { threshold = 0, step = 1, rounding = R.Down or 2, format = esc(prefix) .. "%d" .. esc(suffix) },
+    })
+    if okB then stackFormatters[key] = f end
+    return stackFormatters[key] or nil
+  end
+
+  function ApplyTextLook(att, region, data, plan)
+    local s = att.shadows
+    local tp = TextPlan(data) or { kind = "plain", parts = { { lit = tostring(data.displayText or "") } } }
+    local kind = tp.kind
+    local fs = ({ plain = s.label, dur = s.duration, count = s.count, name = s.name })[kind]
+    StyleTextLike(fs, region, data, att.button, kind ~= "plain")
+    local c = data.color or { 1, 1, 1, 1 }
+    if kind == "plain" then
+      fs:SetText(HasSymbols(tp) and TextWith(tp, plan, function() return "" end) or PlainText(region, data))
+      fs:Show()
+    elseif kind == "dur" then
+      -- the duration text's colour is the engine's: a constant colour curve carries WA's
+      local P = (Enum and Enum.DurationTextBindingProperty) or {}
+      local opts = {}
+      if C_CurveUtil and CreateColor then
+        opts.textColor = { curve = ConstantColorCurve(c), property = P.RemainingDuration or 0 }
+      end
+      if not (tp.pure and tp.parts[1].key == "p") then
+        local fmt, comps = AuraDurationFormatter(), {}
+        local formatString = TextWith(tp, plan, function(key)
+          comps[#comps + 1] = { property = key == "t" and (P.TotalDuration or 4) or (P.RemainingDuration or 0), formatter = fmt }
+          return "{}"
+        end)
+        if fmt then opts.textFormat = { formatString = formatString, components = comps } end
+      end
+      pcall(att.button.SetDurationText, att.button, s.duration, opts)
+    elseif kind == "count" then
+      local f
+      if not tp.pure then
+        local whole = TextWith(tp, plan, function() return "\1" end)
+        local at = whole:find("\1", 1, true)
+        f = StackFormatter(whole:sub(1, at - 1), whole:sub(at + 1))
+      end
+      pcall(att.button.SetApplicationCount, att.button, s.count, f and { formatter = f } or nil)
+      fs:SetTextColor(c[1] or 1, c[2] or 1, c[3] or 1, c[4] or 1)
+    else
+      fs:SetTextColor(c[1] or 1, c[2] or 1, c[3] or 1, c[4] or 1)
+    end
+    if kind ~= "plain" then s.label:Hide() end
+    if kind == "dur" then s.duration:Show() else s.duration:Hide() end -- Shown is not secret on it
+    s.count:SetAlpha(kind == "count" and 1 or 0)                      -- Shown IS secret on these two
+    s.name:SetAlpha(kind == "name" and 1 or 0)
+    MirrorTexts(att, region, data, false)
+    ApplyFoundGlow(att, region, data, plan)
+    pcall(att.button.EnableMouseMotion, att.button, data.useTooltip and true or false)
+  end
+
+  -- plain text in the Missing clip; created in place, like everything in these clips
+  function StyleUnderlayText(att, region, data, plan)
+    local s = att.shadows
+    if not s.underText then s.underText = s.clip:CreateFontString(nil, "OVERLAY", "GameFontHighlight") end
+    StyleTextLike(s.underText, region, data, att.host, false)
+    local tp = TextPlan(data)
+    s.underText:SetText((tp and HasSymbols(tp)) and TextWith(tp, plan, function() return "" end) or PlainText(region, data))
+    s.underText:Show()
+  end
+
+  -- A Missing text is clipped by a frame the size of the display. WA sizes a Text display from its own
+  -- text when it is set up, and that can come out as nothing (seen in game 2026-10-01/02: an OUTLINE|SLUG
+  -- text, a degenerate clip, the text never hidden). So the engine measures its own copy and gives the
+  -- host that size, anchored where WA anchors its text (the justify point). Found texts need no clip
+  -- and keep the display's rect.
+  function FitTextHost(att, region, data, plan)
+    local host = att.host
+    if plan.mode ~= "missing" then
+      if att.textW then
+        att.textW, att.textH = nil, nil
+        pcall(function() host:ClearAllPoints(); host:SetAllPoints(region) end)
+      end
+      return
+    end
+    local s = att.shadows
+    if not s.measure then s.measure = host:CreateFontString(nil, "OVERLAY", "GameFontHighlight") end
+    -- invisible by colour (set after the styling, which colours it), without outline or shadow
+    StyleTextLike(s.measure, region, data, host, false)
+    local font, size = s.measure:GetFont()
+    if font then s.measure:SetFont(font, size, "") end
+    s.measure:SetTextColor(1, 1, 1, 0)
+    s.measure:SetShadowColor(0, 0, 0, 0)
+    local tp = TextPlan(data)
+    s.measure:SetText((tp and HasSymbols(tp)) and TextWith(tp, plan, function() return "" end) or PlainText(region, data))
+    local w = data.automaticWidth == "Fixed" and (tonumber(data.fixedWidth) or 200) or s.measure:GetStringWidth()
+    local h = s.measure:GetStringHeight()
+    if issecretvalue(w) or issecretvalue(h) or not w or not h then return end
+    w, h = math.max(math.ceil(w), 1), math.max(math.ceil(h), 1)
+    if w == att.textW and h == att.textH then return end
+    local justify = data.justify or "LEFT"
+    local ok = pcall(function()
+      host:ClearAllPoints()
+      host:SetPoint(justify, region, justify)
+      host:SetSize(w, h)
+    end)
+    if ok then att.textW, att.textH = w, h end
+  end
+end
+
 local function ApplySlotLook(att, region, data, plan)
+  if att.isText then return ApplyTextLook(att, region, data, plan) end
   if att.isPic then return ApplyPicLook(att, region, data, plan) end
   if att.isBar then return ApplyBarLook(att, region, data, plan) end
   if att.isTex then return ApplyTexLook(att, region, data, plan) end
@@ -1977,7 +2384,11 @@ end
 -- The underlay copies the WA icon's static look.
 local function ApplyUnderlayLook(att, region, data, plan, noGlow)
   local u = att.shadows.underlay
-  if att.isPic then
+  if att.isText then
+    -- plain text in the Missing clip; created in place, like everything in these clips
+    StyleUnderlayText(att, region, data, plan)
+    u:SetAlpha(0)
+  elseif att.isPic then
     CopyPictureLook(u, region, data)
   else
     local tex = DisplayTexture(data, plan.firstId)
@@ -2017,6 +2428,7 @@ function Engine.OnLayout(region)          -- after every ApplyFrameLevel (Expand
   if att.isBar then SetBarVisuals(region, false)
   elseif att.isTex then SetTexVisuals(region, false)
   elseif att.isPic then SetPicVisuals(region, false)
+  elseif att.isText then SetTextVisuals(region, false)
   elseif (att.kind == "group" or att.kind == "composite") and region.icon then region.icon:Hide() end
   if att.kind == "composite" and att.want and att.want.parts and att.want.parts.found and region.icon then region.icon:Hide() end
 end
@@ -2526,6 +2938,7 @@ local function TurnOff(att, region, data, mode)
   if att.isBar then SetBarVisuals(region, true)
   elseif att.isTex then SetTexVisuals(region, true)
   elseif att.isPic then SetPicVisuals(region, true)
+  elseif att.isText then SetTextVisuals(region, true)
   elseif region.icon then region.icon:Show() end
   SetMirroredShown(att, true)
   ClearSounds(att)
@@ -2548,6 +2961,7 @@ local function ApplyUnguarded(region)
   end
 
   if not att.host then att.host, att.container = BuildHost(region) end
+  if att.isText then FitTextHost(att, region, data, plan) end
   local c = att.container
   local kind = plan.parts and "composite" or ((plan.mode == "missing") and "group" or "slot")
   if att.kind and att.kind ~= kind then DisableKind(att, att.kind) end
@@ -2570,7 +2984,9 @@ local function ApplyUnguarded(region)
     end
   elseif kind == "group" then
     local w, h = RegionSize(region)
-    if not EnsureGroup(att, region, plan, ClipMargin(w, h, data, GlowSpec(data))) then TurnOff(att, region, data, "off"); return end
+    local m = ClipMargin(w, h, data, GlowSpec(data))
+    if att.isText then m = math.max(m, 3) end      -- the outline reaches past the measured text
+    if not EnsureGroup(att, region, plan, m) then TurnOff(att, region, data, "off"); return end
   else
     if not EnsureComposite(att, region, data, plan) then TurnOff(att, region, data, "off"); return end
   end
@@ -2591,6 +3007,7 @@ local function ApplyUnguarded(region)
   if att.isBar then SetBarVisuals(region, false)
   elseif att.isTex then SetTexVisuals(region, false)
   elseif att.isPic then SetPicVisuals(region, false)
+  elseif att.isText then SetTextVisuals(region, false)
   else region.icon:SetShown(plan.mode == "always") end
   if region.tooltipFrame then region.tooltipFrame:EnableMouseMotion(false) end
   if kind == "slot" then pcall(att.button.SetFrameLevel, att.button, c:GetFrameLevel()) end
@@ -2602,7 +3019,7 @@ local function ApplyUnguarded(region)
     local sh = att.shadows
     pcall(sh.bar.SetFrameLevel, sh.bar, c:GetFrameLevel() + 1)
     pcall(sh.texts.SetFrameLevel, sh.texts, c:GetFrameLevel() + 2)
-  elseif att.isPic and kind == "slot" and att.shadows.texts then
+  elseif (att.isPic or att.isText) and kind == "slot" and att.shadows.texts then
     pcall(att.shadows.texts.SetFrameLevel, att.shadows.texts, c:GetFrameLevel() + 2)
   elseif att.isTex and att.shadows.texClip then         -- texture under texts, both above the button
     local sh = att.shadows
@@ -2701,6 +3118,13 @@ local function ComputeSig(region, data, plan)
     end
     local wa = region.texture and region.texture.texture
     if wa and wa.GetTexCoord then parts[#parts + 1] = table.concat({ wa:GetTexCoord() }, ",") end
+  elseif data.regionType == "text" then
+    for _, k in ipairs({ "displayText", "font", "fontSize", "outline", "justify", "automaticWidth", "fixedWidth",
+                         "wordWrap", "shadowXOffset", "shadowYOffset" }) do
+      parts[#parts + 1] = tostring(data[k])
+    end
+    parts[#parts + 1] = table.concat(data.shadowColor or {}, ",")
+    if region.text and TextKind(data) == "plain" then parts[#parts + 1] = PlainText(region, data) end
   end
   for _, sub in ipairs(data.subRegions or {}) do
     if sub.type == "subtext" then
@@ -2739,7 +3163,7 @@ function Engine.Sync(region, data)
   local att = attachments[region]
   if not att then
     att = { region = region, shadows = {}, isBar = data.regionType == "aurabar", isTex = data.regionType == "progresstexture",
-            isPic = data.regionType == "texture" }
+            isPic = data.regionType == "texture", isText = data.regionType == "text" }
     attachments[region] = att
   end
   local plan = decided[data.uid]
@@ -2805,7 +3229,7 @@ icon.default.foreverEngineGlowPart = "both"  -- missing + time left: where the s
 icon.default.foreverEngineSelfDebuff = false  -- debuffs on yourself: match any own debuff by duration
 icon.default.foreverEngineSelfDebuffMax = ""  -- its longest duration in seconds (blank = as seen)
 
-for _, rt in ipairs({ "aurabar", "progresstexture", "texture" }) do
+for _, rt in ipairs({ "aurabar", "progresstexture", "texture", "text" }) do
   local regionType = Private.regionTypes and Private.regionTypes[rt]
   if regionType and regionType.modify and regionType.default then
     regionType.default.foreverEngine = true
