@@ -46,7 +46,7 @@ Forever runs on the modern engine with its "secret values" system: the moment yo
 - **Resource bars** (mana, rage, energy) with **hide when full** and **colour below a threshold**.
 - A **Five Second Rule** timer for mana users.
 - **Spell ranks**: auras set up by name follow your ranks as you level.
-- **Imports**: WeakAuras export strings import as usual; texture paths from WeakAuras and its forks are pointed at EverAuras' own copy.
+- **Imports**: WeakAuras and M33kAuras export strings import as usual; texture paths from WeakAuras and its forks are pointed at EverAuras' own copy, and custom code that uses old API names (GetItemInfo, GetSpellInfo ...) works on Forever too.
 
 Custom-code auras that compare values Blizzard keeps secret (for example your current mana) cannot work in combat on Forever; EverAuras tells you which ones, instead of flooding BugSack.
 

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.8.9-alpha (2026-10-05)
+
+- **Dynamic Groups follow a new target.** After switching between dotted targets, a packed group could
+  put a DoT one place too far, or leave a gap, until combat ended: the game's aura containers do not
+  notice that "target" now means another unit, and EverAuras refreshed the icons but not the hidden
+  chain that places them. Both are refreshed now (target, focus and pet). A group set up again while
+  nothing is targeted also keeps its packing instead of falling back to fixed places.
+- **Old API names work in imported auras.** The Forever client has no fallbacks for API functions that
+  moved, so custom code written for other clients stopped at the first one (`GetItemInfo` in a currency
+  tracker from wago). Inside aura code only, `GetItemInfo`, `GetItemCount`, `GetItemInfoInstant`,
+  `GetItemQualityColor`, `GetItemIcon`, `GetItemSpell`, `GetDetailedItemLevelInfo`, `IsEquippedItem`,
+  `GetSpellInfo`, `GetSpellCooldown`, `GetSpellCharges`, `GetSpellTexture`, `GetSpellLink`,
+  `GetSpellDescription`, `IsUsableSpell`, `GetCurrencyInfo`, `IsAddOnLoaded` and `GetAddOnMetadata` now
+  fall back to their modern homes, with the old return values. A real global of that name always wins.
+- **Auras made in current M33kAuras import.** M33kAuras moved to a newer internal data version, and
+  EverAuras refused its export strings as "made with a newer version". They import now. EverAuras does not
+  have M33kAuras' new *Ruleset* load option yet: an aura limited to Hardcore or PvP realms loads
+  everywhere. Reported by Metz. Thanks!
+
 ## 0.8.8-alpha (2026-10-02)
 
 - **Dynamic Groups that close up in combat.** When every child of a Dynamic Group is an engine-driven
