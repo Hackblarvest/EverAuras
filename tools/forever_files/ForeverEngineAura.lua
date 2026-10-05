@@ -3115,7 +3115,8 @@ do
       local r = RegionOf(id)
       if r and r:IsShown() and Rect(r) then first = first or r; last = r end
     end
-    if not first then return false end
+    -- nothing shown (no target): the chain keeps the place it was given last time
+    if not first then return st.ref ~= nil end
     st.ref = first
     local fl, fb = Rect(first)
     local ll, lb, lw, lh = Rect(last)
@@ -3207,18 +3208,25 @@ do
     local link = st.links[id]
     local rl, rb, _, rh = Rect(region)
     local fl, fb, _, fh = Rect(st.ref)
-    if not (rl and fl) then return false end
+    -- across the chain: WA's own offset from the chain's start (its alignment); kept from last time
+    -- while the display or the start is not shown (no target)
+    local cross
+    if rl and fl and region:IsShown() and st.ref:IsShown() then
+      cross = gp.axis == "x" and ((rb + rh) - (fb + fh)) or (rl - fl)
+      att.dynCross = cross
+    else
+      cross = att.dynCross
+    end
+    if not cross then return false end
     local host = att.host
     host:ClearAllPoints()
     host:SetSize(w, h)
     if gp.axis == "x" then
-      local dy = (rb + rh) - (fb + fh)
-      if gp.sign > 0 then host:SetPoint("TOPLEFT", link, "TOPLEFT", 1, dy)
-      else host:SetPoint("TOPRIGHT", link, "TOPRIGHT", -1, dy) end
+      if gp.sign > 0 then host:SetPoint("TOPLEFT", link, "TOPLEFT", 1, cross)
+      else host:SetPoint("TOPRIGHT", link, "TOPRIGHT", -1, cross) end
     else
-      local dx = rl - fl
-      if gp.sign > 0 then host:SetPoint("BOTTOMLEFT", link, "BOTTOMLEFT", dx, 1)
-      else host:SetPoint("TOPLEFT", link, "TOPLEFT", dx, -1) end
+      if gp.sign > 0 then host:SetPoint("BOTTOMLEFT", link, "BOTTOMLEFT", cross, 1)
+      else host:SetPoint("TOPLEFT", link, "TOPLEFT", cross, -1) end
     end
     return true
   end
@@ -3243,19 +3251,26 @@ do
     local any = false
     for _, p in ipairs(pts) do if OnWA(att, region, p[2]) then any = true end end
     if not any then return end
+    att.rebasedPts = att.rebasedPts or setmetatable({}, { __mode = "k" })
     local gl, gb = Rect(region)
-    if not gl then return end
     local out = {}
     for i, p in ipairs(pts) do
+      if not out then break end
       if OnWA(att, region, p[2]) then
         local l, b, w, h = Rect(p[2])
-        if not l then return end
-        local fr = FRAC[tostring(p[3] or p[1]):upper()] or FRAC.CENTER
-        out[i] = { p[1], att.host, "BOTTOMLEFT", l - gl + fr[1] * w + (p[4] or 0), b - gb + fr[2] * h + (p[5] or 0) }
+        if gl and l and region:IsShown() then
+          local fr = FRAC[tostring(p[3] or p[1]):upper()] or FRAC.CENTER
+          out[i] = { p[1], att.host, "BOTTOMLEFT", l - gl + fr[1] * w + (p[4] or 0), b - gb + fr[2] * h + (p[5] or 0) }
+        else
+          out = nil                                    -- not laid out (hidden): as worked out last time
+        end
       else
         out[i] = p
       end
     end
+    out = out or att.rebasedPts[obj]
+    if not out then return end
+    att.rebasedPts[obj] = out
     obj:ClearAllPoints()
     for _, p in ipairs(out) do obj:SetPoint(p[1], p[2], p[3], p[4] or 0, p[5] or 0) end
     att.rebased = att.rebased or {}
@@ -3404,6 +3419,18 @@ do
   end
 
   Engine.DynPlan, Engine.DynNote = Dyn.Plan, Dyn.Note   -- for the tests
+
+  -- A container does not refresh itself when its unit token points at another unit (a new target):
+  -- the links and totals of every chain on that unit are told, like the display slots. Missed, a link
+  -- kept the old target's aura and its child's successors sat one place too far (seen 2026-10-03/04).
+  function Dyn.UpdateUnit(unit)
+    for _, st in pairs(states) do
+      for id, rec in pairs(st.lg) do
+        if unit == nil or rec.unit == unit then pcall(st.links[id].UpdateAllAuras, st.links[id]) end
+      end
+      if st.total and (unit == nil or st.totalUnit == unit) then pcall(st.total.UpdateAllAuras, st.total) end
+    end
+  end
 
   -- A child that could not be placed (its group not shown yet) tries again once WA shows it, a few times.
   local onLayout = Engine.OnLayout
@@ -4042,6 +4069,7 @@ ev:SetScript("OnEvent", function(_, event, arg1)
   end
   local unit = REFRESH[event]
   if unit then LearnFromUnit(unit) end
+  if unit or event == "PLAYER_ENTERING_WORLD" then pcall(Dyn.UpdateUnit, unit) end
   for _, att in pairs(attachments) do
     -- Inbound secure delegate, PoC-verified in combat. The container refreshes itself only on
     -- UNIT_AURA/UNIT_FACTION/UNIT_FLAGS/PLAYER_REGEN_*; unit swaps are our job.
