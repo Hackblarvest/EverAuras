@@ -258,6 +258,15 @@ end
          "    -- Forever has neither API: answer 'no loss of control' instead of erroring\n    local getLoC = (C_Spell and C_Spell.GetSpellLossOfControlCooldown) or GetSpellLossOfControlCooldown\n    if getLoC then\n      return getLoC(identifier)\n    end\n"),
     ],
     "M33kAuras/M33kAuras.lua": [
+        # Import of auras made in current M33kAuras: version 90 there only turns its Hardcore load into a
+        # 'ruleset' load. This build's load options keep Hardcore and ignore 'ruleset', so their data is
+        # safe to take. Refused as 'made with a newer version' before (Metz on Discord, 2026-10-05).
+        # When rebasing onto an upstream with that step: auras saved here at 90 skip it (keep use_hardcore).
+        ("local internalVersion = 89\n",
+         "-- Forever: 90 is M33kAuras' Hardcore -> ruleset load option; nothing to convert in this build (its\n"
+         "-- load options keep Hardcore and ignore 'ruleset'), but auras exported from M33kAuras carry 90 and\n"
+         "-- were refused on import as made with a newer version.\n"
+         "local internalVersion = 90\n"),
         ("local function scanForLoadsImpl(toCheck, event, arg1, ...)\n",
          "-- Forever: the load function's parameter list is built from Private.load_prototype (only the\n-- args whose init is \"arg\" for THIS flavour), but upstream keeps one retail-shaped call below.\n-- Forever is neither retail (BuildInfo 16001) nor classic, so the two lists differ and every value\n-- after 'encounter' lands in the wrong parameter: Player Class, Mounted, Zone ... all broken.\n-- Build the argument list from the prototype instead, so they can never disagree.\nlocal function BuildLoadArgs(values)\n  local args, n = {}, 0\n  for _, arg in ipairs(Private.load_prototype.args) do\n    if arg.init == \"arg\" then\n      n = n + 1\n      args[n] = values[arg.name]\n    end\n  end\n  args.n = n\n  return args\nend\n\nlocal function scanForLoadsImpl(toCheck, event, arg1, ...)\n"),
         ("      shouldBeLoaded = loadFunc and loadFunc(\"ScanForLoads_Auras\", inCombat, alive, inEncounter, warmodeActive, inPetBattle, vehicle, vehicleUi, dragonriding, mounted, addonRestrictionsActive, specId, player, realm, guild, race, faction, playerLevel, effectiveLevel, role, position, group, groupSize, raidMemberType, zone, zoneId, zonegroupId, instanceId, minimapText, encounter_id, size, difficulty, difficultyIndex, affixes)\n      couldBeLoaded =  loadOpt and loadOpt(\"ScanForLoads_Auras\",   inCombat, alive, inEncounter, warmodeActive, inPetBattle, vehicle, vehicleUi, dragonriding, mounted, addonRestrictionsActive, specId, player, realm, guild, race, faction, playerLevel, effectiveLevel, role, position, group, groupSize, raidMemberType, zone, zoneId, zonegroupId, instanceId, minimapText, encounter_id, size, difficulty, difficultyIndex, affixes)\n",
@@ -307,7 +316,7 @@ CHECKS = {
                                  "return Private.ExecEnv.IsSpellKnown(baseSpell, pet)",
                                  "ready = M33kAuras.IsSpellReady(effectiveSpellId)"],
     "M33kAuras/Init.lua": ["M33kAurasSaved.migrationDisabled = true"],
-    "M33kAuras/M33kAuras.lua": ["unpack(loadArgs, 1, loadArgs.n)", "Private.ForeverSecretCustomError(data, currentErrorHandlerContext, errorMessage)",
+    "M33kAuras/M33kAuras.lua": ["local internalVersion = 90\n", "unpack(loadArgs, 1, loadArgs.n)", "Private.ForeverSecretCustomError(data, currentErrorHandlerContext, errorMessage)",
                                 "if foreverSecretForwarded[key] then return end"],
     "M33kAuras/Compatibility.lua": ["Private.ExecEnv.IsCurrentSpell = C_Spell.IsCurrentSpell",
                                     "Private.ExecEnv.IsSpellKnown = function(spellID, isPet)",
