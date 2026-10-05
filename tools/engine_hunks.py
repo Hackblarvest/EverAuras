@@ -179,6 +179,76 @@ CORE_HUNKS = {
         ("    return C_SpellBook.IsSpellKnown(spellID, banks and (isPet and banks.Pet or banks.Player) or nil)\n  end\nend\n",
          '    return C_SpellBook.IsSpellKnown(spellID, banks and (isPet and banks.Pet or banks.Player) or nil)\n  end\nend\n\n-- Forever: Shaman imbues (Rockbiter, Windfury ...) are their own enchant type\n-- (Enum.ItemEnchantType.Imbue), which only C_Item.GetWeaponEnchantInfo reports. The legacy\n-- GetWeaponEnchantInfo() and C_PaperDollInfo see temporary enchants (stones, oils, poisons) only\n-- (measured 2026-09-27: Rockbiter = type 3, a Sharpening Stone = type 2). Same return shape as the\n-- legacy call: has, ms left, charges, enchant id for main hand, off hand and ranged.\nif C_Item and C_Item.GetWeaponEnchantInfo then\n  local types = Enum.ItemEnchantType or {}\n  local TEMPORARY, IMBUE = types.Temporary or 2, types.Imbue or 3\n  local function plain(v, default)\n    if issecretvalue(v) then return default end\n    return v\n  end\n  local function slotInfo(weaponSlot)\n    local ok, list = pcall(C_Item.GetWeaponEnchantInfo, weaponSlot)\n    if ok and type(list) == "table" then\n      for _, e in ipairs(list) do\n        local kind = plain(e.enchantType, nil)\n        if plain(e.hasEnchant, false) and (kind == TEMPORARY or kind == IMBUE) then\n          return true, plain(e.timeLeft, 1000), plain(e.charges, 0), plain(e.enchantID, 0)\n        end\n      end\n    end\n    return false, nil, nil, nil\n  end\n  local slots = Enum.WeaponSlot or {}\n  Private.ExecEnv.GetWeaponEnchantInfo = function()\n    local a1, a2, a3, a4 = slotInfo(slots.MainHand or 0)\n    local b1, b2, b3, b4 = slotInfo(slots.OffHand or 1)\n    local c1, c2, c3, c4 = slotInfo(slots.Ranged or 2)\n    return a1, a2, a3, a4, b1, b2, b3, b4, c1, c2, c3, c4\n  end\nelse\n  Private.ExecEnv.GetWeaponEnchantInfo = GetWeaponEnchantInfo\nend\n'),
     ],
+    # Custom code written for other clients calls old global names (GetItemInfo, GetSpellInfo ...) that
+    # the Forever client does not have: it ships no deprecated-API fallbacks. Inside aura code only, a
+    # missing old name falls back to its modern home; a real global of that name always wins.
+    "M33kAuras/AuraEnvironment.lua": [
+        ("  M33kAuras = FakeM33kAuras,\n  WeakAuras = FakeM33kAuras,\n}\n",
+         "  M33kAuras = FakeM33kAuras,\n  WeakAuras = FakeM33kAuras,\n}\n" + """
+-- Forever: the client ships no deprecated-API fallbacks, so custom code written for other clients
+-- stops at the first old global name (seen 2026-10-05: GetItemInfo in a currency tracker from wago).
+-- Inside aura code only, a missing old name falls back to its modern home, with the old return
+-- values. A real global of that name always wins.
+do
+  local function plain(v, f)
+    if issecretvalue and issecretvalue(v) then return v end
+    return f(v)
+  end
+  local compat = {
+    GetItemInfo = C_Item and C_Item.GetItemInfo,
+    GetItemInfoInstant = C_Item and C_Item.GetItemInfoInstant,
+    GetItemCount = C_Item and C_Item.GetItemCount,
+    GetItemQualityColor = C_Item and C_Item.GetItemQualityColor,
+    GetItemIcon = C_Item and C_Item.GetItemIconByID,
+    GetItemSpell = C_Item and C_Item.GetItemSpell,
+    GetDetailedItemLevelInfo = C_Item and C_Item.GetDetailedItemLevelInfo,
+    IsEquippedItem = C_Item and C_Item.IsEquippedItem,
+    GetSpellTexture = C_Spell and C_Spell.GetSpellTexture,
+    GetSpellLink = C_Spell and C_Spell.GetSpellLink,
+    GetSpellDescription = C_Spell and C_Spell.GetSpellDescription,
+    IsUsableSpell = C_Spell and C_Spell.IsSpellUsable,
+    IsAddOnLoaded = C_AddOns and C_AddOns.IsAddOnLoaded,
+    GetAddOnMetadata = C_AddOns and C_AddOns.GetAddOnMetadata,
+  }
+  if C_Spell and C_Spell.GetSpellInfo then
+    -- old: name, rank, icon, castTime, minRange, maxRange, spellID, originalIcon
+    compat.GetSpellInfo = function(spell)
+      local i = C_Spell.GetSpellInfo(spell)
+      if type(i) ~= "table" then return nil end
+      return i.name, nil, i.iconID, i.castTime, i.minRange, i.maxRange, i.spellID, i.originalIconID
+    end
+  end
+  if C_Spell and C_Spell.GetSpellCooldown then
+    -- old: start, duration, enabled (1/0), modRate
+    compat.GetSpellCooldown = function(spell)
+      local c = C_Spell.GetSpellCooldown(spell)
+      if type(c) ~= "table" then return nil end
+      return c.startTime, c.duration, plain(c.isEnabled, function(e) return e and 1 or 0 end), c.modRate
+    end
+  end
+  if C_Spell and C_Spell.GetSpellCharges then
+    -- old: charges, maxCharges, start, duration, modRate
+    compat.GetSpellCharges = function(spell)
+      local c = C_Spell.GetSpellCharges(spell)
+      if type(c) ~= "table" then return nil end
+      return c.currentCharges, c.maxCharges, c.cooldownStartTime, c.cooldownDuration, c.chargeModRate
+    end
+  end
+  if C_CurrencyInfo and C_CurrencyInfo.GetCurrencyInfo then
+    -- old: name, amount, texture, earnedThisWeek, weeklyMax, totalMax, isDiscovered, rarity
+    compat.GetCurrencyInfo = function(id)
+      local c = C_CurrencyInfo.GetCurrencyInfo(id)
+      if type(c) ~= "table" then return nil end
+      return c.name, c.quantity, c.iconFileID, c.quantityEarnedThisWeek, c.maxWeeklyQuantity, c.maxQuantity,
+        c.discovered, c.quality
+    end
+  end
+  for name, fn in pairs(compat) do
+    if fn and _G[name] == nil and overridden[name] == nil then overridden[name] = fn end
+  end
+end
+"""),
+    ],
     "M33kAuras/GenericTrigger.lua": [
         ('        _, mh_rem, mh_charges, mh_EnchantID, _, oh_rem, oh_charges, oh_EnchantID, _, rw_rem, rw_charges, rw_EnchantID = GetWeaponEnchantInfo();\n',
          '        -- Forever: through the shim in Compatibility.lua, which also sees Shaman imbues\n        _, mh_rem, mh_charges, mh_EnchantID, _, oh_rem, oh_charges, oh_EnchantID, _, rw_rem, rw_charges, rw_EnchantID = Private.ExecEnv.GetWeaponEnchantInfo();\n'),
@@ -242,6 +312,8 @@ CHECKS = {
     "M33kAuras/Compatibility.lua": ["Private.ExecEnv.IsCurrentSpell = C_Spell.IsCurrentSpell",
                                     "Private.ExecEnv.IsSpellKnown = function(spellID, isPet)",
                                     "Private.ExecEnv.GetWeaponEnchantInfo = function()"],
+    "M33kAuras/AuraEnvironment.lua": ["compat.GetSpellInfo = function(spell)",
+                                      "if fn and _G[name] == nil and overridden[name] == nil then overridden[name] = fn end"],
     "M33kAuras/GenericTrigger.lua": ["if maxRank and Private.ExecEnv.IsCurrentSpell(maxRank) then",
                                      "local getLoC = (C_Spell and C_Spell.GetSpellLossOfControlCooldown)",
                                      "= Private.ExecEnv.GetWeaponEnchantInfo();"],
