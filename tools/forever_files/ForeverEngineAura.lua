@@ -654,7 +654,7 @@ local function AnalyseAuraTrigger(t, no, data)
     end
   elseif #sorted == 0 then
     if #unresolved > 0 then
-      no(T("'%s' is not one of your spells; the engine takes over once this aura has been seen once out of combat"):format(table.concat(unresolved, ", ")))
+      no(T("'%s' is not one of your spells and has not been seen as an aura yet (a name cannot be looked up before that); the engine takes over the first time it is seen out of combat"):format(table.concat(unresolved, ", ")))
     else
       no(T("use 'Exact Spell ID(s)' or a spell Name with at least one entry"))
     end
@@ -663,7 +663,7 @@ local function AnalyseAuraTrigger(t, no, data)
     -- the aura has been seen: self and friendly buffs often carry a different id than the spell.
     local hostileDebuff = (filter == "HARMFUL") and (unit == "target" or unit == "focus")
     if #unresolved > 0 then
-      no(T("'%s' is not one of your spells; the engine takes over once this aura has been seen once out of combat"):format(table.concat(unresolved, ", ")))
+      no(T("'%s' is not one of your spells and has not been seen as an aura yet (a name cannot be looked up before that); the engine takes over the first time it is seen out of combat"):format(table.concat(unresolved, ", ")))
     elseif #unseen > 0 and not hostileDebuff then
       no(T("'%s' has not been seen as a real aura yet; the engine takes over the first time it is seen out of combat"):format(table.concat(unseen, ", ")))
     end
