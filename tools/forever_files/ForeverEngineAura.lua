@@ -901,9 +901,6 @@ end
 
 local function TextureFollowsAura(data, no)
   if IsCircular(data) then
-    if (tonumber(data.startAngle) or 0) % 360 ~= (tonumber(data.endAngle) or 360) % 360 then
-      no(T("circular Progress Textures that draw part of a circle (Start / End Angle) are not engine-driven yet"))
-    end
     local fg = data.foregroundTexture
     if type(fg) == "string" and C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo(fg) then
       no(T("circular Progress Textures need a texture file, not an atlas"))
@@ -1263,12 +1260,13 @@ function Engine.Explain(data, plan, reasons)
                                          or T("while the aura is present and nothing while it is absent")
       txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows your texture %s. Kept: position, size, groups, texture, colour, rotation, mirror, desaturate, blend mode, %%p/%%s/%%n texts, the glow (shown only while the texture is, animated like WeakAuras' own). Not drawn: the border (hidden while engine-driven). Not available: conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
         :format(plan.unit, plan.filterString, when)
+    elseif data.regionType == "progresstexture" and Engine.UsesArcPieces(data) then
+      local n, step = Engine.ArcPieces(data)
+      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows the texture while the aura is present and its arc runs out the way WeakAuras' own does as the aura runs out (grows with 'Inverse'), in %d steps of %s degrees: frames that follow the game's timer bar show the arc piece by piece, so the time left never has to be read. Kept: position, size, groups, textures, colours, desaturate, blend mode, crop, mirror, rotation, legacy rotation, start and end angle, the direction, the background, %%p/%%s/%%n texts, the glow (shown only while the texture is, animated like WeakAuras' own). Not drawn: additional progress and the border (hidden while engine-driven). Not available: conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
+        :format(plan.unit, plan.filterString, n, ("%.1f"):format(step))
     elseif data.regionType == "progresstexture" and IsCircular(data) then
       txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows the texture while the aura is present and the game's cooldown swipe sweeps it away as the aura runs out (draws the time gone with 'Inverse'); the game checks the time left itself, so it never has to be read. Kept: position, size, groups, textures, colours, crop, mirror, rotation, start angle, the background, %%p/%%s/%%n texts, the glow (shown only while the texture is, animated like WeakAuras' own). Not drawn on the sweeping part: desaturate, blend mode, legacy rotation. Not drawn: additional progress and the border (hidden while engine-driven). Not available: conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
         :format(plan.unit, plan.filterString)
-      if not Engine.SwipeMatchesDirection(data) then
-        txt = txt .. " " .. T("|cffff9933Note:|r the game's swipe only moves clockwise, so this texture runs out the mirror way of WeakAuras' own. 'Anticlockwise' (or 'Clockwise' with 'Inverse') matches exactly.")
-      end
     elseif data.regionType == "progresstexture" then
       txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows the texture while the aura is present and empties it as the aura runs out (fills it with 'Inverse'); the game checks the time left itself, so it never has to be read. Kept: position, size, groups, textures, colours, desaturate, blend mode, crop, rotation, mirror, 'Compress', the background, %%p/%%s/%%n texts, the glow (shown only while the texture is, animated like WeakAuras' own). Not drawn: slanted ends (drawn straight), additional progress and the border (hidden while engine-driven). Not available: conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
         :format(plan.unit, plan.filterString)
@@ -2042,10 +2040,10 @@ end
 -- with the aura's time left (geometry driven by a value we cannot read, like the Missing clip). Inside
 -- the clip sits a copy of WA's foreground at full progress, with WA's own texture coordinates (crop,
 -- rotation, mirror), so the clip reveals it the way WA's vertex offsets do; 'Compress' squeezes the copy
--- into the fill instead. Circular ones: the game's cooldown swipe on the same button, drawn with the
--- display's texture. Its edge only ever moves clockwise, so 'Anticlockwise' (and 'Clockwise' + 'Inverse')
--- match WA exactly and the other two run out the mirror way. The background is drawn whole. WA's own
--- textures are hidden (alpha, which WA never touches on them) while the display is engine-driven.
+-- into the fill instead. Full circles: the game's cooldown swipe on the same button, drawn with the
+-- display's texture. Its edge only ever moves clockwise, so it draws 'Anticlockwise' (and 'Clockwise' +
+-- 'Inverse'); the other two, and part circles, are arc pieces revealed by the same bar (Engine.StyleArc).
+-- The background is drawn whole. WA's own textures are hidden (alpha, which WA never touches on them) while the display is engine-driven.
 local TEX_FILL = { HORIZONTAL = { "HORIZONTAL", false }, HORIZONTAL_INVERSE = { "HORIZONTAL", true },
                    VERTICAL = { "VERTICAL", false }, VERTICAL_INVERSE = { "VERTICAL", true } }
 
@@ -2106,6 +2104,138 @@ local function StyleSwipe(swipe, data)
   pcall(swipe.SetReverse, swipe, data.inverse and true or false)
 end
 
+-- Circular Progress Textures the swipe cannot draw: part circles (Start / End Angle), and full circles
+-- that WA drains the other way round than the swipe. The invisible StatusBar is laid out W px wide with
+-- its right end at the button's centre, so its fill edge travels W px over the aura's duration. WA's arc
+-- is cut into N pieces, each in its own clipping frame that ends o_j px right of the fill edge: the frame
+-- covers the button while the fill is above (j + 0.5) / N and lies left of it below. So the arc grows and
+-- shrinks piece by piece, driven by a value we never read, in any direction. Each piece is WA's own wedge
+-- (TextureCoords:SetAngle, as its spinner draws them); the background is a WA spinner with the whole arc.
+do
+  local MAX_PIECES = 144
+
+  -- WA's arc: start and end angle clockwise from the top, end above start, at most 360 apart
+  local function Angles(data)
+    local s = (tonumber(data.startAngle) or 0) % 360
+    local e = (tonumber(data.endAngle) or 360) % 360
+    if e <= s then e = e + 360 end
+    return s, e
+  end
+
+  function Engine.UsesArcPieces(data)
+    if not IsCircular(data) then return false end
+    local s, e = Angles(data)
+    return e - s < 360 or not Engine.SwipeMatchesDirection(data)
+  end
+
+  -- pieces small enough that the arc's end moves about 1.5 px per step (WA moves it every frame)
+  function Engine.ArcPieces(data)
+    local s, e = Angles(data)
+    local w, h = tonumber(data.width) or 64, tonumber(data.height) or 64
+    local step = math.max(1, math.deg(1.5 / math.max(1, math.max(w, h) / 2)))
+    local n = math.max(math.ceil((e - s) / 90), math.min(MAX_PIECES, math.ceil((e - s) / step)))
+    return n, (e - s) / n
+  end
+
+  local function Piece(att, s, j)
+    local p = s.arcPieces[j]
+    if p then return p end
+    local clip = CreateFrame("Frame", nil, att.button)
+    clip:SetClipsChildren(true)
+    clip:SetFrameLevel(att.button:GetFrameLevel() + 1)
+    local tex = clip:CreateTexture(nil, "ARTWORK")
+    tex:SetAllPoints(att.button)
+    pcall(tex.SetSnapToPixelGrid, tex, false)
+    pcall(tex.SetTexelSnappingBias, tex, 0)
+    p = { clip = clip, tex = tex, coord = Private.TextureCoords.create(tex) }
+    s.arcPieces[j] = p
+    return p
+  end
+
+  local function ShowArc(s, n, shown)
+    for j, p in ipairs(s.arcPieces or {}) do p.clip:SetAlpha((shown and j <= n) and 1 or 0) end
+    for _, tex in ipairs(s.arcBg and s.arcBg.textures or {}) do tex:SetAlpha(shown and 1 or 0) end
+  end
+
+  -- pieces on: lays the bar out wide and styles the arc; off: hides it and puts the bar back on the button
+  function Engine.StyleArc(att, data, on)
+    local s, button = att.shadows, att.button
+    if not on then
+      if s.arcPieces then ShowArc(s, 0, false) end
+      if att.arcW then
+        local ok = pcall(function()
+          s.bar:ClearAllPoints()
+          s.bar:SetAllPoints(button)
+        end)
+        if ok then att.arcW = nil end
+      end
+      return
+    end
+    s.arcPieces = s.arcPieces or {}
+    local a1, a2 = Angles(data)
+    local span = a2 - a1
+    local n = Engine.ArcPieces(data)
+    local w, h = tonumber(data.width) or 64, tonumber(data.height) or 64
+    -- a piece passes from hidden to shown while the fill edge moves the drawing's width (rotation
+    -- included), a quarter of a step at most
+    local ext = 1.5 * math.max(w, h)
+    local W = math.min(200000, math.max(20000, 4 * n * ext))
+    if att.arcW ~= W then
+      local ok = pcall(function()
+        s.bar:ClearAllPoints()
+        s.bar:SetPoint("TOPRIGHT", button, "TOP")
+        s.bar:SetPoint("BOTTOMRIGHT", button, "BOTTOM")
+        s.bar:SetWidth(W)
+      end)
+      if ok then att.arcW = W; att.arcH = nil end
+    end
+    pcall(s.bar.SetOrientation, s.bar, "HORIZONTAL")
+    pcall(s.bar.SetReverseFill, s.bar, false)
+    local c = data.foregroundColor or { 1, 1, 1, 1 }
+    local cropX, cropY = 1 + (tonumber(data.crop_x) or 0.41), 1 + (tonumber(data.crop_y) or 0.41)
+    local texRot, mirror = tonumber(data.rotation) or 0, data.mirror and true or false
+    local rad = (tonumber(data.auraRotation) or 0) / 180 * math.pi
+    local acw = data.orientation == "ANTICLOCKWISE"
+    local relay = att.arcH ~= h
+    for j = 1, n do
+      local p = Piece(att, s, j)
+      local lo, hi
+      if acw then lo, hi = a2 - span * j / n, a2 - span * (j - 1) / n
+      else lo, hi = a1 + span * (j - 1) / n, a1 + span * j / n end
+      local tex = p.tex
+      Private.SetTextureOrAtlas(tex, data.foregroundTexture, "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+      pcall(tex.SetDesaturated, tex, data.desaturateForeground and true or false)
+      pcall(tex.SetBlendMode, tex, data.blendMode or "BLEND")
+      pcall(tex.SetRotation, tex, rad)
+      tex:SetVertexColor(c[1] or 1, c[2] or 1, c[3] or 1, c[4] or 1)
+      p.coord:SetAngle(w, h, lo, hi)
+      p.coord:Transform(cropX, cropY, texRot, mirror, false)
+      p.coord:Apply()
+      local o = W * (1 - (j - 0.5) / n)
+      if relay or p.o ~= o then
+        local ok = pcall(function()
+          p.clip:ClearAllPoints()
+          p.clip:SetPoint("TOPLEFT", s.bar, "TOPLEFT", 0, h)
+          p.clip:SetPoint("BOTTOMRIGHT", s.fill, "BOTTOMRIGHT", o, -h)
+        end)
+        p.o = ok and o or nil
+      end
+    end
+    att.arcH = h
+    -- the background: WA's spinner with the whole arc
+    if not s.arcBg then s.arcBg = Private.CircularProgressTextureBase.create(button, "BACKGROUND", 1) end
+    Private.CircularProgressTextureBase.modify(s.arcBg, {
+      crop_x = cropX, crop_y = cropY, mirror = mirror, texRotation = texRot,
+      texture = data.sameTexture and data.foregroundTexture or data.backgroundTexture,
+      blendMode = data.blendMode or "BLEND", desaturated = data.desaturateBackground and true or false,
+      auraRotation = rad, width = w, height = h, offset = tonumber(data.backgroundOffset) or 2 })
+    local bc = data.backgroundColor or { 0.5, 0.5, 0.5, 0.5 }
+    s.arcBg:SetColor(bc[1] or 1, bc[2] or 1, bc[3] or 1, bc[4] or 1)
+    s.arcBg:SetProgress(a1, a2)
+    ShowArc(s, n, true)
+  end
+end
+
 local function ApplyTexLook(att, region, data, plan)
   local s = att.shadows
   local circular = IsCircular(data)
@@ -2124,22 +2254,27 @@ local function ApplyTexLook(att, region, data, plan)
     end)
     if ok then att.texBgOffset = off end
   end
+  local pieces = Engine.UsesArcPieces(data)
   s.texClip:SetAlpha(circular and 0 or 1)
-  s.swipe:SetAlpha(circular and 1 or 0)
-  if circular then
+  s.swipe:SetAlpha((circular and not pieces) and 1 or 0)
+  s.texBg:SetAlpha(pieces and 0 or 1)
+  Engine.StyleArc(att, data, pieces)
+  if circular and not pieces then
     StyleSwipe(s.swipe, data)
   else
-    local compress = data.compress and true or false
-    if att.texCompress ~= compress then
-      local ok = pcall(function()
-        s.texFg:ClearAllPoints()
-        s.texFg:SetAllPoints(compress and s.fill or att.button)
-      end)
-      if ok then att.texCompress = compress end
+    if not circular then
+      local compress = data.compress and true or false
+      if att.texCompress ~= compress then
+        local ok = pcall(function()
+          s.texFg:ClearAllPoints()
+          s.texFg:SetAllPoints(compress and s.fill or att.button)
+        end)
+        if ok then att.texCompress = compress end
+      end
+      local fill = TEX_FILL[data.orientation or "VERTICAL"] or TEX_FILL.VERTICAL
+      pcall(s.bar.SetOrientation, s.bar, fill[1])
+      pcall(s.bar.SetReverseFill, s.bar, fill[2])
     end
-    local fill = TEX_FILL[data.orientation or "VERTICAL"] or TEX_FILL.VERTICAL
-    pcall(s.bar.SetOrientation, s.bar, fill[1])
-    pcall(s.bar.SetReverseFill, s.bar, fill[2])
     -- WA drains the texture as the aura runs out unless 'Inverse'
     local dirs = Enum and Enum.StatusBarTimerDirection
     local dir = dirs and (data.inverse and dirs.ElapsedTime or dirs.RemainingTime)
