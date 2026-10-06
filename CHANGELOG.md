@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.11-alpha (2026-10-06)
+
+- **Part-circle Progress Textures that work in combat.** A circular Progress Texture with a *Start / End
+  Angle* (a half ring, a quarter ring, an arc) is now drawn with the game's aura engine. The game's cooldown
+  swipe always draws a whole circle, so the arc is cut into small pieces, about 1.5 px of arc each. Each
+  piece sits in its own frame that hangs on the edge of the invisible timer bar the engine already fills
+  for Progress Textures, so the pieces show and hide one by one as the aura runs out, without the time left
+  ever being read. Each piece is WeakAuras' own wedge, so the arc looks the same, and the background shows
+  the arc only.
+- **Rings run out the right way round.** The swipe's edge only turns clockwise, so *Clockwise* rings
+  (without *Inverse*) and *Anticlockwise* rings with *Inverse* used to run out the mirror way of
+  WeakAuras' own. They now use the same pieces and match WeakAuras exactly, with desaturate, blend mode
+  and legacy rotation kept. The other two settings keep the smooth swipe.
+
 ## 0.8.10-alpha (2026-10-06)
 
 - **Stop Motion animations that work in combat.** A Stop Motion display with an aura trigger (*Show On:

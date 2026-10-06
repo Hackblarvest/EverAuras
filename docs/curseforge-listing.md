@@ -32,7 +32,7 @@ Forever runs on the modern engine with its "secret values" system: the moment yo
 
 - **Buff and debuff auras** on you, your target, focus and pet, by spell name or spell ID, including **"show when missing"**: an icon for Serpent Sting or Corruption that disappears the moment the debuff lands.
 - **Timer bars** for DoTs and buffs, filled by the game itself.
-- **Progress Textures** for buff and debuff timers, straight or circular (rings), with your own texture, in combat too.
+- **Progress Textures** for buff and debuff timers, straight, circular (rings) or part circles (arcs), with your own texture, in combat too.
 - **Time left:** an icon that shows only while a DoT or buff has less than X seconds left, or the classic "missing or about to run out" icon for refreshing DoTs, with its countdown and a glow.
 - **Textures for procs**: show a texture while your proc or buff is up, or while it is missing.
 - **Stop Motion animations and Models** for procs and missing buffs, animating in combat too.
