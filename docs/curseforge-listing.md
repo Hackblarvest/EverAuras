@@ -35,6 +35,7 @@ Forever runs on the modern engine with its "secret values" system: the moment yo
 - **Progress Textures** for buff and debuff timers, straight or circular (rings), with your own texture, in combat too.
 - **Time left:** an icon that shows only while a DoT or buff has less than X seconds left, or the classic "missing or about to run out" icon for refreshing DoTs, with its countdown and a glow.
 - **Textures for procs**: show a texture while your proc or buff is up, or while it is missing.
+- **Stop Motion animations and Models** for procs and missing buffs, animating in combat too.
 - **Texts**: "NO DEMON SKIN!" while a buff is missing, "Corruption: 12 s" while a DoT runs, in combat too.
 - **Dynamic Groups** that close up in combat: a DoT row without holes, growing left, right, up, down or from the centre.
 - **Animated glows** (Button, Pixel, Autocast, Proc) on these icons, textures and bars, shown only while they are, also in combat, including a glow that starts when an aura has X seconds left.

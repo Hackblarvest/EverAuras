@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.8.10-alpha (2026-10-06)
+
+- **Stop Motion animations that work in combat.** A Stop Motion display with an aura trigger (*Show On:
+  Aura(s) Found* or *Missing*) is now drawn with the game's aura engine. WeakAuras steps through the
+  animation's sheet from a script, and scripts never run inside the engine's aura frames, so the game's own
+  FlipBook animation plays the same sheet: WeakAuras' built-in ones, sheets named like `.x8y8f64`, and
+  custom ones with rows, columns and frames set. Frame rate, *Loop* or *Bounce*, *Inverse*, *Animation
+  End*, colours, desaturate, blend mode and the background frame are kept. Not engine-driven yet, with the
+  reason in the status line: *Once* and *Progress* animations, an *Animation Start* above 0%, and textures
+  made of numbered files.
+- **Models that work in combat.** A Model display with an aura trigger (*Found* or *Missing*) shows its
+  model only while the aura is up or gone, in combat too: model file or display ID, position or transform,
+  rotation, portrait zoom, animation and alpha as in WeakAuras. A unit's model (target, player) stays with
+  WeakAuras: it follows its unit through events, which cannot run inside the engine's frames.
+- **Progress Bars keep their gradient.** *Enable Gradient* (the bar colour fading into the second colour)
+  was ignored on engine-driven bars. Reported by Soul. Thanks!
+- The Model Picker's list no longer raises an error each time the mouse moves over a model (its tooltip
+  passed the wrap flag where the game expects alpha).
+
 ## 0.8.9-alpha (2026-10-05)
 
 - **Dynamic Groups follow a new target.** After switching between dotted targets, a packed group could
