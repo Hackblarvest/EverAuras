@@ -1398,10 +1398,11 @@ function Engine.Explain(data, plan, reasons)
     end
     if plan.stacks then
       local st = plan.stacks
-      local when = (st.ge and st.le and st.ge == st.le) and T("at exactly %d stacks"):format(st.ge)
-                or (st.ge and st.le) and T("at %d to %d stacks"):format(st.ge, st.le)
-                or st.ge and T("at %d stacks or more"):format(st.ge)
-                or T("at %d stacks or fewer"):format(st.le)
+      local function n(k) return k == 1 and T("1 stack") or T("%d stacks"):format(k) end
+      local when = (st.ge and st.le and st.ge == st.le) and T("at exactly %s"):format(n(st.ge))
+                or (st.ge and st.le) and T("at %d to %s"):format(st.ge, n(st.le))
+                or st.ge and T("at %s or more"):format(n(st.ge))
+                or T("at %s or fewer"):format(n(st.le))
       txt = txt .. " " .. T("|cff33ff99Stack Count:|r shown only %s. The game compares the stacks itself: a frame around the display opens and closes with the engine's own stack bar. Sounds still play when the aura comes or goes."):format(when)
     end
     if InertConditions(data, plan) then
