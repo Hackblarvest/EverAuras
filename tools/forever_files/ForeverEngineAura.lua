@@ -767,9 +767,10 @@ end
 --   composite plan : plan.parts = { missing = part | nil, remaining = { {part, op, x}, ... } }, icons only.
 --                    Shows the icon while the missing part's aura is absent OR a remaining part's aura
 --                    has the given time left. Built from Found + 'Remaining Time' triggers.
-local ENGINE_REGIONS = { icon = true, aurabar = true, progresstexture = true, texture = true, text = true, stopmotion = true }
+local ENGINE_REGIONS = { icon = true, aurabar = true, progresstexture = true, texture = true, text = true, stopmotion = true,
+                         model = true }
 local KIND_NAME = { aurabar = "Progress Bars", progresstexture = "Progress Textures", texture = "Textures", text = "Texts",
-                    stopmotion = "Stop Motions" }
+                    stopmotion = "Stop Motions", model = "Models" }
 
 -- What a Text display shows: "plain" (no placeholders), or exactly one aura value the engine can draw
 -- itself: "p" (time left), "s" (stacks), "n" (spell name). nil = something else (mixed text, %c, ...).
@@ -929,7 +930,7 @@ function Engine.Classify(data)
     r[#r + 1] = msg
   end
   local rt = data and data.regionType
-  if not ENGINE_REGIONS[rt] then return nil, { T("the display is not an Icon, a Progress Bar, a Progress Texture, a Texture, a Stop Motion or a Text") } end
+  if not ENGINE_REGIONS[rt] then return nil, { T("the display is not an Icon, a Progress Bar, a Progress Texture, a Texture, a Stop Motion, a Model or a Text") } end
   if rt == "progresstexture" then TextureFollowsAura(data, no) end
   if not GloballyEnabled() then no(T("the engine is switched off (/faengine on)")) end
   if data.foreverEngine == false then no(T("'Let the game engine draw this aura' is off for this display (Display tab)")) end
@@ -976,6 +977,13 @@ function Engine.Classify(data)
       end
       local sheet, why = Engine.MotionSheet(data)
       if not sheet then no(why) end
+    end
+    if rt == "model" then
+      if inf.mode == "always" then
+        no(T("a Model with 'Show On: Always' shows all the time and needs no engine; pick 'Aura(s) Found' or 'Aura(s) Missing'"))
+      end
+      local ok, why = Engine.ModelSheet(data)
+      if not ok then no(why) end
     end
     if rt == "text" then
       local tp, why = TextPlan(data)
@@ -1240,6 +1248,11 @@ function Engine.Explain(data, plan, reasons)
       txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows %s %s. Kept: position, size, groups, font, size, outline (SLUG drawn as a normal outline), colour, shadow, justify and width. Not available: %sconditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
         :format(plan.unit, plan.filterString, what, when,
                 kind == "dur" and T("WeakAuras' %p formatting options (the game formats the time itself), ") or "")
+    elseif data.regionType == "model" then
+      local when = plan.mode == "missing" and T("while the aura is absent and disappears completely while it is present")
+                                         or T("while the aura is present and nothing while it is absent")
+      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows your model %s. Kept: position, size, groups, the model file or display ID, its position or transform, rotation, portrait zoom, animation and alpha, %%p/%%s/%%n texts, the glow (shown only while the model is). Not drawn: the border (hidden while engine-driven). Not available: a unit's model, conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
+        :format(plan.unit, plan.filterString, when)
     elseif data.regionType == "stopmotion" then
       local when = plan.mode == "missing" and T("while the aura is absent and disappears completely while it is present")
                                          or T("while the aura is present and nothing while it is absent")
@@ -1472,11 +1485,14 @@ local function BuildSlot(att, region, plan)
         button:SetSpellName(s.name)
         return
       end
-      if att.isPic or att.isMotion then
+      if att.isPic or att.isMotion or att.isModel then
         -- a Texture display: a copy of its texture, shown with the button (= while the aura is present);
         -- a Stop Motion: its sheet played by a FlipBook animation, which runs where scripts do not
         if att.isMotion then
           s.motion = Engine.NewMotion(button, button)
+        elseif att.isModel then
+          s.model = Engine.NewModel(button)
+          s.model:SetAllPoints(button)
         else
           s.pic = button:CreateTexture(nil, "ARTWORK")
           s.pic:SetAllPoints(button)
@@ -1958,7 +1974,7 @@ local function ApplyFoundGlow(att, region, data, plan)
     animated = StartAnimatedGlow(GlowHolder(att, key, att.pclip, anchor), sub, w, h)
   end
   if not animated then StopAnimatedGlow(att[key]) end
-  HideStaticDecor(att, region, data, att.isTex or att.isPic or att.isMotion)   -- textures: the border too (always shown)
+  HideStaticDecor(att, region, data, att.isTex or att.isPic or att.isMotion or att.isModel)   -- textures: the border too (always shown)
 end
 
 -- Progress Bars: the engine drives its own StatusBar inside the slot button (SetDurationBar ->
@@ -2286,6 +2302,58 @@ do
   end
 end
 
+-- Model displays: WA shows a pooled PlayerModel on the region (PreShow) and releases it on hide. While
+-- engine-driven, WA's model and border are hidden and our own PlayerModel is set up the same way (file or
+-- display ID, position or transform, rotation, zoom, animation, alpha): on the slot button (Found) or in
+-- the Missing clip. A unit's model is left to WA: it follows its unit through events, and scripts never
+-- run inside the engine's buttons.
+do
+  function Engine.ModelSheet(data)
+    if data.modelIsUnit then
+      return nil, T("it shows a unit's model, which follows the unit through events, and scripts cannot run inside the engine's frame; pick a model file or display ID")
+    end
+    if not tonumber(data.model_fileId) then
+      return nil, T("its model is not a file or display ID number")
+    end
+    return true
+  end
+
+  -- WA's own model and border: hidden while engine-driven (Show / Hide; WA sets the model's alpha itself)
+  function Engine.SetModelVisuals(region, shown)
+    if region.model and region.model.SetShown then region.model:SetShown(shown) end
+    if region.border and region.border.SetShown then
+      local data = shown and WA.GetData(region.id)
+      region.border:SetShown(shown and data and data.border and true or false)
+    end
+  end
+
+  function Engine.NewModel(parent)
+    local m = CreateFrame("PlayerModel", nil, parent)
+    pcall(m.SetKeepModelOnHide, m, true)
+    return m
+  end
+
+  -- as Model.lua's ConfigureModel, for a model file or display ID
+  function Engine.StyleModel(m, data)
+    WA.SetModel(m, nil, data.model_fileId, false, data.modelDisplayInfo)
+    pcall(m.SetPortraitZoom, m, data.portraitZoom and 1 or 0)
+    pcall(m.ClearTransform, m)
+    local rad = math.rad
+    if data.api then
+      pcall(m.MakeCurrentCameraCustom, m)
+      pcall(Private.ModelSetTransformFixed, m, (tonumber(data.model_st_tx) or 0) / 1000, (tonumber(data.model_st_ty) or 0) / 1000,
+        (tonumber(data.model_st_tz) or 0) / 1000, rad(tonumber(data.model_st_rx) or 0), rad(tonumber(data.model_st_ry) or 0),
+        rad(tonumber(data.model_st_rz) or 0), (tonumber(data.model_st_us) or 40) / 1000)
+    else
+      pcall(m.SetPosition, m, tonumber(data.model_z) or 0, tonumber(data.model_x) or 0, tonumber(data.model_y) or 0)
+      pcall(m.SetFacing, m, rad(tonumber(data.rotation) or 0))
+    end
+    pcall(m.SetAnimation, m, data.advance and (tonumber(data.sequence) or 1) or 0)
+    m:SetAlpha(type(data.alpha) == "number" and data.alpha or 1)
+    m:Show()
+  end
+end
+
 -- Text displays: WA's text is hidden (alpha; WA colours it with SetTextColor, never SetAlpha) and drawn
 -- again on the slot button (Found) or in the Missing clip, in WA's font, size, outline, shadow, justify
 -- and width. Plain text is copied as WA shows it (raid markers included); %p / %s / %n are the engine's
@@ -2525,8 +2593,9 @@ end
 local function ApplySlotLook(att, region, data, plan)
   if att.isText then return ApplyTextLook(att, region, data, plan) end
   if att.isPic then return ApplyPicLook(att, region, data, plan) end
-  if att.isMotion then
-    Engine.StyleMotion(att.shadows.motion, region, data)
+  if att.isMotion or att.isModel then
+    if att.isModel then Engine.StyleModel(att.shadows.model, data)
+    else Engine.StyleMotion(att.shadows.motion, region, data) end
     MirrorTexts(att, region, data, true)
     ApplyFoundGlow(att, region, data, plan)
     pcall(att.button.EnableMouseMotion, att.button, data.useTooltip and true or false)
@@ -2587,6 +2656,16 @@ local function ApplyUnderlayLook(att, region, data, plan, noGlow)
     if not sh.umotion then sh.umotion = Engine.NewMotion(sh.clip, att.host) end
     Engine.StyleMotion(sh.umotion, region, data)
     u:SetAlpha(0)
+  elseif att.isModel then
+    -- in the Missing clip, and hung on the clip's own edges: zero wide while the aura is present, even
+    -- if the game drew a model past a clipping frame
+    local sh, m = att.shadows, att.groupM or 0
+    if not sh.umodel then sh.umodel = Engine.NewModel(sh.clip) end
+    sh.umodel:ClearAllPoints()
+    sh.umodel:SetPoint("TOPLEFT", sh.clip, "TOPLEFT", m, -m)
+    sh.umodel:SetPoint("BOTTOMRIGHT", sh.clip, "BOTTOMRIGHT", -m, m)
+    Engine.StyleModel(sh.umodel, data)
+    u:SetAlpha(0)
   else
     local tex = DisplayTexture(data, plan.firstId)
     if type(tex) == "string" and C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo(tex) then
@@ -2608,7 +2687,7 @@ local function ApplyUnderlayLook(att, region, data, plan, noGlow)
     StyleGlowTexture(att.shadows.mglow, att.host, w, h, (not noGlow and not animated) and GlowSpec(data) or nil)
   end
   MirrorTexts(att, region, data, false)
-  HideStaticDecor(att, region, data, att.isPic or att.isMotion)   -- a Texture's border would frame an empty spot
+  HideStaticDecor(att, region, data, att.isPic or att.isMotion or att.isModel)   -- a Texture's border would frame an empty spot
 end
 
 local function SetMirroredShown(att, shown)
@@ -2626,6 +2705,7 @@ function Engine.OnLayout(region)          -- after every ApplyFrameLevel (Expand
   elseif att.isTex then SetTexVisuals(region, false)
   elseif att.isPic then SetPicVisuals(region, false)
   elseif att.isMotion then Engine.SetMotionVisuals(region, false)
+  elseif att.isModel then Engine.SetModelVisuals(region, false)
   elseif att.isText then SetTextVisuals(region, false)
   elseif (att.kind == "group" or att.kind == "composite") and region.icon then region.icon:Hide() end
   if att.kind == "composite" and att.want and att.want.parts and att.want.parts.found and region.icon then region.icon:Hide() end
@@ -3618,6 +3698,7 @@ local function TurnOff(att, region, data, mode)
   elseif att.isTex then SetTexVisuals(region, true)
   elseif att.isPic then SetPicVisuals(region, true)
   elseif att.isMotion then Engine.SetMotionVisuals(region, true)
+  elseif att.isModel then Engine.SetModelVisuals(region, true)
   elseif att.isText then SetTextVisuals(region, true)
   elseif region.icon then region.icon:Show() end
   SetMirroredShown(att, true)
@@ -3688,6 +3769,7 @@ local function ApplyUnguarded(region)
   elseif att.isTex then SetTexVisuals(region, false)
   elseif att.isPic then SetPicVisuals(region, false)
   elseif att.isMotion then Engine.SetMotionVisuals(region, false)
+  elseif att.isModel then Engine.SetModelVisuals(region, false)
   elseif att.isText then SetTextVisuals(region, false)
   else region.icon:SetShown(plan.mode == "always") end
   if region.tooltipFrame then region.tooltipFrame:EnableMouseMotion(false) end
@@ -3700,7 +3782,7 @@ local function ApplyUnguarded(region)
     local sh = att.shadows
     pcall(sh.bar.SetFrameLevel, sh.bar, c:GetFrameLevel() + 1)
     pcall(sh.texts.SetFrameLevel, sh.texts, c:GetFrameLevel() + 2)
-  elseif (att.isPic or att.isMotion or att.isText) and kind == "slot" and att.shadows.texts then
+  elseif (att.isPic or att.isMotion or att.isModel or att.isText) and kind == "slot" and att.shadows.texts then
     pcall(att.shadows.texts.SetFrameLevel, att.shadows.texts, c:GetFrameLevel() + 2)
   elseif att.isTex and att.shadows.texClip then         -- texture under texts, both above the button
     local sh = att.shadows
@@ -3805,6 +3887,12 @@ local function ComputeSig(region, data, plan)
       parts[#parts + 1] = tostring(data[k])
     end
     parts[#parts + 1] = table.concat(data.foregroundColor or {}, ",")
+  elseif data.regionType == "model" then
+    for _, k in ipairs({ "model_fileId", "modelIsUnit", "modelDisplayInfo", "api", "model_x", "model_y", "model_z",
+                         "model_st_tx", "model_st_ty", "model_st_tz", "model_st_rx", "model_st_ry", "model_st_rz",
+                         "model_st_us", "rotation", "sequence", "advance", "portraitZoom", "alpha", "border" }) do
+      parts[#parts + 1] = tostring(data[k])
+    end
   elseif data.regionType == "stopmotion" then
     for _, k in ipairs({ "foregroundTexture", "backgroundTexture", "sameTexture", "hideBackground", "frameRate",
                          "animationType", "inverse", "startPercent", "endPercent", "backgroundPercent",
@@ -3869,7 +3957,7 @@ function Engine.Sync(region, data)
   if not att then
     att = { region = region, shadows = {}, isBar = data.regionType == "aurabar", isTex = data.regionType == "progresstexture",
             isPic = data.regionType == "texture", isText = data.regionType == "text",
-            isMotion = data.regionType == "stopmotion" }
+            isMotion = data.regionType == "stopmotion", isModel = data.regionType == "model" }
     attachments[region] = att
   end
   local plan = decided[data.uid]
@@ -3938,7 +4026,7 @@ icon.default.foreverEngineGlowPart = "both"  -- missing + time left: where the s
 icon.default.foreverEngineSelfDebuff = false  -- debuffs on yourself: match any own debuff by duration
 icon.default.foreverEngineSelfDebuffMax = ""  -- its longest duration in seconds (blank = as seen)
 
-for _, rt in ipairs({ "aurabar", "progresstexture", "texture", "text", "stopmotion" }) do
+for _, rt in ipairs({ "aurabar", "progresstexture", "texture", "text", "stopmotion", "model" }) do
   local regionType = Private.regionTypes and Private.regionTypes[rt]
   if regionType and regionType.modify and regionType.default then
     regionType.default.foreverEngine = true
@@ -3950,6 +4038,20 @@ for _, rt in ipairs({ "aurabar", "progresstexture", "texture", "text", "stopmoti
     regionType.modify = function(parent, region, data)
       origModify(parent, region, data)
       Guard("sync", Engine.Sync, region, data)
+    end
+  end
+end
+
+do
+  -- WA shows every shown display's model again after a cinematic or the world map (PreShowModels),
+  -- without a layout pass: engine-driven Models hide WA's own model again right after
+  local preShowModels = Private.PreShowModels
+  if type(preShowModels) == "function" then
+    Private.PreShowModels = function(...)
+      preShowModels(...)
+      for region, att in pairs(attachments) do
+        if att.active and att.isModel then pcall(Engine.SetModelVisuals, region, false) end
+      end
     end
   end
 end
