@@ -111,6 +111,12 @@ PROTOTYPES_HUNKS = [
 # spellbook instead - cheap, and it covers the spells rotation auras are about. (b) BuffTrigger2.lua:
 # when the cache has no match, keep the typed name instead of blanking the entry.
 OPTIONS_HUNKS = {
+    # The tree list's tooltip (Model Picker, ...) passed the wrap flag where the client's SetText takes alpha
+    # (text, r, g, b, alpha, wrap): "bad argument #5 to 'SetText'" on every hover (BugGrabber, 2026-10-06).
+    "M33kAurasOptions/AceGUI-Widgets/AceGUIContainer-M33kAurasTreeGroup.lua": [
+        ('\t\tGameTooltip:SetText(frame.text:GetText() or "", 1, .82, 0, true)\n',
+         '\t\tGameTooltip:SetText(frame.text:GetText() or "", 1, .82, 0, 1, true) -- Forever: alpha before wrap\n'),
+    ],
     "M33kAurasOptions/Cache.lua": [
         ("  if IsTestBuild() then -- disable for 12.0.7\n    return\n  end\n",
          "  if IsTestBuild() then -- disable for 12.0.7\n"
@@ -327,6 +333,7 @@ CHECKS = {
                                      "local getLoC = (C_Spell and C_Spell.GetSpellLossOfControlCooldown)",
                                      "= Private.ExecEnv.GetWeaponEnchantInfo();"],
     "M33kAurasOptions/Cache.lua": ["spellCache.AddIcon(info.name, info.spellID"],
+    "M33kAurasOptions/AceGUI-Widgets/AceGUIContainer-M33kAurasTreeGroup.lua": ["1, .82, 0, 1, true) -- Forever: alpha before wrap"],
     "M33kAurasOptions/BuffTrigger2.lua": ["(best and best ~= \"\") and best or strtrim(v)",
                                           "pcall(spellCache.GetIcon, input)"],
     "M33kAuras/M33kAuras.toc": ["\nForeverEngineAura.lua\n"],
