@@ -767,8 +767,9 @@ end
 --   composite plan : plan.parts = { missing = part | nil, remaining = { {part, op, x}, ... } }, icons only.
 --                    Shows the icon while the missing part's aura is absent OR a remaining part's aura
 --                    has the given time left. Built from Found + 'Remaining Time' triggers.
-local ENGINE_REGIONS = { icon = true, aurabar = true, progresstexture = true, texture = true, text = true }
-local KIND_NAME = { aurabar = "Progress Bars", progresstexture = "Progress Textures", texture = "Textures", text = "Texts" }
+local ENGINE_REGIONS = { icon = true, aurabar = true, progresstexture = true, texture = true, text = true, stopmotion = true }
+local KIND_NAME = { aurabar = "Progress Bars", progresstexture = "Progress Textures", texture = "Textures", text = "Texts",
+                    stopmotion = "Stop Motions" }
 
 -- What a Text display shows: "plain" (no placeholders), or exactly one aura value the engine can draw
 -- itself: "p" (time left), "s" (stacks), "n" (spell name). nil = something else (mixed text, %c, ...).
@@ -928,7 +929,7 @@ function Engine.Classify(data)
     r[#r + 1] = msg
   end
   local rt = data and data.regionType
-  if not ENGINE_REGIONS[rt] then return nil, { T("the display is not an Icon, a Progress Bar, a Progress Texture, a Texture or a Text") } end
+  if not ENGINE_REGIONS[rt] then return nil, { T("the display is not an Icon, a Progress Bar, a Progress Texture, a Texture, a Stop Motion or a Text") } end
   if rt == "progresstexture" then TextureFollowsAura(data, no) end
   if not GloballyEnabled() then no(T("the engine is switched off (/faengine on)")) end
   if data.foreverEngine == false then no(T("'Let the game engine draw this aura' is off for this display (Display tab)")) end
@@ -968,6 +969,13 @@ function Engine.Classify(data)
     end
     if rt == "texture" and inf.mode == "always" then
       no(T("a Texture with 'Show On: Always' shows all the time and needs no engine; pick 'Aura(s) Found' or 'Aura(s) Missing'"))
+    end
+    if rt == "stopmotion" then
+      if inf.mode == "always" then
+        no(T("a Stop Motion with 'Show On: Always' plays all the time and needs no engine; pick 'Aura(s) Found' or 'Aura(s) Missing'"))
+      end
+      local sheet, why = Engine.MotionSheet(data)
+      if not sheet then no(why) end
     end
     if rt == "text" then
       local tp, why = TextPlan(data)
@@ -1232,6 +1240,11 @@ function Engine.Explain(data, plan, reasons)
       txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows %s %s. Kept: position, size, groups, font, size, outline (SLUG drawn as a normal outline), colour, shadow, justify and width. Not available: %sconditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
         :format(plan.unit, plan.filterString, what, when,
                 kind == "dur" and T("WeakAuras' %p formatting options (the game formats the time itself), ") or "")
+    elseif data.regionType == "stopmotion" then
+      local when = plan.mode == "missing" and T("while the aura is absent and disappears completely while it is present")
+                                         or T("while the aura is present and nothing while it is absent")
+      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It plays your animation %s, as a FlipBook animation of the game (scripts cannot run there). Kept: position, size, groups, the texture's frames, frame rate, Loop or Bounce, Inverse, End, colours, desaturate, blend mode, the background frame, %%p/%%s/%%n texts, the glow (shown only while the animation is). Not drawn: the border (hidden while engine-driven). Not available: Once and Progress animations, a Start above 0%%, conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
+        :format(plan.unit, plan.filterString, when)
     elseif data.regionType == "texture" then
       local when = plan.mode == "missing" and T("while the aura is absent and disappears completely while it is present")
                                          or T("while the aura is present and nothing while it is absent")
@@ -1459,12 +1472,17 @@ local function BuildSlot(att, region, plan)
         button:SetSpellName(s.name)
         return
       end
-      if att.isPic then
-        -- a Texture display: a copy of its texture, shown with the button (= while the aura is present)
-        s.pic = button:CreateTexture(nil, "ARTWORK")
-        s.pic:SetAllPoints(button)
-        pcall(s.pic.SetSnapToPixelGrid, s.pic, false)
-        pcall(s.pic.SetTexelSnappingBias, s.pic, 0)
+      if att.isPic or att.isMotion then
+        -- a Texture display: a copy of its texture, shown with the button (= while the aura is present);
+        -- a Stop Motion: its sheet played by a FlipBook animation, which runs where scripts do not
+        if att.isMotion then
+          s.motion = Engine.NewMotion(button, button)
+        else
+          s.pic = button:CreateTexture(nil, "ARTWORK")
+          s.pic:SetAllPoints(button)
+          pcall(s.pic.SetSnapToPixelGrid, s.pic, false)
+          pcall(s.pic.SetTexelSnappingBias, s.pic, 0)
+        end
         s.texts = CreateFrame("Frame", nil, button)
         s.texts:SetAllPoints(button)
         s.texts:SetFrameLevel(button:GetFrameLevel() + 2)
@@ -1940,7 +1958,7 @@ local function ApplyFoundGlow(att, region, data, plan)
     animated = StartAnimatedGlow(GlowHolder(att, key, att.pclip, anchor), sub, w, h)
   end
   if not animated then StopAnimatedGlow(att[key]) end
-  HideStaticDecor(att, region, data, att.isTex or att.isPic)   -- textures: the border too (always shown)
+  HideStaticDecor(att, region, data, att.isTex or att.isPic or att.isMotion)   -- textures: the border too (always shown)
 end
 
 -- Progress Bars: the engine drives its own StatusBar inside the slot button (SetDurationBar ->
@@ -2143,6 +2161,129 @@ local function ApplyPicLook(att, region, data, plan)
   MirrorTexts(att, region, data, true)
   ApplyFoundGlow(att, region, data, plan)
   pcall(att.button.EnableMouseMotion, att.button, data.useTooltip and true or false)
+end
+
+-- Stop Motion displays: Textures that animate. WA steps through a sheet of frames from a script, and
+-- scripts never run inside the engine's aura buttons; the game's own FlipBook animation plays the same
+-- sheet (rows, columns, frames, as WA reads them), shown with the button (Found) or in the Missing clip.
+-- Loop and Bounce play on their own; Once and Progress need a start (the aura appearing, its time) that
+-- an animation inside the button cannot be given. The background is WA's still frame, copied.
+-- (functions on Engine: the file's main chunk is close to Lua 5.1's limit of 200 locals)
+do
+  local P1 = "%.x(%d+)y(%d+)f(%d+)%.[tb][gl][ap]"
+  local P2 = "%.x(%d+)y(%d+)f(%d+)w(%d+)h(%d+)W(%d+)H(%d+)%.[tb][gl][ap]"
+
+  -- rows, columns, frame count and (when the sheet does not fill the file) the frame size in pixels
+  local function Sheet(tex, frames, rows, columns, fileW, fileH, frameW, frameH)
+    if type(tex) ~= "string" and type(tex) ~= "number" then return nil end
+    local td = WA.StopMotion and WA.StopMotion.texture_data and WA.StopMotion.texture_data[tex]
+    if td then
+      if not (td.rows and td.columns) then return nil end           -- numbered files: one texture per frame
+      return { count = td.count, rows = td.rows, columns = td.columns, fw = 0, fh = 0 }
+    end
+    local s = tostring(tex)
+    local r, c, f = s:lower():match(P1)
+    if r then return { count = tonumber(f), rows = tonumber(r), columns = tonumber(c), fw = 0, fh = 0 } end
+    local r2, c2, f2, fw, fh, W, H = s:match(P2)
+    if r2 then
+      fw, fh, W, H = tonumber(fw), tonumber(fh), tonumber(W), tonumber(H)
+      return { count = tonumber(f2), rows = tonumber(r2), columns = tonumber(c2),
+               fw = (W > 0 and fw > 0) and fw or 0, fh = (H > 0 and fh > 0) and fh or 0 }
+    end
+    rows, columns, frames = tonumber(rows), tonumber(columns), tonumber(frames)
+    if not (rows and columns and frames and rows > 0 and columns > 0 and frames > 0) then return nil end
+    fileW, fileH, frameW, frameH = tonumber(fileW) or 0, tonumber(fileH) or 0, tonumber(frameW) or 0, tonumber(frameH) or 0
+    return { count = frames, rows = rows, columns = columns,
+             fw = (fileW > 0 and frameW > 0) and frameW or 0, fh = (fileH > 0 and frameH > 0) and frameH or 0 }
+  end
+
+  -- What the game can play of a Stop Motion display, or nil + why (plain data).
+  function Engine.MotionSheet(data)
+    local anim = data.animationType or "loop"
+    if anim ~= "loop" and anim ~= "bounce" then
+      return nil, T("its animation is '%s': only Loop and Bounce play on their own while the aura is up (Once and Progress need a start the game does not give addons)"):format(tostring(anim))
+    end
+    if (tonumber(data.startPercent) or 0) > 0 then
+      return nil, T("its animation starts after the first frame (Start above 0%)")
+    end
+    local sh = Sheet(data.foregroundTexture, data.customForegroundFrames, data.customForegroundRows,
+      data.customForegroundColumns, data.customForegroundFileWidth, data.customForegroundFileHeight,
+      data.customForegroundFrameWidth, data.customForegroundFrameHeight)
+    if not sh or not sh.count or sh.count < 1 then
+      return nil, T("its texture is not a sheet of frames the game can play (numbered texture files, or a custom texture without rows, columns and frames)")
+    end
+    local last = sh.count - 1
+    sh.frames = math.max(1, math.min(sh.count, math.floor((tonumber(data.endPercent) or 1) * last) + 1))
+    return sh
+  end
+
+  function Engine.SetMotionVisuals(region, shown)
+    for _, part in ipairs({ region.foreground, region.background }) do
+      if part and part.texture and part.texture.SetAlpha then part.texture:SetAlpha(shown and 1 or 0) end
+    end
+  end
+
+  -- a still texture and an animated one (a FlipBook on a looping animation group) in parent
+  function Engine.NewMotion(parent, anchor)
+    local m = {}
+    m.bg = parent:CreateTexture(nil, "BACKGROUND")
+    m.bg:SetAllPoints(anchor)
+    m.fg = parent:CreateTexture(nil, "ARTWORK")
+    m.fg:SetAllPoints(anchor)
+    for _, t in ipairs({ m.bg, m.fg }) do
+      pcall(t.SetSnapToPixelGrid, t, false)
+      pcall(t.SetTexelSnappingBias, t, 0)
+    end
+    m.ag = m.fg:CreateAnimationGroup()
+    m.flip = m.ag:CreateAnimation("FlipBook")
+    return m
+  end
+
+  local function SetSheetTexture(tex, path)
+    if type(path) == "string" and C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo(path) then
+      tex:SetAtlas(path)
+    else
+      tex:SetTexture(path)
+      tex:SetTexCoord(0, 1, 0, 1)
+    end
+  end
+
+  -- styles m like the WA region: the animated sheet with WA's colour, desaturation and blend mode, and
+  -- WA's still background frame (texture and coordinates taken from WA's own background)
+  function Engine.StyleMotion(m, region, data)
+    local sh = Engine.MotionSheet(data)
+    if not sh then return false end
+    m.ag:Stop()
+    SetSheetTexture(m.fg, data.foregroundTexture)
+    local c = data.foregroundColor or { 1, 1, 1, 1 }
+    m.fg:SetVertexColor(c[1] or 1, c[2] or 1, c[3] or 1, c[4] or 1)
+    pcall(m.fg.SetDesaturated, m.fg, data.desaturateForeground and true or false)
+    pcall(m.fg.SetBlendMode, m.fg, data.blendMode or "BLEND")
+    m.flip:SetFlipBookRows(sh.rows)
+    m.flip:SetFlipBookColumns(sh.columns)
+    m.flip:SetFlipBookFrames(sh.frames)
+    m.flip:SetFlipBookFrameWidth(sh.fw)
+    m.flip:SetFlipBookFrameHeight(sh.fh)
+    local rate = tonumber(data.frameRate) or 15
+    if rate <= 0 then rate = 15 end
+    m.flip:SetDuration(sh.frames / rate)
+    m.ag:SetLooping(data.animationType == "bounce" and "BOUNCE" or "REPEAT")
+    local wbg = region.background and region.background.texture
+    if wbg and not data.hideBackground then
+      local atlas = wbg.GetAtlas and wbg:GetAtlas()
+      if atlas and atlas ~= "" then m.bg:SetAtlas(atlas) else m.bg:SetTexture(wbg:GetTexture()) end
+      m.bg:SetTexCoord(wbg:GetTexCoord())
+      local b = data.backgroundColor or { 0.5, 0.5, 0.5, 0.5 }
+      m.bg:SetVertexColor(b[1] or 1, b[2] or 1, b[3] or 1, b[4] or 1)
+      pcall(m.bg.SetDesaturated, m.bg, data.desaturateBackground and true or false)
+      pcall(m.bg.SetBlendMode, m.bg, data.blendMode or "BLEND")
+      m.bg:Show()
+    else
+      m.bg:Hide()
+    end
+    m.ag:Play(data.inverse and true or false)
+    return true
+  end
 end
 
 -- Text displays: WA's text is hidden (alpha; WA colours it with SetTextColor, never SetAlpha) and drawn
@@ -2384,6 +2525,13 @@ end
 local function ApplySlotLook(att, region, data, plan)
   if att.isText then return ApplyTextLook(att, region, data, plan) end
   if att.isPic then return ApplyPicLook(att, region, data, plan) end
+  if att.isMotion then
+    Engine.StyleMotion(att.shadows.motion, region, data)
+    MirrorTexts(att, region, data, true)
+    ApplyFoundGlow(att, region, data, plan)
+    pcall(att.button.EnableMouseMotion, att.button, data.useTooltip and true or false)
+    return
+  end
   if att.isBar then return ApplyBarLook(att, region, data, plan) end
   if att.isTex then return ApplyTexLook(att, region, data, plan) end
   local s = att.shadows
@@ -2433,6 +2581,12 @@ local function ApplyUnderlayLook(att, region, data, plan, noGlow)
     u:SetAlpha(0)
   elseif att.isPic then
     CopyPictureLook(u, region, data)
+  elseif att.isMotion then
+    -- the sheet plays in the Missing clip; created in place, like everything in these clips
+    local sh = att.shadows
+    if not sh.umotion then sh.umotion = Engine.NewMotion(sh.clip, att.host) end
+    Engine.StyleMotion(sh.umotion, region, data)
+    u:SetAlpha(0)
   else
     local tex = DisplayTexture(data, plan.firstId)
     if type(tex) == "string" and C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo(tex) then
@@ -2454,7 +2608,7 @@ local function ApplyUnderlayLook(att, region, data, plan, noGlow)
     StyleGlowTexture(att.shadows.mglow, att.host, w, h, (not noGlow and not animated) and GlowSpec(data) or nil)
   end
   MirrorTexts(att, region, data, false)
-  HideStaticDecor(att, region, data, att.isPic)   -- a Texture's border would frame an empty spot
+  HideStaticDecor(att, region, data, att.isPic or att.isMotion)   -- a Texture's border would frame an empty spot
 end
 
 local function SetMirroredShown(att, shown)
@@ -2471,6 +2625,7 @@ function Engine.OnLayout(region)          -- after every ApplyFrameLevel (Expand
   if att.isBar then SetBarVisuals(region, false)
   elseif att.isTex then SetTexVisuals(region, false)
   elseif att.isPic then SetPicVisuals(region, false)
+  elseif att.isMotion then Engine.SetMotionVisuals(region, false)
   elseif att.isText then SetTextVisuals(region, false)
   elseif (att.kind == "group" or att.kind == "composite") and region.icon then region.icon:Hide() end
   if att.kind == "composite" and att.want and att.want.parts and att.want.parts.found and region.icon then region.icon:Hide() end
@@ -3462,6 +3617,7 @@ local function TurnOff(att, region, data, mode)
   if att.isBar then SetBarVisuals(region, true)
   elseif att.isTex then SetTexVisuals(region, true)
   elseif att.isPic then SetPicVisuals(region, true)
+  elseif att.isMotion then Engine.SetMotionVisuals(region, true)
   elseif att.isText then SetTextVisuals(region, true)
   elseif region.icon then region.icon:Show() end
   SetMirroredShown(att, true)
@@ -3531,6 +3687,7 @@ local function ApplyUnguarded(region)
   if att.isBar then SetBarVisuals(region, false)
   elseif att.isTex then SetTexVisuals(region, false)
   elseif att.isPic then SetPicVisuals(region, false)
+  elseif att.isMotion then Engine.SetMotionVisuals(region, false)
   elseif att.isText then SetTextVisuals(region, false)
   else region.icon:SetShown(plan.mode == "always") end
   if region.tooltipFrame then region.tooltipFrame:EnableMouseMotion(false) end
@@ -3543,7 +3700,7 @@ local function ApplyUnguarded(region)
     local sh = att.shadows
     pcall(sh.bar.SetFrameLevel, sh.bar, c:GetFrameLevel() + 1)
     pcall(sh.texts.SetFrameLevel, sh.texts, c:GetFrameLevel() + 2)
-  elseif (att.isPic or att.isText) and kind == "slot" and att.shadows.texts then
+  elseif (att.isPic or att.isMotion or att.isText) and kind == "slot" and att.shadows.texts then
     pcall(att.shadows.texts.SetFrameLevel, att.shadows.texts, c:GetFrameLevel() + 2)
   elseif att.isTex and att.shadows.texClip then         -- texture under texts, both above the button
     local sh = att.shadows
@@ -3648,6 +3805,18 @@ local function ComputeSig(region, data, plan)
       parts[#parts + 1] = tostring(data[k])
     end
     parts[#parts + 1] = table.concat(data.foregroundColor or {}, ",")
+  elseif data.regionType == "stopmotion" then
+    for _, k in ipairs({ "foregroundTexture", "backgroundTexture", "sameTexture", "hideBackground", "frameRate",
+                         "animationType", "inverse", "startPercent", "endPercent", "backgroundPercent",
+                         "desaturateForeground", "desaturateBackground", "blendMode",
+                         "customForegroundFrames", "customForegroundRows", "customForegroundColumns",
+                         "customForegroundFileWidth", "customForegroundFileHeight", "customForegroundFrameWidth",
+                         "customForegroundFrameHeight", "customBackgroundFrames", "customBackgroundRows",
+                         "customBackgroundColumns" }) do
+      parts[#parts + 1] = tostring(data[k])
+    end
+    parts[#parts + 1] = table.concat(data.foregroundColor or {}, ",")
+    parts[#parts + 1] = table.concat(data.backgroundColor or {}, ",")
   elseif data.regionType == "texture" then
     for _, k in ipairs({ "texture", "rotation", "rotate", "mirror", "desaturate", "blendMode", "textureWrapMode" }) do
       parts[#parts + 1] = tostring(data[k])
@@ -3699,7 +3868,8 @@ function Engine.Sync(region, data)
   local att = attachments[region]
   if not att then
     att = { region = region, shadows = {}, isBar = data.regionType == "aurabar", isTex = data.regionType == "progresstexture",
-            isPic = data.regionType == "texture", isText = data.regionType == "text" }
+            isPic = data.regionType == "texture", isText = data.regionType == "text",
+            isMotion = data.regionType == "stopmotion" }
     attachments[region] = att
   end
   local plan = decided[data.uid]
@@ -3768,7 +3938,7 @@ icon.default.foreverEngineGlowPart = "both"  -- missing + time left: where the s
 icon.default.foreverEngineSelfDebuff = false  -- debuffs on yourself: match any own debuff by duration
 icon.default.foreverEngineSelfDebuffMax = ""  -- its longest duration in seconds (blank = as seen)
 
-for _, rt in ipairs({ "aurabar", "progresstexture", "texture", "text" }) do
+for _, rt in ipairs({ "aurabar", "progresstexture", "texture", "text", "stopmotion" }) do
   local regionType = Private.regionTypes and Private.regionTypes[rt]
   if regionType and regionType.modify and regionType.default then
     regionType.default.foreverEngine = true
