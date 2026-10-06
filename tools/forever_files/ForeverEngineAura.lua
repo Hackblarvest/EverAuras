@@ -1251,7 +1251,7 @@ function Engine.Explain(data, plan, reasons)
       if data.regionType == "icon" and plan.mode ~= "always" then
         kept = T("the border (also while nothing is drawn), and the glow: shown only while the icon is, and animated like WeakAuras' own")
       elseif data.regionType == "aurabar" then
-        kept = T("the border (also while nothing is drawn), and the glow: shown only while the bar is, and animated like WeakAuras' own (a glow on the bar's fill goes around the whole bar)")
+        kept = T("the bar colours and gradient, the border (also while nothing is drawn), and the glow: shown only while the bar is, and animated like WeakAuras' own (a glow on the bar's fill goes around the whole bar)")
       end
       txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It %s. Kept: position, size, groups, %%n/%%i texts, static colour/desaturate/zoom, %s; cooldown numbers count like the buff frame. Not available: conditions and texts that read aura state (stacks, remaining, active), show/hide animations and actions on aura gain/loss other than sounds.")
         :format(plan.unit, plan.filterString, T(MODE_TEXT[plan.mode]), kept)
@@ -1970,6 +1970,14 @@ local function ApplyBarLook(att, region, data, plan)
   end
   local c = data.barColor or { 1, 0, 0, 1 }
   s.bar:SetStatusBarColor(c[1] or 1, c[2] or 0, c[3] or 0, c[4] or 1)
+  -- WA's 'Enable Gradient': the bar colour fades into Bar Color 2 across the fill (AuraBar.lua
+  -- SetForegroundGradient). Without it, both ends get the bar colour, which clears an earlier gradient.
+  local fill = s.bar:GetStatusBarTexture()
+  if fill and fill.SetGradient and CreateColor then
+    local c2 = (data.enableGradient and data.barColor2) or c
+    pcall(fill.SetGradient, fill, data.gradientOrientation == "VERTICAL" and "VERTICAL" or "HORIZONTAL",
+      CreateColor(c[1] or 1, c[2] or 0, c[3] or 0, c[4] or 1), CreateColor(c2[1] or 1, c2[2] or 0, c2[3] or 0, c2[4] or 1))
+  end
   local bc = data.backgroundColor or { 0, 0, 0, 0.5 }
   s.barBg:SetVertexColor(bc[1] or 0, bc[2] or 0, bc[3] or 0, bc[4] or 0.5)
   local o = data.orientation or "HORIZONTAL"
@@ -3627,6 +3635,7 @@ local function ComputeSig(region, data, plan)
     tostring(data.iconSource), tostring(data.displayIcon),
     tostring(data.texture), tostring(data.textureSource), tostring(data.textureInput), tostring(data.orientation),
     tostring(data.icon), tostring(data.icon_side), table.concat(data.barColor or {}, ","),
+    tostring(data.enableGradient), table.concat(data.barColor2 or {}, ","), tostring(data.gradientOrientation),
     table.concat(data.backgroundColor or {}, ","), table.concat(data.icon_color or {}, ","),
     tostring(data.foreverEngineRange), tostring(data.foreverEngineRangeSpell), tostring(data.foreverEngineGlowPart),
     SoundSig(data), tostring(data.parent), Dyn.Sig(data),
