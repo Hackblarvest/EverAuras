@@ -66,7 +66,7 @@ local UNIT_OK = { player = true, target = true, focus = true, pet = true }
 local MODE = { showOnActive = "active", showOnMissing = "missing", showAlways = "always" }
 local UNSUPPORTED = {
   "useNamePattern", "useIgnoreName", "useIgnoreExactSpellId",
-  "useStacks", "useTotal", "use_tooltip", "fetchTooltip", "use_unitName", "use_npcId",
+  "useTotal", "use_tooltip", "fetchTooltip", "use_unitName", "use_npcId",
   "useAffected", "showClones", "useGroup_count",
 }
 
@@ -281,6 +281,34 @@ end
 -- curve over the aura's remaining duration itself (see RemainCurve). WeakAuras applies the filter to
 -- 'Show On: Aura(s) Found' only (CanHaveMatchCheck); its default operator is ">=".
 local REM_OPS = { ["<"] = true, ["<="] = true, [">"] = true, [">="] = true }
+
+-- Stack Count (useStacks): WA compares the aura's stacks (its applications, 0 for an aura that does not
+-- stack) with a number, on Found triggers only (BuffTrigger2 CanHaveMatchCheck). In whole stacks: at
+-- least ge and/or at most le. false = always true (no gate); nil, why = cannot be drawn.
+do
+  local MAX_STACKS = 100
+  function Engine.StackRange(t)
+    local op, x = t.stacksOperator or ">=", tonumber(t.stacks) or 0
+    local ge, le
+    if op == ">=" then ge = math.ceil(x)
+    elseif op == ">" then ge = math.floor(x) + 1
+    elseif op == "<=" then le = math.floor(x)
+    elseif op == "<" then le = math.ceil(x) - 1
+    elseif op == "==" then
+      if x ~= math.floor(x) then return nil, T("'Stack Count' = %s never matches whole stacks"):format(tostring(x)) end
+      ge, le = x, x
+    else
+      return nil, T("'Stack Count' with != cannot be expressed by the engine (use < or >)")
+    end
+    if ge and ge <= 0 then ge = nil end          -- every aura has at least 0 stacks
+    if le and le < 0 then return nil, T("'Stack Count' below 0 never matches") end
+    if (ge and ge > MAX_STACKS) or (le and le >= MAX_STACKS) then
+      return nil, T("'Stack Count' above %d stacks cannot be expressed by the engine"):format(MAX_STACKS)
+    end
+    if not ge and not le then return false end
+    return { ge = ge, le = le, key = ("%s-%s"):format(tostring(ge or ""), tostring(le or "")) }
+  end
+end
 
 -- One aura2 trigger -> its part of the plan. Reasons it cannot be drawn go through no().
 -- Blizzard's aura containers refuse to pick auras by spell id where that could single out an encounter
@@ -653,6 +681,11 @@ local function AnalyseAuraTrigger(t, no, data)
       no(T("'Remaining Time' must compare with <, <=, > or >= and a number of seconds"))
     end
   end
+  local stacks
+  if t.useStacks and mode == "active" then
+    local range, why = Engine.StackRange(t)
+    if range == nil then no(why) elseif range then stacks = range end
+  end
   table.sort(sorted)
   -- Own Only = the filter's PLAYER token ("cast by you"). AuraData.isFromPlayerOrPlayerPet is true for
   -- any player's aura, so another hunter's Serpent Sting passed it.
@@ -704,7 +737,7 @@ local function AnalyseAuraTrigger(t, no, data)
     end
     if not own then warn = (filter == "HARMFUL") and "friendly" or "hostile" end
   end
-  return { unit = unit, filter = filter, filterString = filterString, mode = mode, rem = rem,
+  return { unit = unit, filter = filter, filterString = filterString, mode = mode, rem = rem, stacks = stacks,
            candidate = candidate, ids = sorted, firstId = sorted[1], byDuration = byDuration, warn = warn,
            durationFromSetting = durationFromSetting,
            byName = byName, unresolved = unresolved, unseen = unseen,
@@ -999,7 +1032,7 @@ function Engine.Classify(data)
              durationFromSetting = inf.durationFromSetting, fingerprint = inf.fingerprint,
              nameless = inf.nameless, propsText = inf.propsText, propsKey = inf.propsKey,
              ids = inf.ids, byName = inf.byName, gen = spellbookGen, unresolved = inf.unresolved, unseen = inf.unseen,
-             auraTriggers = auraTriggers, gates = gates }
+             auraTriggers = auraTriggers, gates = gates, stacks = inf.stacks }
   end
 
   if rt ~= "icon" then
@@ -1007,6 +1040,9 @@ function Engine.Classify(data)
   end
   if data.uid then lateUsers[data.uid] = true end
   local missing, found, remaining = nil, nil, {}
+  for _, inf in ipairs(infos) do
+    if inf.stacks then no(T("'Stack Count' is engine-driven on a display with one Aura trigger (so far)")) end
+  end
   for _, inf in ipairs(infos) do
     if inf.mode == "missing" then
       if missing then no(T("only one Aura trigger may use 'Show On: Aura(s) Missing'")) end
@@ -1360,6 +1396,14 @@ function Engine.Explain(data, plan, reasons)
     if #sounds > 0 then
       txt = txt .. " " .. T("|cff33ff99Sounds:|r %s; the game plays them itself, also in combat."):format(table.concat(sounds, "; "))
     end
+    if plan.stacks then
+      local st = plan.stacks
+      local when = (st.ge and st.le and st.ge == st.le) and T("at exactly %d stacks"):format(st.ge)
+                or (st.ge and st.le) and T("at %d to %d stacks"):format(st.ge, st.le)
+                or st.ge and T("at %d stacks or more"):format(st.ge)
+                or T("at %d stacks or fewer"):format(st.le)
+      txt = txt .. " " .. T("|cff33ff99Stack Count:|r shown only %s. The game compares the stacks itself: a frame around the display opens and closes with the engine's own stack bar. Sounds still play when the aura comes or goes."):format(when)
+    end
     if InertConditions(data, plan) then
       txt = txt .. " " .. T("|cffff9933Note:|r a condition reads trigger data other than 'Buffed'; it never fires on this display.")
     end
@@ -1419,11 +1463,19 @@ local function BuildHost(region)
   host:SetAllPoints(region)
   host:SetFrameLevel(region:GetFrameLevel() + 1)
   host:Hide()
-  local c = CreateFrame("AuraContainer", nil, host, "CustomAuraContainerTemplate")
+  -- the Stack Count gates (Engine.ApplyStacks): plain frames around the container, clipping only while a
+  -- stack filter needs them. The container is created inside them: it cannot change parent later.
+  local ge = CreateFrame("Frame", nil, host, "DisableUntrustedLayoutScriptsTemplate")
+  ge:SetAllPoints(host)
+  ge:SetFrameLevel(host:GetFrameLevel())
+  local le = CreateFrame("Frame", nil, ge, "DisableUntrustedLayoutScriptsTemplate")
+  le:SetAllPoints(host)
+  le:SetFrameLevel(host:GetFrameLevel())
+  local c = CreateFrame("AuraContainer", nil, le, "CustomAuraContainerTemplate")
   -- TOPLEFT only: the engine sets the container's size (secretly). Nothing of ours ever reads it.
   c:SetPoint("TOPLEFT", host, "TOPLEFT")
   c:SetFrameLevel(host:GetFrameLevel())
-  return host, c
+  return host, c, { ge = ge, le = le }
 end
 
 -- Found / Always: a slot whose button draws the live aura on top of the region.
@@ -1588,6 +1640,87 @@ local function BuildSlot(att, region, plan)
   return true
 end
 
+-- Stack Count: two gates sit between the host and the container (BuildHost) and clip all the display
+-- draws there, glows included. Each hangs on a stack bar in an aura slot of its own (same aura): the
+-- engine sets that bar's range to 0..max and its value to the aura's stacks (SetApplicationBar), and the
+-- bar is W px wide with its right end MARGIN px right of the display, so its fill edge sits W/max px
+-- further left for every stack below max. Gate "ge" spans from the bar's left end to the fill edge:
+-- with max = N it reaches past the display only at N stacks or more. Gate "le" spans from the fill edge
+-- to the bar's right end: with max = N + 1 it closes only above N stacks. The threshold lives in the
+-- bar's range alone, so nothing that hangs on the aura's frames ever moves. Measured with /fdstack
+-- (2026-10-06): the engine shows such a bar at 0 stacks (min 0), a clip hangs on an empty fill, a frame
+-- around the container may hang on a bar inside the aura button, in combat too; a minimum below 0 is
+-- refused. Once built, a gate stays on its slot (only its clipping is switched), and the slot follows the
+-- display's aura, so the gate always has a place while the aura is shown.
+do
+  local STACK_W, STACK_MARGIN = 100000, 300
+  local SLOT_KEYS = { ge = KEY .. "S1", le = KEY .. "S2" }
+
+  local function Options(kind, n)
+    local I = Enum and Enum.StatusBarInterpolation
+    return { minApplications = 0, maxApplications = (kind == "ge") and n or (n + 1), interpolation = I and I.Immediate }
+  end
+
+  local function BuildStackSlot(att, kind, plan, n)
+    local c, host, gate = att.container, att.host, att.gates[kind]
+    local sb
+    local ok, button = pcall(c.AddAuraSlot, c, SLOT_KEYS[kind], plan.filterString, {
+      candidateFilters = plan.candidate,
+      initializeFrame = function(button)
+        button:ClearAllPoints()
+        button:SetAllPoints(host)
+        button:SetFrameLevel(c:GetFrameLevel())
+        pcall(button.SetMouseClickEnabled, button, false)
+        pcall(button.EnableMouseMotion, button, false)
+        sb = CreateFrame("StatusBar", nil, button)
+        sb:SetPoint("TOPRIGHT", button, "TOPRIGHT", STACK_MARGIN, STACK_MARGIN)
+        sb:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", STACK_MARGIN, -STACK_MARGIN)
+        sb:SetWidth(STACK_W)
+        sb:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
+        sb:SetStatusBarColor(0, 0, 0, 0)
+        sb:SetAlpha(0)                               -- never drawn: only its fill edge serves as an anchor
+        button:SetApplicationBar(sb, Options(kind, n))
+        local fill = sb:GetStatusBarTexture()
+        gate:ClearAllPoints()
+        if kind == "ge" then
+          gate:SetPoint("TOPLEFT", sb, "TOPLEFT")
+          gate:SetPoint("BOTTOMRIGHT", fill, "BOTTOMRIGHT")
+        else
+          gate:SetPoint("TOPLEFT", fill, "TOPRIGHT")
+          gate:SetPoint("BOTTOMRIGHT", sb, "BOTTOMRIGHT")
+        end
+      end,
+    })
+    if not ok or not button or not sb then
+      WA.prettyPrint(("%s: engine stack gate failed: %s"):format(tostring(att.region.id), tostring(button)))
+      return nil
+    end
+    return { button = button, bar = sb, n = n, filter = plan.filterString, key = plan.key, on = true }
+  end
+
+  -- on = the plan's stack range applies (a Found slot); else the gates only stop clipping
+  function Engine.ApplyStacks(att, plan, on)
+    local want = on and plan and plan.stacks or nil
+    local c, slots = att.container, att.stackSlots or {}
+    att.stackSlots = slots
+    for _, kind in ipairs({ "ge", "le" }) do
+      local n = want and want[kind]
+      local gate = att.gates and att.gates[kind]
+      local ss = slots[kind]
+      if gate and n and not ss then
+        ss = BuildStackSlot(att, kind, plan, n)
+        slots[kind] = ss
+      elseif ss and plan then
+        if ss.filter ~= plan.filterString then c:SetAuraSlotFilterString(SLOT_KEYS[kind], plan.filterString); ss.filter = plan.filterString end
+        if ss.key ~= plan.key then c:SetAuraSlotCandidateFilters(SLOT_KEYS[kind], plan.candidate); ss.key = plan.key end
+        if not ss.on then c:SetAuraSlotEnabled(SLOT_KEYS[kind], true); ss.on = true end
+        if n and ss.n ~= n and pcall(ss.button.SetApplicationBar, ss.button, ss.bar, Options(kind, n)) then ss.n = n end
+      end
+      if gate then gate:SetClipsChildren((n and ss) and true or false) end
+    end
+  end
+end
+
 -- m = margin: the clip reaches m px past the icon on every side (room for the static glow). The element
 -- is 2m wider so that "present" still pushes the clip's left edge onto its right edge (zero width).
 local function GroupLayout(w, h, m)
@@ -1691,7 +1824,8 @@ local function EnsurePresentClip(att, region, plan, m)
       c2:Hide()
       return false
     end
-    local clip = CreateFrame("Frame", nil, host, "DisableUntrustedLayoutScriptsTemplate")
+    -- inside the Stack Count gates, so a glow shows only while the stacks match
+    local clip = CreateFrame("Frame", nil, att.gates and att.gates.le or host, "DisableUntrustedLayoutScriptsTemplate")
     clip:SetClipsChildren(true)
     att.container2, att.pclip, att.pBuilt = c2, clip, true
     att.pFilter, att.pKey, att.pW, att.pH, att.pM = plan.filterString, plan.key, w, h, m
@@ -3419,6 +3553,9 @@ do
       sizes[#sizes + 1] = tostring(cd.width) .. "x" .. tostring(cd.height)
       local p = ENGINE_REGIONS[cd.regionType] and cd.uid and decided[cd.uid] or nil
       if not p then return nil, T("'%s' is not engine-driven"):format(tostring(id)) end
+      if p.stacks then
+        return nil, T("'%s' uses 'Stack Count' (its place would stay empty while the count does not match)"):format(tostring(id))
+      end
       if p.parts or p.mode ~= "active" then
         return nil, T("'%s' is not shown on Aura(s) Found (only those leave a gap to close)"):format(tostring(id))
       end
@@ -3856,7 +3993,7 @@ local function ApplyUnguarded(region)
     return
   end
 
-  if not att.host then att.host, att.container = BuildHost(region) end
+  if not att.host then att.host, att.container, att.gates = BuildHost(region) end
   if att.isText then FitTextHost(att, region, data, plan) end
   local c = att.container
   local kind = plan.parts and "composite" or ((plan.mode == "missing") and "group" or "slot")
@@ -3885,6 +4022,11 @@ local function ApplyUnguarded(region)
     if not EnsureGroup(att, region, plan, m) then TurnOff(att, region, data, "off"); return end
   else
     if not EnsureComposite(att, region, data, plan) then TurnOff(att, region, data, "off"); return end
+  end
+  local okSt, errSt = pcall(Engine.ApplyStacks, att, plan, kind == "slot")
+  if not okSt and not att.stackWarned then
+    att.stackWarned = true
+    WA.prettyPrint(("%s: engine stack count failed: %s"):format(tostring(region.id), tostring(errSt)))
   end
   att.kind = kind
   if att.unit ~= plan.unit then c:SetUnit(plan.unit); att.unit = plan.unit end
@@ -4012,7 +4154,7 @@ local function ComputeSig(region, data, plan)
     tostring(data.enableGradient), table.concat(data.barColor2 or {}, ","), tostring(data.gradientOrientation),
     table.concat(data.backgroundColor or {}, ","), table.concat(data.icon_color or {}, ","),
     tostring(data.foreverEngineRange), tostring(data.foreverEngineRangeSpell), tostring(data.foreverEngineGlowPart),
-    SoundSig(data), tostring(data.parent), Dyn.Sig(data),
+    SoundSig(data), tostring(data.parent), Dyn.Sig(data), plan.stacks and plan.stacks.key or "",
     table.concat(data.color or {}, ","), region.icon and table.concat({ region.icon:GetTexCoord() }, ",") or "" }
   if data.regionType == "progresstexture" then
     for _, k in ipairs({ "foregroundTexture", "backgroundTexture", "sameTexture", "desaturateForeground",

@@ -11,3 +11,4 @@ Probe_Dispel.lua
 Probe_SoundLoad.lua
 Probe_Text.lua
 Probe_Dyn.lua
+Probe_Stacks.lua
