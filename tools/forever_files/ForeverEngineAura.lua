@@ -3685,11 +3685,13 @@ do
     local g = GROW[grow]
     if not g then return nil, T("it grows in a circle, a grid or by custom code") end
     if gdata.useAnchorPerUnit then return nil, T("it anchors per unit") end
-    if (gdata.sort or "none") ~= "none" then
-      return nil, T("it sorts its children (only 'None' can be packed: the time left is secret in combat)")
+    if (tonumber(gdata.stagger) or 0) ~= 0 then return nil, T("it staggers its children") end
+    local sort = gdata.sort or "none"
+    if sort == "ascending" or sort == "descending" then return Dyn.SortPlan(gdata, g, grow) end
+    if sort ~= "none" then
+      return nil, T("it sorts its children by '%s' (the game sorts by the time left only: Ascending or Descending)"):format(tostring(sort))
     end
     if gdata.useLimit then return nil, T("it limits how many children it shows") end
-    if (tonumber(gdata.stagger) or 0) ~= 0 then return nil, T("it staggers its children") end
     local ct = gdata.centerType or "LR"
     if g.centred and ct ~= "LR" and ct ~= "RL" then return nil, T("it fills from the centre outwards") end
     local space = tonumber(gdata.space) or 0
@@ -3738,6 +3740,7 @@ do
     if not st then return end
     for _, link in pairs(st.links) do pcall(link.SetUnit, link, nil); link:Hide() end
     if st.total then pcall(st.total.SetUnit, st.total, nil); st.total:Hide() end
+    if st.sortc then pcall(st.sortc.SetUnit, st.sortc, nil); st.sortc:Hide() end
     st.root:Hide()
   end
 
@@ -4025,6 +4028,10 @@ do
     local gdata = ParentOf(data)
     if not gdata then return nil end
     local gp, why = Dyn.Plan(gdata)
+    if gp and gp.sorted then
+      return T("|cff33ff99Dynamic Group:|r sorted by the time left by the game (%s first), in combat too: the group is drawn as one row of its auras in the look of '%s' (a static glow; the border and texts other than %%p/%%s are hidden). This display itself is not drawn while it is in the row."):format(
+        gp.dir == "descending" and T("the most time left") or T("the least time left"), tostring(gp.tpl))
+    end
     if gp then
       return T("|cff33ff99Dynamic Group:|r packed by the game, so it leaves no gap while its aura is absent, in combat too. While packed, its border and texts other than %p/%s/%n are hidden.")
     end
@@ -4040,6 +4047,7 @@ do
   end
 
   function Dyn.Release(att, region)
+    if att.sortHidden then att.sortHidden = nil; if att.host then att.host:SetAlpha(1) end end
     if att.rebased then Unbase(att) end
     if att.dynHidden then
       for live in pairs(att.dynHidden) do
@@ -4054,6 +4062,193 @@ do
   end
 
   -- An engine-driven Found slot: packed when its group can be. Called at safe time, after the look.
+  -- Sorted groups (sort Ascending / Descending = by the time left). WA orders its children by the aura's
+  -- expiration, which is secret in combat; an aura GROUP of the game can be told to order its auras by
+  -- expiration itself (sortMethod ExpirationOnly, probe /fdsort 2026-10-07: right in combat). So a group
+  -- of alike Found icons on one unit is drawn as ONE row: an aura group over all the children's spells,
+  -- hung where WA puts the first child (the group's own anchor point), every frame styled like the
+  -- first child. The children themselves stay engine-driven but invisible (their sounds still play).
+  local LOOK_KEYS = { "width", "height", "zoom", "keepAspectRatio", "desaturate", "color", "cooldown", "cooldownSwipe",
+                      "cooldownEdge", "cooldownTextDisabled", "inverse", "useTooltip" }
+  local function Ser(v)
+    if type(v) ~= "table" then return tostring(v) end
+    local items = {}
+    for k, x in pairs(v) do items[#items + 1] = tostring(k) .. "=" .. Ser(x) end
+    table.sort(items)
+    return "{" .. table.concat(items, ",") .. "}"
+  end
+
+  function Dyn.SortPlan(gdata, g, grow)
+    local space = tonumber(gdata.space) or 0
+    if space < 0 then return nil, T("its spacing is negative") end
+    local ids = {}
+    for _, id in ipairs(gdata.controlledChildren or {}) do ids[#ids + 1] = id end
+    if #ids == 0 then return nil, T("it has no children") end
+    local tplLook, unit, filterString, otherKey, w, h, first
+    local union, unionList = {}, {}
+    for _, id in ipairs(ids) do
+      local cd = WA.GetData(id)
+      if not cd then return nil, T("a child is missing") end
+      local p = cd.uid and decided[cd.uid] or nil
+      if not (ENGINE_REGIONS[cd.regionType] and p) then return nil, T("'%s' is not engine-driven"):format(tostring(id)) end
+      if cd.regionType ~= "icon" then
+        return nil, T("'%s' is not an Icon (a group sorted by the time left draws Icons, so far)"):format(tostring(id))
+      end
+      if p.parts or p.mode ~= "active" or p.stacks or p.looks then
+        return nil, T("'%s' is not a plain 'Aura(s) Found' icon (a group sorted by the time left draws those, so far)"):format(tostring(id))
+      end
+      if p.nameless or p.byDuration then
+        return nil, T("'%s' does not pick its aura by spell (a group sorted by the time left needs spells)"):format(tostring(id))
+      end
+      local look = {}
+      for _, k in ipairs(LOOK_KEYS) do look[#look + 1] = Ser(cd[k]) end
+      look[#look + 1] = Ser(cd.subRegions)
+      look = table.concat(look, "|")
+      local other = {}
+      for k, v in pairs(p.candidate or {}) do if k ~= "includeSpellIDs" then other[k] = v end end
+      other = Ser(other)
+      if not tplLook then
+        tplLook, unit, filterString, otherKey, w, h, first = look, p.unit, p.filterString, other, cd.width, cd.height, p
+      elseif look ~= tplLook then
+        return nil, T("'%s' looks different from '%s' (a group sorted by the time left draws every child in the first one's look)"):format(tostring(id), tostring(ids[1]))
+      elseif p.unit ~= unit or p.filterString ~= filterString or other ~= otherKey then
+        return nil, T("'%s' watches another unit or kind of aura than '%s'"):format(tostring(id), tostring(ids[1]))
+      end
+      for sid in pairs(p.candidate and p.candidate.includeSpellIDs or {}) do
+        if not union[sid] then union[sid] = true; unionList[#unionList + 1] = sid end
+      end
+    end
+    table.sort(unionList)
+    local limit = #ids
+    if gdata.useLimit then limit = math.max(1, math.min(#ids, math.floor(tonumber(gdata.limit) or #ids))) end
+    local candidate = {}
+    for k, v in pairs(first.candidate or {}) do candidate[k] = v end
+    candidate.includeSpellIDs = union
+    local w0, h0 = math.floor((tonumber(w) or 32) + 0.5), math.floor((tonumber(h) or 32) + 0.5)
+    return { sorted = true, dir = gdata.sort, grow = grow, axis = g.axis, sign = g.sign, centred = g.centred,
+             ids = ids, tpl = ids[1], unit = unit, filterString = filterString, candidate = candidate,
+             w = w0, h = h0, space = space, limit = limit, selfPoint = gdata.selfPoint or "CENTER",
+             sig = table.concat({ "sorted", tostring(gdata.sort), grow, tostring(space), tostring(limit),
+                                  tostring(gdata.selfPoint), table.concat(ids, "\1"), table.concat(unionList, ","),
+                                  tplLook, unit, filterString, otherKey }, "|") }
+  end
+
+  -- flow per grow: axis, growth (horizontal, vertical) and the corner the first frame takes
+  local FLOW = {
+    RIGHT = { "x", "Right", "Down", "TOPLEFT" }, LEFT = { "x", "Left", "Down", "TOPRIGHT" },
+    DOWN = { "y", "Right", "Down", "TOPLEFT" }, UP = { "y", "Right", "Up", "BOTTOMLEFT" },
+    HORIZONTAL = { "x", "Right", "Down", "TOPLEFT" }, VERTICAL = { "y", "Right", "Down", "TOPLEFT" },
+  }
+
+  local function SortedState(gregion, gid, gp)
+    local st = states[gid]
+    if st and st.sig == gp.sig and st.gregion == gregion then return st end
+    Retire(st)
+    st = { sig = gp.sig, gregion = gregion, gp = gp, links = {}, lg = {}, tg = {}, frames = {} }
+    st.root = CreateFrame("Frame", nil, gregion, "DisableUntrustedLayoutScriptsTemplate")
+    st.root:SetAllPoints(gregion)
+    states[gid] = st
+    local c = CreateFrame("AuraContainer", nil, st.root, "CustomAuraContainerTemplate")
+    st.sortc = c
+    local f = FLOW[gp.grow] or FLOW.RIGHT
+    local A, D = AnchorUtil and AnchorUtil.FlowLayoutAxis, AnchorUtil and AnchorUtil.FlowDirection
+    if f[1] == "y" and A then c:SetFlowLayoutAxis(A.Vertical) end
+    if D then c:SetFlowLayoutGrowthDirection(D[f[2]], D[f[3]]) end
+    c:SetFlowLayoutAnchorPoint(f[4])
+    -- WA hangs the first child by the group's anchor point on the same point of the group
+    c:SetPoint(gp.selfPoint, gregion, gp.selfPoint)
+    c:SetFrameLevel(gregion:GetFrameLevel() + 2)
+    local M, Dir = AuraContainerSortMethod, AuraContainerSortDirection
+    local ok, err = pcall(c.AddAuraGroup, c, KEY, gp.filterString, {
+      candidateFilters = gp.candidate,
+      maxFrameCount = gp.limit,
+      sortMethod = M and M.ExpirationOnly,
+      sortDirection = Dir and (gp.dir == "descending" and Dir.Reverse or Dir.Normal),
+      layout = { elementWidth = gp.w, elementHeight = gp.h, elementSpacing = gp.space },
+      initializeFrame = function(button)
+        button:SetSize(gp.w, gp.h)
+        pcall(button.SetMouseClickEnabled, button, false)
+        pcall(button.EnableMouseMotion, button, false)
+        local s = {}
+        s.icon = button:CreateTexture(nil, "ARTWORK")
+        s.icon:SetAllPoints(button)
+        pcall(s.icon.SetSnapToPixelGrid, s.icon, false)
+        pcall(s.icon.SetTexelSnappingBias, s.icon, 0)
+        s.cooldown = CreateFrame("Cooldown", nil, button, "CooldownFrameTemplate")
+        s.cooldown:SetAllPoints(s.icon)
+        pcall(s.cooldown.SetDrawBling, s.cooldown, false)
+        local fmt = Private.ForeverAuraCountdownFormatter()
+        if fmt then pcall(s.cooldown.SetCountdownFormatter, s.cooldown, fmt) end
+        s.duration = button:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        s.duration:SetPoint("CENTER")
+        s.count = button:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        s.count:SetPoint("CENTER")
+        s.glow = button:CreateTexture(nil, "OVERLAY")
+        s.glow:Hide()
+        button:SetIcon(s.icon)
+        button:SetDurationCooldown(s.cooldown)
+        button:SetDurationText(s.duration, nil)
+        button:SetApplicationCount(s.count, nil)
+        st.frames[#st.frames + 1] = { button = button, shadows = s }
+      end,
+    })
+    if not ok then st.err = tostring(err); return st end
+    pcall(c.SetUnit, c, gp.unit)
+    return st
+  end
+
+  -- every frame in the first child's look; texts that hang on the first child's frames hang on the same
+  -- place within each frame (read out of combat, from WA's layout of that child)
+  local function StyleSorted(st, gp)
+    if st.styled then return true end
+    local tplData, tplRegion = WA.GetData(gp.tpl), RegionOf(gp.tpl)
+    local tplPlan = tplData and tplData.uid and decided[tplData.uid]
+    if not (tplData and tplRegion and tplPlan) then return false end
+    local gl, gb = Rect(tplRegion)
+    if not gl then return false end
+    for _, fr in ipairs(st.frames) do
+      fr.anchors = setmetatable({}, { __mode = "k" })
+      ApplySlotLook(fr, tplRegion, tplData, tplPlan)
+      for obj, pts in pairs(fr.anchors) do
+        local out = {}
+        for i, p in ipairs(pts) do
+          local rel = p[2]
+          if type(rel) == "table" and rel ~= fr.button and Under(rel, tplRegion) then
+            local l, b, w, h = Rect(rel)
+            if not l then return false end
+            local q = FRAC[tostring(p[3] or p[1]):upper()] or FRAC.CENTER
+            out[i] = { p[1], fr.button, "BOTTOMLEFT", l - gl + q[1] * w + (p[4] or 0), b - gb + q[2] * h + (p[5] or 0) }
+          else
+            out[i] = p
+          end
+        end
+        obj:ClearAllPoints()
+        for _, p in ipairs(out) do obj:SetPoint(p[1], p[2], p[3], p[4] or 0, p[5] or 0) end
+      end
+    end
+    st.styled = true
+    return true
+  end
+
+  local function PlaceSorted(att, region, data, gp, gregion, gid)
+    local st = SortedState(gregion, gid, gp)
+    if att.dyn and att.dyn ~= st then Dyn.Release(att, region) end   -- was packed: back on its own place first
+    if st.err then
+      if not failReported then
+        failReported = true
+        WA.prettyPrint(("%s: engine sorted group failed: %s"):format(tostring(region.id), st.err))
+      end
+      Dyn.Release(att, region)
+      return false
+    end
+    -- not styled yet when the first child has not been laid out: tried again when WA shows it
+    if StyleSorted(st, gp) then att.dynRetry = nil else att.dynRetry = (att.dynRetry or 0) + 1 end
+    att.dyn = st
+    if not att.sortHidden then att.host:SetAlpha(0); att.sortHidden = true end
+    HideWASubs(att, region, data)
+    return true
+  end
+
   function Dyn.Place(att, region, data, plan)
     local gdata = ParentOf(data)
     local gp = gdata and Dyn.Refresh(gdata)
@@ -4061,6 +4256,8 @@ do
     local k
     for i, id in ipairs(gp and gp.ids or {}) do if id == data.id then k = i end end
     if not (gp and gregion and k) then Dyn.Release(att, region); return false end
+    if gp.sorted then return PlaceSorted(att, region, data, gp, gregion, gdata.id) end
+    if att.sortHidden then att.sortHidden = nil; att.host:SetAlpha(1) end   -- was in a sorted row
     local st = State(gregion, gdata.id, gp)
     local w, h = RegionSize(region)
     local ok, err = AnchorStart(st)
@@ -4104,8 +4301,10 @@ do
         if unit == nil or rec.unit == unit then pcall(st.links[id].UpdateAllAuras, st.links[id]) end
       end
       if st.total and (unit == nil or st.totalUnit == unit) then pcall(st.total.UpdateAllAuras, st.total) end
+      if st.sortc and (unit == nil or st.gp.unit == unit) then pcall(st.sortc.UpdateAllAuras, st.sortc) end
     end
   end
+  Engine.DynUpdateUnit = Dyn.UpdateUnit                 -- for the tests
 
   -- A child that could not be placed (its group not shown yet) tries again once WA shows it, a few times.
   local onLayout = Engine.OnLayout
