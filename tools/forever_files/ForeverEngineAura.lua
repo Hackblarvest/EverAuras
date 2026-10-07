@@ -4162,11 +4162,14 @@ do
     return setmetatable({ stacks = st }, { __index = plan })
   end
 
-  -- alpha: the host sits inside the region, which WA keeps at the display's own alpha
+  -- alpha: on the look's outer gate, which holds all the look draws (not on the host: the other looks'
+  -- hosts sit inside the display's host and would inherit it). The gates sit inside the region, which WA
+  -- keeps at the display's own alpha.
   function Engine.LookAlpha(att, data, ldata)
     local base, want = tonumber(data.alpha) or 1, tonumber(ldata.alpha) or tonumber(data.alpha) or 1
     local a = (base > 0) and math.min(1, math.max(0, want / base)) or 1
-    if att.lookAlpha ~= a then att.host:SetAlpha(a); att.lookAlpha = a end
+    local gate = att.gates and att.gates.ge
+    if gate and att.lookAlpha ~= a then gate:SetAlpha(a); att.lookAlpha = a end
   end
 
   -- frame levels inside a variant's host, as ApplyUnguarded sets them for a slot
