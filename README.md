@@ -28,6 +28,8 @@ and lets the client draw it.
 | **Stop Motion** animations for procs and missing buffs (*Found* or *Missing*), Loop or Bounce, with your sheet, frame rate, colours and background | WeakAuras steps through the sheet from a script, and scripts never run inside the engine's aura buttons. The game's own FlipBook animation plays the same sheet (rows, columns, frames as WeakAuras reads them) on the button or in the Missing clip. Once and Progress need a start the game does not give addons. |
 | **Models** (*Found* or *Missing*), a model file or display ID with your position or transform, rotation, zoom and animation | WeakAuras' model is hidden and a PlayerModel of ours, set up the same way, lives on the engine's aura button (Found) or in the Missing clip, hung on the clip's edges. A unit's model follows its unit through events, which cannot run there, so it stays with WeakAuras. |
 | **Progress Textures** for aura timers, straight, circular and part circles (*Start / End Angle*), in all four directions, with your texture, colours, crop, rotation and background | Straight: a clip anchored to the fill of an invisible bar the engine fills by the aura's duration reveals a copy of the texture with WeakAuras' own texture coordinates. Circular: the game's cooldown swipe drawn with the texture where its clockwise edge matches WeakAuras' direction; otherwise, and for part circles, the arc is cut into small pieces (about 1.5 px of arc each), each in its own clip anchored past the fill edge of the same bar laid out very wide, so the pieces show and hide one by one as the aura runs out. Each piece is WeakAuras' own wedge. |
+| **Stack Count and conditions on stacks**: show a display only at N stacks or more, at most N or exactly N (the Aura trigger's *Stack Count*), and change its look by the stacks (*Conditions* on *Stacks*: colours, desaturate, glow, text colour and size, alpha) | The engine fills a status bar of its own by the aura's stacks (`SetApplicationBar`). Two gates around the display hang on the fill edge of such bars, so they open only while the count matches; the threshold lives in the bar's range alone, so nothing that hangs on the aura's frames has to move. Conditions cut the stack axis into stretches, and each stretch is drawn as a look of its own (the display's settings with that stretch's changes) behind its own pair of gates. |
+| **Dynamic Groups sorted by the time left** (*Sort: Ascending* or *Descending*), alike icons on one unit, with WeakAuras' *Limit* | One aura group of the game over all the children's spells, ordered by expiration by the game itself (`sortMethod = ExpirationOnly`, also in combat), hung where WeakAuras puts the first child; every frame in the first child's look. |
 | **Dynamic Groups** of engine-driven icons, bars, textures or texts (*Show On: Aura(s) Found*): a child whose aura is absent leaves no gap, in combat too — grow left, right, up, down or centred, with your spacing, order and alignment | A chain of invisible aura containers, one per child, each 1 px plus the child and the spacing while its aura is up and 1 px while it is not. Every child hangs on the end of the one before it, so the game itself packs the row; a centred row hangs by the middle of a container that holds every child. While packed, a child shows what the engine draws (icon, bar, texture, `%p`/`%s`/`%n` texts, glow); its border and other texts are hidden. |
 | **Show On: Ready / On Cooldown** | Exact, from fields Blizzard left readable. |
 | **Conditions on secret state** — e.g. *Is Ready (Secret)* → *Alpha (Boolean)* | The secret boolean goes straight to the engine via `SetAlphaFromBoolean`; the addon never sees it. |
@@ -114,11 +116,11 @@ What it *can* do is configure engine-drawn UI:
 - **Secret booleans** can drive alpha, desaturation and colour through the boolean-aware setters
   the client allows tainted code to use.
 
-What is lost for engine-driven displays: conditions and texts that *read* aura state (stacks,
-remaining time, active), show/hide animations and actions on aura gain/loss other than sounds,
-dynamic groups that sort by time left, limit their children, stagger them or grow in a circle or a
-grid, *Once* and *Progress* stop motions, and a unit's model. A list sorted by time left is not possible; a packed
-priority row is.
+What is lost for engine-driven displays: conditions and texts that *read* aura state other than
+the stacks (remaining time, active), show/hide animations and actions on aura gain/loss other than
+sounds, dynamic groups that stagger their children, grow in a circle or a grid, sort them in a
+hybrid or custom way or limit them without sorting, *Once* and *Progress* stop motions, and a
+unit's model. A group sorted by the time left draws every child in the first one's look.
 
 The full research trail — every API flag, probe result and dead end — is in `docs/`.
 

@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.8.12-alpha (2026-10-07)
+
+- **Stack Count works in combat.** An Aura trigger's *Stack Count* (show at 3 stacks or more, at most 2,
+  exactly 5 ...) kept a display from being engine-driven, as the stacks are secret in combat. The game now
+  compares them itself: it fills a status bar of its own by the aura's stacks, and two invisible gates around
+  the display hang on the edge of that fill, so they open only while the count matches. Everything the display
+  draws, its glow included, is behind them. *Missing* triggers ignore the count, as in WeakAuras. Not drawn by
+  the engine: `!=` and displays with several Aura triggers.
+- **Conditions on stacks work in combat.** A condition on the trigger's *Stacks* (for example: at 3 stacks or
+  more, red and glowing) never fired on an engine-driven display. EverAuras now cuts the stack count into
+  stretches wherever a condition changes, and draws each stretch as a look of its own, with that stretch's
+  changes applied in WeakAuras' order (the last active condition wins, *Else If* chains included). The game
+  shows the look that matches. What can change: colours, desaturate, inverse and cooldown settings, the glow
+  and its settings, a text's colour, size and visibility, and alpha. Other changes are named on the status line.
+- **Dynamic Groups sorted by the time left.** A group set to *Sort: Ascending* or *Descending* was left to
+  WeakAuras, which cannot read the time left in combat. When its children are alike Found icons on one unit,
+  the game now draws the group as one row of their auras and orders it by the time left itself, in combat too,
+  with WeakAuras' *Limit*. Every icon takes the first child's look.
+- The status line no longer calls a spell name that has not been seen as an aura yet "not one of your spells"
+  as if it were misspelt; it says the name cannot be looked up before the aura has been seen once.
+
 ## 0.8.11-alpha (2026-10-06)
 
 - **Part-circle Progress Textures that work in combat.** A circular Progress Texture with a *Start / End
