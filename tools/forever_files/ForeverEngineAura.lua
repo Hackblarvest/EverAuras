@@ -310,6 +310,138 @@ do
   end
 end
 
+-- Conditions on stacks: WA checks each condition in order ("Else If" = linked: only while the ones before
+-- it in the chain are false) and the last active one wins per property (Conditions.lua). On a delegated
+-- aura trigger they never fire, as the stacks are secret. Instead the stack axis is cut where any
+-- condition (or the trigger's own Stack Count) changes, and every stretch gets a look of its own: the
+-- display's data with that stretch's changes applied, drawn by its own aura slot behind its own pair of
+-- Stack Count gates (Engine.ApplyVariants). Only properties the engine's looks read from the data can
+-- vary (per region type below), plus alpha (the variant's host). Returns looks (ordered by stacks, each
+-- { ge, le, changes, key }) or nil, the condition indices that were used, and notes for the status line.
+do
+  local MAX_LOOKS = 4
+  local GLOW_KEYS = { glow = true, glowColor = true, useGlowColor = true, glowType = true, glowLines = true,
+    glowFrequency = true, glowLength = true, glowThickness = true, glowScale = true, glowBorder = true,
+    glowXOffset = true, glowYOffset = true }
+  local TEXT_KEYS = { text_color = true, text_visible = true, text_fontSize = true }
+  local PROPS = {
+    icon = { color = true, desaturate = true, inverse = true, cooldownSwipe = true, cooldownEdge = true,
+             cooldownTextDisabled = true },
+    aurabar = { barColor = true, barColor2 = true, enableGradient = true, backgroundColor = true,
+                icon_color = true, desaturate = true, inverse = true },
+    progresstexture = { foregroundColor = true, backgroundColor = true, desaturateForeground = true,
+                        desaturateBackground = true },
+    texture = { color = true, desaturate = true },
+    text = { color = true },
+    stopmotion = { foregroundColor = true, backgroundColor = true, desaturateForeground = true,
+                   desaturateBackground = true },
+    model = {},
+  }
+
+  -- property -> path into the data ({ key } or { sub index, key }), or nil
+  local function Path(data, rt, property)
+    if type(property) ~= "string" then return nil end
+    local n, key = property:match("^sub%.(%d+)%.(.+)$")
+    if n then
+      local sub = type(data.subRegions) == "table" and data.subRegions[tonumber(n)]
+      if sub and ((sub.type == "subglow" and GLOW_KEYS[key]) or (sub.type == "subtext" and TEXT_KEYS[key])) then
+        return { tonumber(n), key }
+      end
+      return nil
+    end
+    if property == "alpha" or (PROPS[rt] and PROPS[rt][property]) then return { property } end
+  end
+
+  local function Show(v)
+    if type(v) == "table" then
+      local t = {}
+      for i = 1, 4 do t[i] = tostring(v[i]) end
+      return "{" .. table.concat(t, ",") .. "}"
+    end
+    return tostring(v)
+  end
+
+  function Engine.StackLooks(data, ti, rt, filter)
+    local conds = type(data.conditions) == "table" and data.conditions or {}
+    local entries, used, notes = {}, {}, {}
+    local cuts = { [0] = true }
+    local function cut(n) if n and n >= 0 then cuts[n] = true end end
+    local any = false
+    for ci, c in ipairs(conds) do
+      local ch = type(c) == "table" and c.check or nil
+      local e = { linked = c.linked and ci > 1, changes = {} }
+      if type(ch) == "table" and ch.trigger == ti and ch.variable == "stacks" then
+        if ch.checks then
+          notes[#notes + 1] = T("a condition combines several checks; only single 'Stacks' checks are drawn by the engine")
+        else
+          local r, why = Engine.StackRange({ stacksOperator = ch.op, stacks = ch.value })
+          if r == nil then
+            notes[#notes + 1] = why
+          else
+            e.range = r or { always = true }
+            if r then cut(r.ge); cut(r.le and r.le + 1) end
+            for _, chg in ipairs(c.changes or {}) do
+              local p = type(chg) == "table" and Path(data, rt, chg.property)
+              if p then
+                e.changes[#e.changes + 1] = { path = p, value = chg.value }
+              elseif type(chg) == "table" and chg.property then
+                notes[#notes + 1] = T("a Stacks condition changes '%s', which the engine cannot vary"):format(tostring(chg.property))
+              end
+            end
+            if #e.changes > 0 then used[ci] = true; any = true end
+          end
+        end
+      end
+      entries[ci] = e
+    end
+    if not any then return nil, used, notes end
+    if filter then cut(filter.ge); cut(filter.le and filter.le + 1) end
+    local function inRange(r, s)
+      if not r then return false end
+      if r.always then return true end
+      return (not r.ge or s >= r.ge) and (not r.le or s <= r.le)
+    end
+    local list = {}
+    for n in pairs(cuts) do list[#list + 1] = n end
+    table.sort(list)
+    local looks = {}
+    for i, lo in ipairs(list) do
+      local hi = list[i + 1] and list[i + 1] - 1 or nil
+      if not filter or inRange(filter, lo) then
+        -- which conditions are active at lo (constant across the stretch), WA's chain rule included
+        local active, chainHit = {}, false
+        for ci, e in ipairs(entries) do
+          if not e.linked then chainHit = false end
+          local on = not chainHit and inRange(e.range, lo)
+          if on then chainHit = true end
+          if on and used[ci] then active[#active + 1] = e end
+        end
+        local changes, keys = {}, {}
+        for _, e in ipairs(active) do
+          for _, chg in ipairs(e.changes) do
+            changes[#changes + 1] = chg
+            keys[#keys + 1] = table.concat(chg.path, ".") .. "=" .. Show(chg.value)
+          end
+        end
+        local key = table.concat(keys, ";")
+        local last = looks[#looks]
+        if last and last.key == key and last.le and last.le + 1 == lo then
+          last.le = hi
+        else
+          looks[#looks + 1] = { ge = lo, le = hi, changes = changes, key = key }
+        end
+      end
+    end
+    for _, l in ipairs(looks) do if l.ge == 0 then l.ge = nil end end
+    if #looks > MAX_LOOKS then
+      notes[#notes + 1] = T("the Stacks conditions need more than %d looks; they are not drawn by the engine"):format(MAX_LOOKS)
+      return nil, {}, notes
+    end
+    if #looks == 1 and looks[1].key == "" then return nil, used, notes end
+    return looks, used, notes
+  end
+end
+
 -- One aura2 trigger -> its part of the plan. Reasons it cannot be drawn go through no().
 -- Blizzard's aura containers refuse to pick auras by spell id where that could single out an encounter
 -- debuff (Blizzard_AuraContainerUtil.lua, CanApplyIdentityCandidateFilters): debuffs on friendly units
@@ -1026,13 +1158,22 @@ function Engine.Classify(data)
       end
     end
     if #r > 0 then return nil, r end
+    local looks, lookConds, lookNotes
+    if inf.mode == "active" then looks, lookConds, lookNotes = Engine.StackLooks(data, auraIdx[1], rt, inf.stacks) end
+    local looksKey
+    if looks then
+      local parts = {}
+      for _, l in ipairs(looks) do parts[#parts + 1] = ("%s-%s:%s"):format(tostring(l.ge or ""), tostring(l.le or ""), l.key) end
+      looksKey = table.concat(parts, "|")
+    end
     local key = table.concat({ unit, inf.mode, inf.key }, ";")
     return { unit = unit, filter = inf.filter, filterString = inf.filterString, mode = inf.mode,
              candidate = inf.candidate, firstId = inf.firstId, key = key, byDuration = inf.byDuration, warn = inf.warn,
              durationFromSetting = inf.durationFromSetting, fingerprint = inf.fingerprint,
              nameless = inf.nameless, propsText = inf.propsText, propsKey = inf.propsKey,
              ids = inf.ids, byName = inf.byName, gen = spellbookGen, unresolved = inf.unresolved, unseen = inf.unseen,
-             auraTriggers = auraTriggers, gates = gates, stacks = inf.stacks }
+             auraTriggers = auraTriggers, gates = gates, stacks = inf.stacks,
+             looks = looks, looksKey = looksKey, lookConds = lookConds, lookNotes = lookNotes }
   end
 
   if rt ~= "icon" then
@@ -1112,7 +1253,10 @@ local function InertConditions(data, plan)
     end
     return aura[check.trigger] and check.variable ~= nil and check.variable ~= "buffed"
   end
-  for _, c in ipairs(data.conditions or {}) do if bad(c.check) then return true end end
+  local drawn = plan and plan.lookConds or {}
+  for ci, c in ipairs(data.conditions or {}) do
+    if not drawn[ci] and bad(c.check) then return true end
+  end
   return false
 end
 
@@ -1405,6 +1549,17 @@ function Engine.Explain(data, plan, reasons)
                 or T("at %s or fewer"):format(n(st.le))
       txt = txt .. " " .. T("|cff33ff99Stack Count:|r shown only %s. The game compares the stacks itself: a frame around the display opens and closes with the engine's own stack bar. Sounds still play when the aura comes or goes."):format(when)
     end
+    if plan.looks then
+      local parts = {}
+      for _, l in ipairs(plan.looks) do
+        local lo = l.ge or 0
+        parts[#parts + 1] = (l.le == lo) and tostring(lo) or l.le and ("%d-%d"):format(lo, l.le) or ("%d+"):format(lo)
+      end
+      txt = txt .. " " .. T("|cff33ff99Conditions on stacks:|r drawn as %d looks (stacks %s), each by an aura slot of its own behind its own pair of stack gates, so the game shows the one that matches."):format(#plan.looks, table.concat(parts, ", "))
+    end
+    for _, n in ipairs(plan.lookNotes or {}) do
+      txt = txt .. " " .. T("|cffff9933Note:|r %s."):format(n)
+    end
     if InertConditions(data, plan) then
       txt = txt .. " " .. T("|cffff9933Note:|r a condition reads trigger data other than 'Buffed'; it never fires on this display.")
     end
@@ -1457,12 +1612,13 @@ local function RegionSize(region)
   return math.max(math.floor(w + 0.5), 1), math.max(math.floor(h + 0.5), 1)
 end
 
-local function BuildHost(region)
+local function BuildHost(region, parent)
   -- with the aura containers' ban on layout scripts from the start, so it can hang on a Dynamic Group's
-  -- chain of containers; everything of ours is created inside it and inherits the ban
-  local host = CreateFrame("Frame", nil, region, "DisableUntrustedLayoutScriptsTemplate")
-  host:SetAllPoints(region)
-  host:SetFrameLevel(region:GetFrameLevel() + 1)
+  -- chain of containers; everything of ours is created inside it and inherits the ban. parent: the
+  -- display's host, for a look of conditions on stacks (Engine.ApplyVariants)
+  local host = CreateFrame("Frame", nil, parent or region, "DisableUntrustedLayoutScriptsTemplate")
+  host:SetAllPoints(parent or region)
+  host:SetFrameLevel(parent and parent:GetFrameLevel() or (region:GetFrameLevel() + 1))
   host:Hide()
   -- the Stack Count gates (Engine.ApplyStacks): plain frames around the container, clipping only while a
   -- stack filter needs them. The container is created inside them: it cannot change parent later.
@@ -3557,6 +3713,9 @@ do
       if p.stacks then
         return nil, T("'%s' uses 'Stack Count' (its place would stay empty while the count does not match)"):format(tostring(id))
       end
+      if p.looks then
+        return nil, T("'%s' has conditions on its stacks (drawn as looks of their own)"):format(tostring(id))
+      end
       if p.parts or p.mode ~= "active" then
         return nil, T("'%s' is not shown on Aura(s) Found (only those leave a gap to close)"):format(tostring(id))
       end
@@ -3960,6 +4119,123 @@ do
   end
 end
 
+-- Looks for conditions on stacks (Engine.StackLooks): the first look is the display's own slot, behind
+-- its own Stack Count gates; every further look is a variant: a host of its own inside the display's
+-- host (so it moves, shows and hides with it), with its own gates, aura slot (same aura), glow clip and
+-- look, styled by the same code from the display's data with that look's changes applied.
+do
+  -- the data with a look's changes applied (copies only what changes)
+  function Engine.LookData(data, look)
+    if not look or #look.changes == 0 then return data end
+    local d = {}
+    for k, v in pairs(data) do d[k] = v end
+    local subs = {}
+    for i, sub in ipairs(data.subRegions or {}) do subs[i] = sub end
+    d.subRegions = subs
+    for _, chg in ipairs(look.changes) do
+      local v = chg.value
+      if type(v) == "table" then
+        local c = {}
+        for k, x in pairs(v) do c[k] = x end
+        v = c
+      end
+      if #chg.path == 2 then
+        local i, key = chg.path[1], chg.path[2]
+        local copy = {}
+        for k, x in pairs(subs[i] or {}) do copy[k] = x end
+        copy[key] = v
+        subs[i] = copy
+      else
+        d[chg.path[1]] = v
+      end
+    end
+    return d
+  end
+
+  -- the plan with a look's stack range as its Stack Count (false: no gate)
+  function Engine.LookPlan(plan, look)
+    if not look then return plan end
+    local st = false
+    if look.ge or look.le then
+      st = { ge = look.ge, le = look.le, key = ("%s-%s"):format(tostring(look.ge or ""), tostring(look.le or "")) }
+    end
+    return setmetatable({ stacks = st }, { __index = plan })
+  end
+
+  -- alpha: the host sits inside the region, which WA keeps at the display's own alpha
+  function Engine.LookAlpha(att, data, ldata)
+    local base, want = tonumber(data.alpha) or 1, tonumber(ldata.alpha) or tonumber(data.alpha) or 1
+    local a = (base > 0) and math.min(1, math.max(0, want / base)) or 1
+    if att.lookAlpha ~= a then att.host:SetAlpha(a); att.lookAlpha = a end
+  end
+
+  -- frame levels inside a variant's host, as ApplyUnguarded sets them for a slot
+  local function Levels(v)
+    local c, sh = v.container, v.shadows
+    pcall(v.button.SetFrameLevel, v.button, c:GetFrameLevel())
+    if v.isBar and sh.bar then
+      pcall(sh.bar.SetFrameLevel, sh.bar, c:GetFrameLevel() + 1)
+      pcall(sh.texts.SetFrameLevel, sh.texts, c:GetFrameLevel() + 2)
+    elseif (v.isPic or v.isMotion or v.isModel or v.isText) and sh.texts then
+      pcall(sh.texts.SetFrameLevel, sh.texts, c:GetFrameLevel() + 2)
+    elseif v.isTex and sh.texClip then
+      pcall(sh.bar.SetFrameLevel, sh.bar, c:GetFrameLevel() + 1)
+      pcall(sh.texClip.SetFrameLevel, sh.texClip, c:GetFrameLevel() + 1)
+      pcall(sh.texts.SetFrameLevel, sh.texts, c:GetFrameLevel() + 2)
+    end
+  end
+
+  local MAX_VARIANTS = 4
+
+  function Engine.ApplyVariants(att, region, data, plan, on)
+    local looks = on and plan and plan.looks or nil
+    att.variants = att.variants or {}
+    for i = 2, MAX_VARIANTS do
+      local look = looks and looks[i]
+      local v = att.variants[i]
+      if look then
+        if not v then
+          v = { region = region, shadows = {}, isBar = att.isBar, isTex = att.isTex, isPic = att.isPic,
+                isMotion = att.isMotion, isModel = att.isModel, isText = att.isText, variantOf = att }
+          v.host, v.container, v.gates = BuildHost(region, att.host)
+          att.variants[i] = v
+        end
+        if not v.slotBuilt then
+          if BuildSlot(v, region, plan) then v.slotFilter, v.slotKey = plan.filterString, plan.key end
+        else
+          local c = v.container
+          if v.slotFilter ~= plan.filterString then c:SetAuraSlotFilterString(KEY, plan.filterString); v.slotFilter = plan.filterString end
+          if v.slotKey ~= plan.key then c:SetAuraSlotCandidateFilters(KEY, plan.candidate); v.slotKey = plan.key end
+          c:SetAuraSlotEnabled(KEY, true)
+        end
+        if v.slotBuilt then
+          local ldata = Engine.LookData(data, look)
+          local glowSub = GlowSub(ldata)
+          if glowSub then
+            local w, h = RegionSize(region)
+            v.pclipShown = EnsurePresentClip(v, region, plan, AnimatedGlowMargin(w, h, glowSub))
+          else
+            DisablePresentClip(v)
+          end
+          Engine.ApplyStacks(v, Engine.LookPlan(plan, look), true)
+          if v.unit ~= plan.unit then v.container:SetUnit(plan.unit); v.unit = plan.unit end
+          ApplySlotLook(v, region, ldata, plan)
+          Levels(v)
+          Engine.LookAlpha(v, data, ldata)
+          att.mirrored = att.mirrored or {}
+          for live in pairs(v.mirrored or {}) do att.mirrored[live] = true end
+          v.host:Show()
+        else
+          v.host:Hide()
+        end
+      elseif v then
+        if v.slotBuilt then pcall(v.container.SetAuraSlotEnabled, v.container, KEY, false) end
+        v.host:Hide()
+      end
+    end
+  end
+end
+
 local function TurnOff(att, region, data, mode)
   if att.host then att.host:Hide() end
   pcall(Dyn.Leave, att, region, data)
@@ -3999,6 +4275,9 @@ local function ApplyUnguarded(region)
   local c = att.container
   local kind = plan.parts and "composite" or ((plan.mode == "missing") and "group" or "slot")
   if att.kind and att.kind ~= kind then DisableKind(att, att.kind) end
+  -- conditions on stacks: the slot draws the first look (the others are variants, below)
+  local mainLook = (kind == "slot") and plan.looks and plan.looks[1] or nil
+  local ldata = mainLook and Engine.LookData(data, mainLook) or data
 
   if kind == "slot" then
     if not att.slotBuilt then
@@ -4009,7 +4288,7 @@ local function ApplyUnguarded(region)
       if att.slotKey ~= plan.key then c:SetAuraSlotCandidateFilters(KEY, plan.candidate); att.slotKey = plan.key end
       c:SetAuraSlotEnabled(KEY, true)
     end
-    local glowSub = plan.mode == "active" and GlowSub(data)
+    local glowSub = plan.mode == "active" and GlowSub(ldata)
     if glowSub then
       local w, h = RegionSize(region)
       att.pclipShown = EnsurePresentClip(att, region, plan, AnimatedGlowMargin(w, h, glowSub))
@@ -4024,7 +4303,7 @@ local function ApplyUnguarded(region)
   else
     if not EnsureComposite(att, region, data, plan) then TurnOff(att, region, data, "off"); return end
   end
-  local okSt, errSt = pcall(Engine.ApplyStacks, att, plan, kind == "slot")
+  local okSt, errSt = pcall(Engine.ApplyStacks, att, Engine.LookPlan(plan, mainLook), kind == "slot")
   if not okSt and not att.stackWarned then
     att.stackWarned = true
     WA.prettyPrint(("%s: engine stack count failed: %s"):format(tostring(region.id), tostring(errSt)))
@@ -4033,7 +4312,7 @@ local function ApplyUnguarded(region)
   if att.unit ~= plan.unit then c:SetUnit(plan.unit); att.unit = plan.unit end
 
   local okLook, err
-  if kind == "slot" then okLook, err = pcall(ApplySlotLook, att, region, data, plan)
+  if kind == "slot" then okLook, err = pcall(ApplySlotLook, att, region, ldata, plan)
   elseif kind == "group" then okLook, err = pcall(ApplyUnderlayLook, att, region, data, plan)
   else okLook, err = pcall(ApplyCompositeLook, att, region, data, plan) end
   if not okLook and not att.lookWarned then
@@ -4067,6 +4346,14 @@ local function ApplyUnguarded(region)
     pcall(sh.bar.SetFrameLevel, sh.bar, c:GetFrameLevel() + 1)
     pcall(sh.texClip.SetFrameLevel, sh.texClip, c:GetFrameLevel() + 1)
     pcall(sh.texts.SetFrameLevel, sh.texts, c:GetFrameLevel() + 2)
+  end
+  local okV, errV = pcall(function()
+    Engine.LookAlpha(att, data, ldata)
+    Engine.ApplyVariants(att, region, data, plan, kind == "slot")
+  end)
+  if not okV and not att.variantWarned then
+    att.variantWarned = true
+    WA.prettyPrint(("%s: engine stack looks failed: %s"):format(tostring(region.id), tostring(errV)))
   end
   -- in a Dynamic Group of engine-driven Found displays, the game packs the children (after the look:
   -- the copies the look hung on WA's frames move onto the host)
@@ -4155,7 +4442,7 @@ local function ComputeSig(region, data, plan)
     tostring(data.enableGradient), table.concat(data.barColor2 or {}, ","), tostring(data.gradientOrientation),
     table.concat(data.backgroundColor or {}, ","), table.concat(data.icon_color or {}, ","),
     tostring(data.foreverEngineRange), tostring(data.foreverEngineRangeSpell), tostring(data.foreverEngineGlowPart),
-    SoundSig(data), tostring(data.parent), Dyn.Sig(data), plan.stacks and plan.stacks.key or "",
+    SoundSig(data), tostring(data.parent), Dyn.Sig(data), plan.stacks and plan.stacks.key or "", plan.looksKey or "",
     table.concat(data.color or {}, ","), region.icon and table.concat({ region.icon:GetTexCoord() }, ",") or "" }
   if data.regionType == "progresstexture" then
     for _, k in ipairs({ "foregroundTexture", "backgroundTexture", "sameTexture", "desaturateForeground",
