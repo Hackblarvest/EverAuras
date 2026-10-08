@@ -3678,7 +3678,12 @@ do
     return l, b, w, h
   end
 
+  local PackPlan
+
   -- The packing plan of a dynamic group (plain data): nil + reason when WA keeps laying it out.
+  -- A group sorted by the time left that the game cannot draw sorted is still packed in the children's
+  -- order when it can be (gp.sortWhy says why): WA would sort it by times it cannot read in combat and
+  -- leave gaps.
   function Dyn.Plan(gdata)
     if not (gdata and gdata.regionType == "dynamicgroup") then return nil end
     local grow = gdata.grow or "DOWN"
@@ -3687,10 +3692,23 @@ do
     if gdata.useAnchorPerUnit then return nil, T("it anchors per unit") end
     if (tonumber(gdata.stagger) or 0) ~= 0 then return nil, T("it staggers its children") end
     local sort = gdata.sort or "none"
-    if sort == "ascending" or sort == "descending" then return Dyn.SortPlan(gdata, g, grow) end
-    if sort ~= "none" then
+    local sortWhy
+    if sort == "ascending" or sort == "descending" then
+      local sp, why = Dyn.SortPlan(gdata, g, grow)
+      if sp then return sp end
+      sortWhy = why
+    elseif sort ~= "none" then
       return nil, T("it sorts its children by '%s' (the game sorts by the time left only: Ascending or Descending)"):format(tostring(sort))
     end
+    local gp, why = PackPlan(gdata, g, grow)
+    if not sortWhy then return gp, why end
+    if not gp then return nil, sortWhy end
+    gp.sortWhy = sortWhy
+    gp.sig = gp.sig .. "|unsorted"
+    return gp
+  end
+
+  function PackPlan(gdata, g, grow)
     if gdata.useLimit then return nil, T("it limits how many children it shows") end
     local ct = gdata.centerType or "LR"
     if g.centred and ct ~= "LR" and ct ~= "RL" then return nil, T("it fills from the centre outwards") end
@@ -3784,20 +3802,31 @@ do
     return st
   end
 
-  -- The chain starts where WA puts the first child it shows (WA leaves out children that are not loaded;
-  -- their links stay 1 px, their aura being nowhere); a centred one hangs by the middle of WA's row.
+  -- The chain starts where WA's row starts: at the outermost child it shows on the side the row grows
+  -- from (WA leaves out children that are not loaded; their links stay 1 px, their aura being nowhere).
+  -- That is the first child, unless WA sorts the group: then it shuffles its children, but its row still
+  -- starts at the same place. A centred one hangs by the middle of WA's row.
   local function AnchorStart(st)
     local gp = st.gp
-    local first, last
+    local x = gp.axis == "x"
+    local low = gp.centred or gp.sign > 0
+    local first, lo, hi
     for _, id in ipairs(gp.ids) do
       local r = RegionOf(id)
-      if r and r:IsShown() and Rect(r) then first = first or r; last = r end
+      local l, b, w, h
+      if r and r:IsShown() then l, b, w, h = Rect(r) end
+      if l then
+        local a0 = x and l or b
+        local a1 = a0 + (x and w or h)
+        if not first or (low and a0 < lo) or (not low and a1 > hi) then first = r end
+        lo = lo and math.min(lo, a0) or a0
+        hi = hi and math.max(hi, a1) or a1
+      end
     end
     -- nothing shown (no target): the chain keeps the place it was given last time
     if not first then return st.ref ~= nil end
     st.ref = first
     local fl, fb = Rect(first)
-    local ll, lb, lw, lh = Rect(last)
     -- the chain measures in the children's own units (a group anchored to a scaled frame scales them)
     local want = first:GetEffectiveScale() / st.gregion:GetEffectiveScale()
     if math.abs(st.root:GetScale() - want) > 0.0001 then st.root:SetScale(want) end
@@ -3808,10 +3837,10 @@ do
       local t = st.total
       t:ClearAllPoints()
       if gp.axis == "x" then
-        t:SetPoint("TOP", first, "TOPLEFT", (ll + lw - fl) / 2 * k, 0)
+        t:SetPoint("TOP", first, "TOPLEFT", (hi - fl) / 2 * k, 0)
         link:SetPoint("TOPLEFT", t, "TOPLEFT", 0, 0)
       else
-        t:SetPoint("LEFT", first, "BOTTOMLEFT", 0, (lb + lh - fb) / 2 * k)
+        t:SetPoint("LEFT", first, "BOTTOMLEFT", 0, (hi - fb) / 2 * k)
         link:SetPoint("BOTTOMLEFT", t, "BOTTOMLEFT", 0, 0)
       end
     elseif gp.axis == "x" and gp.sign > 0 then link:SetPoint("TOPLEFT", first, "TOPLEFT", -1, 0)
@@ -4031,6 +4060,9 @@ do
     if gp and gp.sorted then
       return T("|cff33ff99Dynamic Group:|r sorted by the time left by the game (%s first), in combat too: the group is drawn as one row of its auras in the look of '%s' (a static glow; the border and texts other than %%p/%%s are hidden). This display itself is not drawn while it is in the row."):format(
         gp.dir == "descending" and T("the most time left") or T("the least time left"), tostring(gp.tpl))
+    end
+    if gp and gp.sortWhy then
+      return T("|cffff9933Dynamic Group:|r not sorted by the time left, because %s; packed by the game in the children's order instead, so it leaves no gap while its aura is absent, in combat too. While packed, its border and texts other than %%p/%%s/%%n are hidden."):format(tostring(gp.sortWhy))
     end
     if gp then
       return T("|cff33ff99Dynamic Group:|r packed by the game, so it leaves no gap while its aura is absent, in combat too. While packed, its border and texts other than %p/%s/%n are hidden.")
