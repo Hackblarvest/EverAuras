@@ -4240,8 +4240,9 @@ do
     if not gdata then return nil end
     local gp, why = Dyn.Plan(gdata)
     if gp and gp.sorted then
-      local s = T("|cff33ff99Dynamic Group:|r sorted by the time left by the game (%s first), in combat too: the group is drawn as one row of its auras in the look of '%s' (the border and texts other than %%p/%%s are hidden). This display itself is not drawn while it is in the row."):format(
-        gp.dir == "descending" and T("the most time left") or T("the least time left"), tostring(gp.tpl))
+      local s = T("|cff33ff99Dynamic Group:|r sorted by the time left by the game (%s first), in combat too: the group is drawn as one row of its auras in the look of '%s' (the border and texts other than %s are hidden). This display itself is not drawn while it is in the row."):format(
+        gp.dir == "descending" and T("the most time left") or T("the least time left"), tostring(gp.tpl),
+        gp.kind == "aurabar" and "%p/%s/%n" or "%p/%s")
       if gp.time then
         s = s .. " " .. T("Its 'Remaining Duration' conditions are drawn per frame: below %s s and from %s s up, each frame takes its own look (colour and glow), in combat too."):format(tostring(gp.time.x), tostring(gp.time.x))
       end
