@@ -4283,6 +4283,9 @@ do
   -- first child. The children themselves stay engine-driven but invisible (their sounds still play).
   local LOOK_KEYS = { "width", "height", "zoom", "keepAspectRatio", "desaturate", "color", "cooldown", "cooldownSwipe",
                       "cooldownEdge", "cooldownTextDisabled", "inverse", "useTooltip" }
+  Dyn.BAR_LOOK_KEYS = { "width", "height", "orientation", "inverse", "icon", "icon_side", "icon_color", "zoom",
+                        "desaturate", "barColor", "barColor2", "enableGradient", "gradientOrientation",
+                        "backgroundColor", "texture", "useTooltip" }
   local function Ser(v)
     if type(v) ~= "table" then return tostring(v) end
     local items = {}
@@ -4296,7 +4299,7 @@ do
   -- { glow = sub or nil, overlay = { r, g, b } or nil } (overlay: a multiplying colour over the icon, used
   -- when the two sides' colours differ); notes for the status line.
   Dyn.GATE_SHIFT = 80
-  function Dyn.SortedLooks(data, w, h)
+  function Dyn.SortedLooks(data, w, h, kind)
     if not data then return nil end
     local function GlowCopy(sub)
       if not sub then return nil end
@@ -4304,9 +4307,12 @@ do
       for k, v in pairs(sub) do c[k] = v end
       return c
     end
-    local tl, _, notes = Engine.TimeLooks(data, 1, "icon")
+    local tl, _, notes = Engine.TimeLooks(data, 1, kind == "aurabar" and "aurabar" or "icon")
     notes = notes or {}
-    if tl and CountdownSub(data) then
+    if tl and kind == "aurabar" then
+      notes[#notes + 1] = T("its 'Remaining Duration' conditions are not drawn in a sorted row of bars, so far")
+      tl = nil
+    elseif tl and CountdownSub(data) then
       notes[#notes + 1] = T("its 'Remaining Duration' conditions need the frames' duration text, which its %p text uses (hide the %p text: the countdown numbers show the time)")
       tl = nil
     end
@@ -4346,24 +4352,31 @@ do
     local ids = {}
     for _, id in ipairs(gdata.controlledChildren or {}) do ids[#ids + 1] = id end
     if #ids == 0 then return nil, T("it has no children") end
-    local tplLook, unit, filterString, otherKey, w, h, first
+    local tplLook, unit, filterString, otherKey, w, h, first, kind
     local union, unionList = {}, {}
     for _, id in ipairs(ids) do
       local cd = WA.GetData(id)
       if not cd then return nil, T("a child is missing") end
       local p = cd.uid and decided[cd.uid] or nil
       if not (ENGINE_REGIONS[cd.regionType] and p) then return nil, T("'%s' is not engine-driven"):format(tostring(id)) end
-      if cd.regionType ~= "icon" then
-        return nil, T("'%s' is not an Icon (a group sorted by the time left draws Icons, so far)"):format(tostring(id))
+      if cd.regionType ~= "icon" and cd.regionType ~= "aurabar" then
+        return nil, T("'%s' is not an Icon or a Progress Bar (a group sorted by the time left draws those, so far)"):format(tostring(id))
+      end
+      if kind and cd.regionType ~= kind then
+        return nil, T("'%s' and '%s' are not of one kind (a group sorted by the time left draws Icons or Progress Bars)"):format(tostring(ids[1]), tostring(id))
+      end
+      kind = cd.regionType
+      if kind == "aurabar" and tostring(cd.orientation or "HORIZONTAL"):find("VERTICAL") then
+        return nil, T("'%s' is a vertical bar (a group sorted by the time left draws horizontal bars, so far)"):format(tostring(id))
       end
       if p.parts or p.mode ~= "active" or p.stacks or (p.looks and not p.timeLooks) then
-        return nil, T("'%s' is not a plain 'Aura(s) Found' icon (a group sorted by the time left draws those, so far)"):format(tostring(id))
+        return nil, T("'%s' is not a plain 'Aura(s) Found' display (a group sorted by the time left draws those, so far)"):format(tostring(id))
       end
       if p.nameless or p.byDuration then
         return nil, T("'%s' does not pick its aura by spell (a group sorted by the time left needs spells)"):format(tostring(id))
       end
       local look = {}
-      for _, k in ipairs(LOOK_KEYS) do look[#look + 1] = Ser(cd[k]) end
+      for _, k in ipairs(kind == "aurabar" and Dyn.BAR_LOOK_KEYS or LOOK_KEYS) do look[#look + 1] = Ser(cd[k]) end
       look[#look + 1] = Ser(cd.subRegions)
       look = table.concat(look, "|")
       local other = {}
@@ -4387,8 +4400,18 @@ do
     for k, v in pairs(first.candidate or {}) do candidate[k] = v end
     candidate.includeSpellIDs = union
     local w0, h0 = math.floor((tonumber(w) or 32) + 0.5), math.floor((tonumber(h) or 32) + 0.5)
-    local glow, time, notes = Dyn.SortedLooks(WA.GetData(ids[1]), w0, h0)
+    local fd = WA.GetData(ids[1])
+    local glow, time, notes = Dyn.SortedLooks(fd, w0, h0, kind)
+    -- a bar's icon is a square of the shorter side at its icon side, the bar the rest (AuraBar.lua orient*)
+    local geo
+    if kind == "aurabar" then
+      local is = math.min(w0, h0)
+      if not fd.icon then geo = { bar = { 0, 0, w0, h0 } }
+      elseif fd.icon_side == "LEFT" then geo = { icon = { 0, (h0 - is) / 2, is }, bar = { is, 0, w0 - is, h0 } }
+      else geo = { icon = { w0 - is, (h0 - is) / 2, is }, bar = { 0, 0, w0 - is, h0 } } end
+    end
     return { sorted = true, dir = gdata.sort, grow = grow, axis = g.axis, sign = g.sign, centred = g.centred,
+             kind = kind, geo = geo,
              ids = ids, tpl = ids[1], unit = unit, filterString = filterString, candidate = candidate,
              w = w0, h = h0, space = space, limit = limit, selfPoint = gdata.selfPoint or "CENTER",
              glow = glow, time = time, notes = notes,
@@ -4458,6 +4481,46 @@ do
     s.late, s.early = late, early
   end
 
+  -- A sorted row's frame for Progress Bars: the pieces BuildSlot makes for a bar, laid out on the frame
+  -- as WA lays out the first child (gp.geo: the icon square on its side, the bar the rest), since the
+  -- frame has no WA bar to hang on. ApplyBarLook then styles them like the first child's.
+  function Dyn.SortedBarFrame(button, s, gp)
+    local g = gp.geo
+    s.barBg = button:CreateTexture(nil, "BACKGROUND")
+    s.bar = CreateFrame("StatusBar", nil, button)
+    s.bar:SetPoint("BOTTOMLEFT", button, "BOTTOMLEFT", g.bar[1], g.bar[2])
+    s.bar:SetSize(math.max(1, g.bar[3]), math.max(1, g.bar[4]))
+    s.bar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
+    s.bar:SetFrameLevel(button:GetFrameLevel() + 1)
+    s.barBg:SetAllPoints(s.bar)
+    s.icon = button:CreateTexture(nil, "ARTWORK")
+    if g.icon then
+      s.icon:SetPoint("BOTTOMLEFT", button, "BOTTOMLEFT", g.icon[1], g.icon[2])
+      s.icon:SetSize(g.icon[3], g.icon[3])
+    else
+      s.icon:SetSize(1, 1)
+      s.icon:SetPoint("CENTER", button, "CENTER")
+    end
+    pcall(s.icon.SetSnapToPixelGrid, s.icon, false)
+    s.texts = CreateFrame("Frame", nil, button)
+    s.texts:SetAllPoints(button)
+    s.texts:SetFrameLevel(button:GetFrameLevel() + 2)
+    s.duration = s.texts:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    s.duration:SetPoint("CENTER")
+    s.count = s.texts:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    s.count:SetPoint("CENTER")
+    s.name = s.texts:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    s.name:SetPoint("CENTER")
+    local dirs = Enum and Enum.StatusBarTimerDirection
+    local fr = { button = button, shadows = s, isBar = true, barDirection = dirs and dirs.RemainingTime }
+    button:SetDurationBar(s.bar, { direction = fr.barDirection })
+    button:SetIcon(s.icon)
+    button:SetDurationText(s.duration, nil)
+    button:SetApplicationCount(s.count, nil)
+    button:SetSpellName(s.name)
+    return fr
+  end
+
   local function SortedState(gregion, gid, gp)
     local st = states[gid]
     if st and st.sig == gp.sig and st.gregion == gregion then return st end
@@ -4488,6 +4551,12 @@ do
         pcall(button.SetMouseClickEnabled, button, false)
         pcall(button.EnableMouseMotion, button, false)
         local s = {}
+        if gp.kind == "aurabar" then
+          local fr = Dyn.SortedBarFrame(button, s, gp)
+          Dyn.SortedExtras(button, s, gp)
+          st.frames[#st.frames + 1] = fr
+          return
+        end
         s.icon = button:CreateTexture(nil, "ARTWORK")
         s.icon:SetAllPoints(button)
         pcall(s.icon.SetSnapToPixelGrid, s.icon, false)
