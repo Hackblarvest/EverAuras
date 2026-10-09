@@ -1219,10 +1219,30 @@ function Engine.Classify(data)
     if #r > 0 then return nil, r end
     local looks, lookConds, lookNotes
     if inf.mode == "active" then looks, lookConds, lookNotes = Engine.StackLooks(data, auraIdx[1], rt, inf.stacks) end
+    -- conditions on the time left: two looks (from X up, below X), each behind a time gate (as for stacks)
+    local timeLooks
+    if inf.mode == "active" then
+      local tl, tconds, tnotes = Engine.TimeLooks(data, auraIdx[1], rt)
+      if tnotes and #tnotes > 0 then
+        lookNotes = lookNotes or {}
+        for _, n in ipairs(tnotes) do lookNotes[#lookNotes + 1] = n end
+      end
+      if tl and (looks or inf.stacks) then
+        lookNotes = lookNotes or {}
+        lookNotes[#lookNotes + 1] = T("'Remaining Duration' conditions are not drawn together with 'Stack Count' or conditions on stacks")
+      elseif tl then
+        looks = { { time = { side = "above", x = tl.x }, changes = tl.above.changes, key = tl.above.key },
+                  { time = { side = "below", x = tl.x }, changes = tl.below.changes, key = tl.below.key } }
+        lookConds, timeLooks = tconds, tl.x
+      end
+    end
     local looksKey
     if looks then
       local parts = {}
-      for _, l in ipairs(looks) do parts[#parts + 1] = ("%s-%s:%s"):format(tostring(l.ge or ""), tostring(l.le or ""), l.key) end
+      for _, l in ipairs(looks) do
+        parts[#parts + 1] = ("%s-%s-%s:%s"):format(tostring(l.ge or ""), tostring(l.le or ""),
+          l.time and (l.time.side .. l.time.x) or "", l.key)
+      end
       looksKey = table.concat(parts, "|")
     end
     local key = table.concat({ unit, inf.mode, inf.key }, ";")
@@ -1232,7 +1252,7 @@ function Engine.Classify(data)
              nameless = inf.nameless, propsText = inf.propsText, propsKey = inf.propsKey,
              ids = inf.ids, byName = inf.byName, gen = spellbookGen, unresolved = inf.unresolved, unseen = inf.unseen,
              auraTriggers = auraTriggers, gates = gates, stacks = inf.stacks,
-             looks = looks, looksKey = looksKey, lookConds = lookConds, lookNotes = lookNotes }
+             looks = looks, looksKey = looksKey, lookConds = lookConds, lookNotes = lookNotes, timeLooks = timeLooks }
   end
 
   if rt ~= "icon" then
@@ -1608,7 +1628,9 @@ function Engine.Explain(data, plan, reasons)
                 or T("at %s or fewer"):format(n(st.le))
       txt = txt .. " " .. T("|cff33ff99Stack Count:|r shown only %s. The game compares the stacks itself: a frame around the display opens and closes with the engine's own stack bar. Sounds still play when the aura comes or goes."):format(when)
     end
-    if plan.looks then
+    if plan.timeLooks then
+      txt = txt .. " " .. T("|cff33ff99Conditions on the time left:|r drawn as two looks, from %s s up and below %s s, each by an aura slot of its own behind a time gate (the game formats the time and the gate hangs on the text), so the game shows the one that matches, in combat too."):format(tostring(plan.timeLooks), tostring(plan.timeLooks))
+    elseif plan.looks then
       local parts = {}
       for _, l in ipairs(plan.looks) do
         local lo = l.ge or 0
@@ -1932,7 +1954,104 @@ do
         if not ss.on then c:SetAuraSlotEnabled(SLOT_KEYS[kind], true); ss.on = true end
         if n and ss.n ~= n and pcall(ss.button.SetApplicationBar, ss.button, ss.bar, Options(kind, n)) then ss.n = n end
       end
-      if gate then gate:SetClipsChildren((n and ss) and true or false) end
+      -- a gate clips while the stacks or the time left (Engine.ApplyTimeGate) need it
+      att.stackClip = att.stackClip or {}
+      att.stackClip[kind] = (n and ss) and true or false
+      if gate then gate:SetClipsChildren(att.stackClip[kind] or (att.timeClip and att.timeClip[kind]) or false) end
+    end
+  end
+
+  -- The formatter of a time gate's duration text: wide below x seconds, narrow from x up. Shared with
+  -- the frames of sorted rows (Dyn.SortedExtras).
+  Engine.gateFormatters = {}
+  function Engine.GateFormatter(x, wide)
+    local key = tostring(x) .. "|" .. wide
+    local cache = Engine.gateFormatters
+    if cache[key] ~= nil then return cache[key] or nil end
+    cache[key] = false
+    if not (C_StringUtil and C_StringUtil.CreateNumericRuleFormatter) then return nil end
+    local R = (Enum and Enum.NumericRuleFormatRounding) or {}
+    local ok, f = pcall(C_StringUtil.CreateNumericRuleFormatter)
+    if not ok or not f then return nil end
+    local okB = pcall(f.SetBreakpoints, f, {
+      { threshold = 0, step = 1, rounding = R.Down or 2, format = wide .. "%d" },
+      { threshold = x, step = 1, rounding = R.Down or 2, format = "%d" },
+    })
+    if okB then cache[key] = f end
+    return cache[key] or nil
+  end
+
+  -- Conditions on the time left (Engine.TimeLooks): a look's gate opens below X ("le") or from X up
+  -- ("ge"). X lives in a duration text: the gate slot's own aura button carries a text the game formats
+  -- wide below X and narrow from X up (60 W in a 64 px font, some 3000 px, against at most 7 digits,
+  -- some 250 px), drawn invisible. It hangs by one point STACK_MARGIN + 320 px left of the display, and
+  -- the gate on its right end: "le" spans from the display's left edge (less the margin) to that end, so
+  -- it covers the display only below X; "ge" spans from that end to the display's right edge (plus the
+  -- margin), so it closes below X. As with the stacks, the threshold lives in the formatter alone, so
+  -- nothing that hangs on the aura's frames moves. Text-width gates follow the time in combat (/fdtgate,
+  -- 2026-10-09).
+  Engine.TIME_WIDE = string.rep("W", 60)
+  local TIME_KEYS = { ge = KEY .. "T1", le = KEY .. "T2" }
+
+  local function BuildTimeSlot(att, kind, plan, x)
+    local c, host, gate = att.container, att.host, att.gates[kind]
+    local fmt = Engine.GateFormatter(x, Engine.TIME_WIDE)
+    if not fmt then return nil end
+    local fs
+    local ok, button = pcall(c.AddAuraSlot, c, TIME_KEYS[kind], plan.filterString, {
+      candidateFilters = plan.candidate,
+      initializeFrame = function(button)
+        button:ClearAllPoints()
+        button:SetAllPoints(host)
+        button:SetFrameLevel(c:GetFrameLevel())
+        pcall(button.SetMouseClickEnabled, button, false)
+        pcall(button.EnableMouseMotion, button, false)
+        local text = button:CreateFontString(nil, "BACKGROUND")
+        text:SetFont(STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF", 64, "")
+        text:SetPoint("BOTTOMLEFT", button, "BOTTOMLEFT", -STACK_MARGIN - 320, -STACK_MARGIN)
+        text:SetTextColor(1, 1, 1, 0)
+        button:SetDurationText(text, { textFormatter = fmt })
+        gate:ClearAllPoints()
+        if kind == "le" then
+          gate:SetPoint("TOPLEFT", button, "TOPLEFT", -STACK_MARGIN, STACK_MARGIN)
+          gate:SetPoint("BOTTOMRIGHT", text, "BOTTOMRIGHT")
+        else
+          gate:SetPoint("BOTTOMLEFT", text, "BOTTOMRIGHT")
+          gate:SetPoint("TOPRIGHT", button, "TOPRIGHT", STACK_MARGIN, STACK_MARGIN)
+        end
+        fs = text
+      end,
+    })
+    if not ok or not button or not fs then
+      WA.prettyPrint(("%s: engine time gate failed: %s"):format(tostring(att.region.id), tostring(button)))
+      return nil
+    end
+    return { button = button, fs = fs, x = x, filter = plan.filterString, key = plan.key, on = true }
+  end
+
+  -- on = the plan's look applies (a Found slot); else the gates only stop clipping for the time left
+  function Engine.ApplyTimeGate(att, plan, on)
+    local want = on and plan and plan.timeGate or nil
+    local c, slots = att.container, att.timeSlots or {}
+    att.timeSlots, att.timeClip, att.stackClip = slots, att.timeClip or {}, att.stackClip or {}
+    for _, kind in ipairs({ "ge", "le" }) do
+      local x = want and want.side == (kind == "le" and "below" or "above") and want.x or nil
+      local gate = att.gates and att.gates[kind]
+      local ts = slots[kind]
+      if gate and x and not ts then
+        ts = BuildTimeSlot(att, kind, plan, x)
+        slots[kind] = ts
+      elseif ts and plan then
+        if ts.filter ~= plan.filterString then c:SetAuraSlotFilterString(TIME_KEYS[kind], plan.filterString); ts.filter = plan.filterString end
+        if ts.key ~= plan.key then c:SetAuraSlotCandidateFilters(TIME_KEYS[kind], plan.candidate); ts.key = plan.key end
+        if not ts.on then c:SetAuraSlotEnabled(TIME_KEYS[kind], true); ts.on = true end
+        if x and ts.x ~= x then
+          local f = Engine.GateFormatter(x, Engine.TIME_WIDE)
+          if f and pcall(ts.button.SetDurationText, ts.button, ts.fs, { textFormatter = f }) then ts.x = x end
+        end
+      end
+      att.timeClip[kind] = (x and ts) and true or false
+      if gate then gate:SetClipsChildren(att.timeClip[kind] or att.stackClip[kind] or false) end
     end
   end
 end
@@ -3791,7 +3910,7 @@ do
         return nil, T("'%s' uses 'Stack Count' (its place would stay empty while the count does not match)"):format(tostring(id))
       end
       if p.looks then
-        return nil, T("'%s' has conditions on its stacks (drawn as looks of their own)"):format(tostring(id))
+        return nil, T("'%s' has conditions on its stacks or time left (drawn as looks of their own)"):format(tostring(id))
       end
       if p.parts or p.mode ~= "active" then
         return nil, T("'%s' is not shown on Aura(s) Found (only those leave a gap to close)"):format(tostring(id))
@@ -4237,7 +4356,7 @@ do
       if cd.regionType ~= "icon" then
         return nil, T("'%s' is not an Icon (a group sorted by the time left draws Icons, so far)"):format(tostring(id))
       end
-      if p.parts or p.mode ~= "active" or p.stacks or p.looks then
+      if p.parts or p.mode ~= "active" or p.stacks or (p.looks and not p.timeLooks) then
         return nil, T("'%s' is not a plain 'Aura(s) Found' icon (a group sorted by the time left draws those, so far)"):format(tostring(id))
       end
       if p.nameless or p.byDuration then
@@ -4285,25 +4404,6 @@ do
     HORIZONTAL = { "x", "Right", "Down", "TOPLEFT" }, VERTICAL = { "y", "Right", "Down", "TOPLEFT" },
   }
 
-  -- The duration text's formatter of a time gate: wide below x seconds, narrow from x up.
-  Dyn.gateFormatters = {}
-  function Dyn.GateFormatter(x, wide)
-    local gateFormatters = Dyn.gateFormatters
-    local key = tostring(x) .. "|" .. wide
-    if gateFormatters[key] ~= nil then return gateFormatters[key] or nil end
-    gateFormatters[key] = false
-    if not (C_StringUtil and C_StringUtil.CreateNumericRuleFormatter) then return nil end
-    local R = (Enum and Enum.NumericRuleFormatRounding) or {}
-    local ok, f = pcall(C_StringUtil.CreateNumericRuleFormatter)
-    if not ok or not f then return nil end
-    local okB = pcall(f.SetBreakpoints, f, {
-      { threshold = 0, step = 1, rounding = R.Down or 2, format = wide .. "%d" },
-      { threshold = x, step = 1, rounding = R.Down or 2, format = "%d" },
-    })
-    if okB then gateFormatters[key] = f end
-    return gateFormatters[key] or nil
-  end
-
   -- A sorted frame's glow and 'Remaining Duration' looks, built once inside the aura button, where they go
   -- with the aura (anchors inside a button are refused once it shows an aura; frames of ours outside that
   -- hang on it stay behind when it goes, and clips there sized by it draw nothing; animations do run
@@ -4334,7 +4434,7 @@ do
       return
     end
     local tm = gp.time
-    local fmt = Dyn.GateFormatter(tm.x, tm.wide)
+    local fmt = Engine.GateFormatter(tm.x, tm.wide)
     if not fmt then return end
     -- the countdown numbers above the colour
     pcall(s.cooldown.SetFrameLevel, s.cooldown, level + 2)
@@ -4581,7 +4681,7 @@ do
     if look.ge or look.le then
       st = { ge = look.ge, le = look.le, key = ("%s-%s"):format(tostring(look.ge or ""), tostring(look.le or "")) }
     end
-    return setmetatable({ stacks = st }, { __index = plan })
+    return setmetatable({ stacks = st, timeGate = look.time or false }, { __index = plan })
   end
 
   -- alpha: on the look's outer gate, which holds all the look draws (not on the host: the other looks'
@@ -4643,6 +4743,7 @@ do
             DisablePresentClip(v)
           end
           Engine.ApplyStacks(v, Engine.LookPlan(plan, look), true)
+          Engine.ApplyTimeGate(v, Engine.LookPlan(plan, look), true)
           if v.unit ~= plan.unit then v.container:SetUnit(plan.unit); v.unit = plan.unit end
           ApplySlotLook(v, region, ldata, plan)
           Levels(v)
@@ -4728,7 +4829,10 @@ local function ApplyUnguarded(region)
   else
     if not EnsureComposite(att, region, data, plan) then TurnOff(att, region, data, "off"); return end
   end
-  local okSt, errSt = pcall(Engine.ApplyStacks, att, Engine.LookPlan(plan, mainLook), kind == "slot")
+  local okSt, errSt = pcall(function()
+    Engine.ApplyStacks(att, Engine.LookPlan(plan, mainLook), kind == "slot")
+    Engine.ApplyTimeGate(att, Engine.LookPlan(plan, mainLook), kind == "slot")
+  end)
   if not okSt and not att.stackWarned then
     att.stackWarned = true
     WA.prettyPrint(("%s: engine stack count failed: %s"):format(tostring(region.id), tostring(errSt)))
