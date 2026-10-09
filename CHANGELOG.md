@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.14-alpha (2026-10-09)
+
+- **Conditions on the time left on every engine-driven display.** A condition on an Aura trigger's
+  *Remaining Duration* (for example: at 5 s or less, red and glowing) now works in combat on icons, bars,
+  progress textures, textures, texts, stop motions and models, not only in sorted groups. The display is
+  drawn as two looks, from the chosen time up and below it, each behind a gate of its own: an aura slot
+  whose duration text the game formats wide below the time and narrow above it, drawn invisible, with the
+  gate hung on the text's end. What can change is what conditions on stacks can change: colours, desaturate,
+  the glow and its settings, a text's colour, size and visibility, and alpha. One time per display, and not
+  together with *Stack Count* or conditions on stacks (the status line says so).
+
 ## 0.8.13-alpha (2026-10-09)
 
 - **Conditions on the time left in sorted groups.** In a Dynamic Group sorted by the time left, a condition
