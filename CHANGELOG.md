@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.8.15-alpha (2026-10-09)
+
+- **Timer bars sorted by the time left.** A Dynamic Group of alike horizontal Progress Bars set to sort
+  *Ascending* or *Descending* now stays sorted in combat, like icons: the DoT with the least (or most) time
+  left on top, and a refreshed one moves to its new place. Every bar takes the first child's bar, icon,
+  colours, gradient, texture and %p/%s/%n texts, and its glow is animated. Not yet: vertical bars, icons and
+  bars mixed in one group, and conditions on the time left in a row of bars (the status line says so).
+- Logging in while already in combat no longer reports "calling 'SetFrameLevel' on bad self (Attempt to
+  access forbidden object ...)": Blizzard's aura containers are closed to addons while auras are secret, so
+  their levels now wait for the next layout.
+- The status line of a sorted group of bars names %n among the texts it keeps.
+
 ## 0.8.14-alpha (2026-10-09)
 
 - **Conditions on the time left on every engine-driven display.** A condition on an Aura trigger's
