@@ -3562,11 +3562,17 @@ local function EnsureComposite(att, region, data, plan)
   return true
 end
 
+-- Blizzard's aura containers and buttons are forbidden to addon code while auras are secret (a login in
+-- combat, for one), even to look a method up: their levels wait for the next layout then.
+function Engine.SafeLevel(obj, level)
+  if obj then pcall(function() obj:SetFrameLevel(level) end) end
+end
+
 local function SetRemainLevels(att)
-  if not (att.rslots and att.container) then return end
-  local base = att.container:GetFrameLevel()
+  if not (att.rslots and att.container and att.host) then return end
+  local base = att.host:GetFrameLevel()                -- the container's level (ApplyEngineFrameLevels)
   for key, rs in pairs(att.rslots) do
-    pcall(rs.button.SetFrameLevel, rs.button, base + (LEVEL_OF[key:sub(3, 3)] or 0))
+    Engine.SafeLevel(rs.button, base + (LEVEL_OF[key:sub(3, 3)] or 0))
     -- the late clip hangs on the aura button's bar and is forbidden to us while an aura is shown (even
     -- GetFrameLevel): its levels come from the present clip, which is ours to ask, and are best effort
     if rs.clip and att.pclip then
@@ -5259,9 +5265,9 @@ ApplyEngineFrameLevels = function(region, frameLevel)
   if not (att and att.active and att.host) then return end
   local base = frameLevel or (Private.frameLevels and Private.frameLevels[region.id]) or 5
   att.host:SetFrameLevel(region:GetFrameLevel() + 1)       -- L+2 (region is L+1 via subbackground)
-  att.container:SetFrameLevel(att.host:GetFrameLevel())
+  Engine.SafeLevel(att.container, att.host:GetFrameLevel())
   if att.shadows.clip then att.shadows.clip:SetFrameLevel(att.host:GetFrameLevel()) end
-  if att.container2 then att.container2:SetFrameLevel(att.host:GetFrameLevel()) end
+  Engine.SafeLevel(att.container2, att.host:GetFrameLevel())
   if att.pclip then att.pclip:SetFrameLevel(att.host:GetFrameLevel() + 2) end
   for _, k in ipairs(PGLOW_KEYS) do
     if att[k] and att.pclip then att[k]:SetFrameLevel(att.pclip:GetFrameLevel() + 2) end
