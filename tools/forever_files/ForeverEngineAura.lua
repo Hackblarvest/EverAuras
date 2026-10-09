@@ -440,6 +440,65 @@ do
     if #looks == 1 and looks[1].key == "" then return nil, used, notes end
     return looks, used, notes
   end
+
+  -- Conditions on the time left (the trigger's 'Remaining Duration'): as secret as the stacks. The engine
+  -- draws ONE threshold X per display (a frame's one duration text is its gate, see SortedExtras): a look
+  -- below X and one from X up, each the display's data with the changes of the conditions active on that
+  -- side (WA's order and Else If chains, as for stacks). Returns { x, below, above, key } (below/above =
+  -- { changes, key }) or nil, the condition indices used, and notes for the status line.
+  local TIME_SIDE = { ["<"] = "below", ["<="] = "below", [">"] = "above", [">="] = "above" }
+  function Engine.TimeLooks(data, ti, rt)
+    local conds = type(data.conditions) == "table" and data.conditions or {}
+    local entries, used, notes = {}, {}, {}
+    local x
+    for ci, c in ipairs(conds) do
+      local ch = type(c) == "table" and c.check or nil
+      local e = { linked = c.linked and ci > 1, changes = {} }
+      if type(ch) == "table" and ch.trigger == ti and ch.variable == "expirationTime" then
+        local v = tonumber(ch.value)
+        if ch.checks then
+          notes[#notes + 1] = T("a condition combines several checks; only single 'Remaining Duration' checks are drawn by the engine")
+        elseif not TIME_SIDE[ch.op] or not v or v <= 0 then
+          notes[#notes + 1] = T("'Remaining Duration' %s %s cannot be drawn by the engine (use <= or >= and a time above 0)"):format(tostring(ch.op), tostring(ch.value))
+        elseif x and v ~= x then
+          notes[#notes + 1] = T("'Remaining Duration' at %s s is not drawn: the engine draws one time per display (%s s)"):format(tostring(v), tostring(x))
+        else
+          x = v
+          e.side = TIME_SIDE[ch.op]
+          for _, chg in ipairs(c.changes or {}) do
+            local p = type(chg) == "table" and Path(data, rt, chg.property)
+            if p then
+              e.changes[#e.changes + 1] = { path = p, value = chg.value }
+            elseif type(chg) == "table" and chg.property then
+              notes[#notes + 1] = T("a 'Remaining Duration' condition changes '%s', which the engine cannot vary"):format(tostring(chg.property))
+            end
+          end
+          if #e.changes > 0 then used[ci] = true end
+        end
+      end
+      entries[ci] = e
+    end
+    if not x or not next(used) then return nil, used, notes end
+    local looks = { x = x }
+    for _, side in ipairs({ "below", "above" }) do
+      local changes, keys, chainHit = {}, {}, false
+      for ci, e in ipairs(entries) do
+        if not e.linked then chainHit = false end
+        local on = not chainHit and e.side == side
+        if on then chainHit = true end
+        if on and used[ci] then
+          for _, chg in ipairs(e.changes) do
+            changes[#changes + 1] = chg
+            keys[#keys + 1] = table.concat(chg.path, ".") .. "=" .. Show(chg.value)
+          end
+        end
+      end
+      looks[side] = { changes = changes, key = table.concat(keys, ";") }
+    end
+    if looks.below.key == looks.above.key then return nil, used, notes end
+    looks.key = ("%s|%s|%s"):format(tostring(x), looks.below.key, looks.above.key)
+    return looks, used, notes
+  end
 end
 
 -- One aura2 trigger -> its part of the plan. Reasons it cannot be drawn go through no().
@@ -3678,8 +3737,6 @@ do
     return l, b, w, h
   end
 
-  local PackPlan
-
   -- The packing plan of a dynamic group (plain data): nil + reason when WA keeps laying it out.
   -- A group sorted by the time left that the game cannot draw sorted is still packed in the children's
   -- order when it can be (gp.sortWhy says why): WA would sort it by times it cannot read in combat and
@@ -3700,7 +3757,7 @@ do
     elseif sort ~= "none" then
       return nil, T("it sorts its children by '%s' (the game sorts by the time left only: Ascending or Descending)"):format(tostring(sort))
     end
-    local gp, why = PackPlan(gdata, g, grow)
+    local gp, why = Dyn.PackPlan(gdata, g, grow)
     if not sortWhy then return gp, why end
     if not gp then return nil, sortWhy end
     gp.sortWhy = sortWhy
@@ -3708,7 +3765,7 @@ do
     return gp
   end
 
-  function PackPlan(gdata, g, grow)
+  function Dyn.PackPlan(gdata, g, grow)
     if gdata.useLimit then return nil, T("it limits how many children it shows") end
     local ct = gdata.centerType or "LR"
     if g.centred and ct ~= "LR" and ct ~= "RL" then return nil, T("it fills from the centre outwards") end
@@ -4058,8 +4115,13 @@ do
     if not gdata then return nil end
     local gp, why = Dyn.Plan(gdata)
     if gp and gp.sorted then
-      return T("|cff33ff99Dynamic Group:|r sorted by the time left by the game (%s first), in combat too: the group is drawn as one row of its auras in the look of '%s' (a static glow; the border and texts other than %%p/%%s are hidden). This display itself is not drawn while it is in the row."):format(
+      local s = T("|cff33ff99Dynamic Group:|r sorted by the time left by the game (%s first), in combat too: the group is drawn as one row of its auras in the look of '%s' (the border and texts other than %%p/%%s are hidden). This display itself is not drawn while it is in the row."):format(
         gp.dir == "descending" and T("the most time left") or T("the least time left"), tostring(gp.tpl))
+      if gp.time then
+        s = s .. " " .. T("Its 'Remaining Duration' conditions are drawn per frame: below %s s and from %s s up, each frame takes its own look (colour and glow), in combat too."):format(tostring(gp.time.x), tostring(gp.time.x))
+      end
+      for _, n in ipairs(gp.notes or {}) do s = s .. " " .. T("Not drawn: %s."):format(n) end
+      return s
     end
     if gp and gp.sortWhy then
       return T("|cffff9933Dynamic Group:|r not sorted by the time left, because %s; packed by the game in the children's order instead, so it leaves no gap while its aura is absent, in combat too. While packed, its border and texts other than %%p/%%s/%%n are hidden."):format(tostring(gp.sortWhy))
@@ -4110,6 +4172,55 @@ do
     return "{" .. table.concat(items, ",") .. "}"
   end
 
+  -- A sorted row's glow and 'Remaining Duration' looks, from the first child's data (plain data). glow: its
+  -- glow sub, drawn animated in every frame; time: { x, key, wide, m, overlay, below, above }, each side
+  -- { glow = sub or nil, overlay = { r, g, b } or nil } (overlay: a multiplying colour over the icon, used
+  -- when the two sides' colours differ); notes for the status line.
+  Dyn.GATE_SHIFT = 80
+  function Dyn.SortedLooks(data, w, h)
+    if not data then return nil end
+    local function GlowCopy(sub)
+      if not sub then return nil end
+      local c = {}
+      for k, v in pairs(sub) do c[k] = v end
+      return c
+    end
+    local tl, _, notes = Engine.TimeLooks(data, 1, "icon")
+    notes = notes or {}
+    if tl and CountdownSub(data) then
+      notes[#notes + 1] = T("its 'Remaining Duration' conditions need the frames' duration text, which its %p text uses (hide the %p text: the countdown numbers show the time)")
+      tl = nil
+    end
+    if not tl then return GlowCopy(GlowSub(data)), nil, notes end
+    -- per frame, the colour and the glow vary; anything else stays the first child's
+    local said = {}
+    for _, side in ipairs({ tl.below, tl.above }) do
+      for _, chg in ipairs(side.changes) do
+        local p = chg.path
+        local sub = #p == 2 and type(data.subRegions) == "table" and data.subRegions[p[1]]
+        local ok = (#p == 1 and p[1] == "color") or (sub and sub.type == "subglow")
+        local what = table.concat(p, ".")
+        if not ok and not said[what] then
+          said[what] = true
+          notes[#notes + 1] = T("a 'Remaining Duration' condition changes '%s'; a sorted row varies only the colour and the glow per frame"):format(#p == 2 and ("sub." .. what) or what)
+        end
+      end
+    end
+    local below, above = Engine.LookData(data, tl.below), Engine.LookData(data, tl.above)
+    local function Col(d) local c = d.color or {}; return { c[1] or 1, c[2] or 1, c[3] or 1 } end
+    local cb, ca = Col(below), Col(above)
+    local differ = cb[1] ~= ca[1] or cb[2] ~= ca[2] or cb[3] ~= ca[3]
+    local function Side(d, c)
+      local white = c[1] >= 0.999 and c[2] >= 0.999 and c[3] >= 0.999
+      return { glow = GlowCopy(GlowSub(d)), overlay = (differ and not white) and c or nil }
+    end
+    local time = { x = tl.x, key = tl.key, overlay = differ, below = Side(below, cb), above = Side(above, ca) }
+    time.m = math.max(AnimatedGlowMargin(w, h, time.below.glow), AnimatedGlowMargin(w, h, time.above.glow))
+    -- wide enough to reach from GATE_SHIFT left of the frame past its right edge (a W is 8+ px)
+    time.wide = string.rep("W", math.ceil((Dyn.GATE_SHIFT + 2 * time.m + w + 30) / 8))
+    return nil, time, notes
+  end
+
   function Dyn.SortPlan(gdata, g, grow)
     local space = tonumber(gdata.space) or 0
     if space < 0 then return nil, T("its spacing is negative") end
@@ -4157,12 +4268,14 @@ do
     for k, v in pairs(first.candidate or {}) do candidate[k] = v end
     candidate.includeSpellIDs = union
     local w0, h0 = math.floor((tonumber(w) or 32) + 0.5), math.floor((tonumber(h) or 32) + 0.5)
+    local glow, time, notes = Dyn.SortedLooks(WA.GetData(ids[1]), w0, h0)
     return { sorted = true, dir = gdata.sort, grow = grow, axis = g.axis, sign = g.sign, centred = g.centred,
              ids = ids, tpl = ids[1], unit = unit, filterString = filterString, candidate = candidate,
              w = w0, h = h0, space = space, limit = limit, selfPoint = gdata.selfPoint or "CENTER",
+             glow = glow, time = time, notes = notes,
              sig = table.concat({ "sorted", tostring(gdata.sort), grow, tostring(space), tostring(limit),
                                   tostring(gdata.selfPoint), table.concat(ids, "\1"), table.concat(unionList, ","),
-                                  tplLook, unit, filterString, otherKey }, "|") }
+                                  tplLook, unit, filterString, otherKey, time and time.key or "" }, "|") }
   end
 
   -- flow per grow: axis, growth (horizontal, vertical) and the corner the first frame takes
@@ -4171,6 +4284,79 @@ do
     DOWN = { "y", "Right", "Down", "TOPLEFT" }, UP = { "y", "Right", "Up", "BOTTOMLEFT" },
     HORIZONTAL = { "x", "Right", "Down", "TOPLEFT" }, VERTICAL = { "y", "Right", "Down", "TOPLEFT" },
   }
+
+  -- The duration text's formatter of a time gate: wide below x seconds, narrow from x up.
+  Dyn.gateFormatters = {}
+  function Dyn.GateFormatter(x, wide)
+    local gateFormatters = Dyn.gateFormatters
+    local key = tostring(x) .. "|" .. wide
+    if gateFormatters[key] ~= nil then return gateFormatters[key] or nil end
+    gateFormatters[key] = false
+    if not (C_StringUtil and C_StringUtil.CreateNumericRuleFormatter) then return nil end
+    local R = (Enum and Enum.NumericRuleFormatRounding) or {}
+    local ok, f = pcall(C_StringUtil.CreateNumericRuleFormatter)
+    if not ok or not f then return nil end
+    local okB = pcall(f.SetBreakpoints, f, {
+      { threshold = 0, step = 1, rounding = R.Down or 2, format = wide .. "%d" },
+      { threshold = x, step = 1, rounding = R.Down or 2, format = "%d" },
+    })
+    if okB then gateFormatters[key] = f end
+    return gateFormatters[key] or nil
+  end
+
+  -- A sorted frame's glow and 'Remaining Duration' looks, built once inside the aura button, where they go
+  -- with the aura (anchors inside a button are refused once it shows an aura; frames of ours outside that
+  -- hang on it stay behind when it goes, and clips there sized by it draw nothing; animations do run
+  -- inside it: probe /fdtgate, 2026-10-09). The TIME GATE: the button's duration text, formatted wide below
+  -- X and narrow from X up and invisible, hangs by one point GATE_SHIFT left of the frame, so its right end
+  -- moves past the frame below X. A clip from the frame's top-left to that end is open below X, one from
+  -- that end to the frame's top-right from X up; each holds its side's colour (multiplied over the icon)
+  -- and animated glow. Needs no total duration, so it holds for every aura of the row.
+  function Dyn.SortedExtras(button, s, gp)
+    local level = button:GetFrameLevel()
+    local function Content(parent, look, key)
+      if look.overlay then
+        local t = parent:CreateTexture(nil, "ARTWORK")
+        t:SetAllPoints(button)
+        t:SetColorTexture(look.overlay[1], look.overlay[2], look.overlay[3], 1)
+        pcall(t.SetBlendMode, t, "MOD")
+      end
+      if look.glow then
+        local holder = CreateFrame("Frame", nil, parent)
+        holder:SetAllPoints(button)
+        holder:SetFrameLevel(level + 3)
+        if not StartAnimatedGlow(holder, look.glow, gp.w, gp.h) then holder:Hide() end
+        s[key] = holder
+      end
+    end
+    if not gp.time then
+      if gp.glow then Content(button, { glow = gp.glow }, "aglow") end
+      return
+    end
+    local tm = gp.time
+    local fmt = Dyn.GateFormatter(tm.x, tm.wide)
+    if not fmt then return end
+    -- the countdown numbers above the colour
+    pcall(s.cooldown.SetFrameLevel, s.cooldown, level + 2)
+    local fs = button:CreateFontString(nil, "BACKGROUND", "GameFontHighlight")
+    fs:SetPoint("BOTTOMLEFT", button, "BOTTOMLEFT", -tm.m - Dyn.GATE_SHIFT, -tm.m)
+    fs:SetTextColor(1, 1, 1, 0)
+    if not pcall(button.SetDurationText, button, fs, { textFormatter = fmt }) then return end
+    s.gate = fs
+    local late = CreateFrame("Frame", nil, button)
+    late:SetClipsChildren(true)
+    late:SetFrameLevel(level + 1)
+    late:SetPoint("TOPLEFT", button, "TOPLEFT", -tm.m, tm.m)
+    late:SetPoint("BOTTOMRIGHT", fs, "BOTTOMRIGHT", 0, 0)
+    Content(late, tm.below, "lglow")
+    local early = CreateFrame("Frame", nil, button)
+    early:SetClipsChildren(true)
+    early:SetFrameLevel(level + 1)
+    early:SetPoint("BOTTOMLEFT", fs, "BOTTOMRIGHT", 0, 0)
+    early:SetPoint("TOPRIGHT", button, "TOPRIGHT", tm.m, tm.m)
+    Content(early, tm.above, "eglow")
+    s.late, s.early = late, early
+  end
 
   local function SortedState(gregion, gid, gp)
     local st = states[gid]
@@ -4221,6 +4407,7 @@ do
         button:SetDurationCooldown(s.cooldown)
         button:SetDurationText(s.duration, nil)
         button:SetApplicationCount(s.count, nil)
+        Dyn.SortedExtras(button, s, gp)
         st.frames[#st.frames + 1] = { button = button, shadows = s }
       end,
     })
@@ -4238,9 +4425,13 @@ do
     if not (tplData and tplRegion and tplPlan) then return false end
     local gl, gb = Rect(tplRegion)
     if not gl then return false end
+    -- glows are the frames' own animated ones (SortedExtras), not the static texture
+    if FG() and (gp.glow or gp.time) then tplPlan = setmetatable({ noGlow = true }, { __index = tplPlan }) end
     for _, fr in ipairs(st.frames) do
       fr.anchors = setmetatable({}, { __mode = "k" })
       ApplySlotLook(fr, tplRegion, tplData, tplPlan)
+      -- colours that change with the time left are multiplied over a white icon
+      if gp.time and gp.time.overlay then fr.shadows.icon:SetVertexColor(1, 1, 1, 1) end
       for obj, pts in pairs(fr.anchors) do
         local out = {}
         for i, p in ipairs(pts) do
