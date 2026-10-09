@@ -38,7 +38,7 @@ Forever runs on the modern engine with its "secret values" system: the moment yo
 - **Stop Motion animations and Models** for procs and missing buffs, animating in combat too.
 - **Texts**: "NO DEMON SKIN!" while a buff is missing, "Corruption: 12 s" while a DoT runs, in combat too.
 - **Stack Count**: show an aura only at 3+ stacks (or at most, or exactly, N), and **conditions on stacks**: change its colour, glow, text or alpha by the stack count, in combat too.
-- **Dynamic Groups** that close up in combat: a DoT row without holes, growing left, right, up, down or from the centre, or **sorted by the time left**.
+- **Dynamic Groups** that close up in combat: a DoT row without holes, growing left, right, up, down or from the centre, or **sorted by the time left**, with **conditions on the time left** per icon (e.g. red and glowing below 4 s).
 - **Animated glows** (Button, Pixel, Autocast, Proc) on these icons, textures and bars, shown only while they are, also in combat, including a glow that starts when an aura has X seconds left.
 - **Debuffs on you** such as Weakened Soul or Forbearance, matched by their properties, since Blizzard hides which debuff it is in combat.
 - **Auras by dispel type**: "a poison on me", "a Magic debuff on me", "a Magic buff on my target" for Purge, with the aura's own icon and countdown.

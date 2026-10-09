@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.8.13-alpha (2026-10-09)
+
+- **Conditions on the time left in sorted groups.** In a Dynamic Group sorted by the time left, a condition
+  on the first child's *Remaining Duration* (for example: at 4 s or less, red and glowing) now applies to
+  every icon of the row on its own, in combat too: the DoT about to run out turns red and glows, the others
+  stay as they are, and a refresh puts it back. The time left is secret in combat, so the game does the
+  comparing: each icon's duration text is formatted wide below the chosen time and narrow above it, drawn
+  invisible, and two clips inside the icon hang on its end, one open below the time and one above, each
+  holding that side's colour and glow. No total duration is needed, so DoTs of any length share the row.
+  One time per row; colour and glow can change. A %p text in the first child leaves no room for it (the
+  countdown numbers show the time instead).
+- **Glows in sorted groups are animated** (they were drawn still).
+- **No gaps when a sorted group cannot be sorted.** When the children of a group sorted by the time left
+  were not alike (one DoT with a glow of its own, another size, another unit ...), the group fell back to
+  WeakAuras' own layout, with a gap for every absent aura and an order WeakAuras cannot keep in combat. It
+  is now packed by the game in the children's order, and the children's status line says why it is not
+  sorted.
+- Dispel lists regenerated for client 1.60.1.70291 (a few new Magic and Poison spells).
+
 ## 0.8.12-alpha (2026-10-07)
 
 - **Stack Count works in combat.** An Aura trigger's *Stack Count* (show at 3 stacks or more, at most 2,
