@@ -63,6 +63,10 @@ Private.ForeverEngine = Engine
 local KEY = "fe"
 local WARN = "forever_engine"
 local UNIT_OK = { player = true, target = true, focus = true, pet = true }
+-- group members by their unit token (WeakAuras' 'Specific Unit'): always friendly, and the token moves
+-- to another player when the group changes
+for i = 1, 4 do UNIT_OK["party" .. i] = "group" end
+for i = 1, 40 do UNIT_OK["raid" .. i] = "group" end
 local MODE = { showOnActive = "active", showOnMissing = "missing", showAlways = "always" }
 local UNSUPPORTED = {
   "useNamePattern", "useIgnoreName", "useIgnoreExactSpellId",
@@ -806,7 +810,16 @@ end
 
 local function AnalyseAuraTrigger(t, no, data)
   local unit = t.unit or "player"
-  if not UNIT_OK[unit] then no(T("Unit must be Player, Target, Focus or Pet")) end
+  if unit == "member" then unit = Trim(tostring(t.specificUnit or "")):lower() end
+  if not UNIT_OK[unit] then
+    if t.unit == "member" then
+      no(T("a Specific Unit must be a unit such as party1 to party4 or raid1 to raid40 (the engine cannot follow a player's name)"))
+    elseif t.unit == "group" or t.unit == "party" or t.unit == "raid" then
+      no(T("Unit 'Smart Group', 'Party' or 'Raid' is not engine-driven yet; a Specific Unit (party1 to party4, raid1 to raid40) is"))
+    else
+      no(T("Unit must be Player, Target, Focus, Pet or a Specific Unit (party1 to party4, raid1 to raid40)"))
+    end
+  end
   local filter = t.debuffType or "HELPFUL"
   if filter ~= "HELPFUL" and filter ~= "HARMFUL" then no(T("Aura Type must be Buff or Debuff (not Both)")) end
   local mode = MODE[t.matchesShowOn or "showOnActive"]
@@ -884,7 +897,7 @@ local function AnalyseAuraTrigger(t, no, data)
   local candidate, byDuration, durationFromSetting, fingerprint = { includeSpellIDs = ids }, nil, nil, nil
   if nameless then candidate = {} end
   local open = NeverSecret(sorted)
-  local friendlyDebuff = not nameless and filter == "HARMFUL" and (unit == "player" or unit == "pet") and not open
+  local friendlyDebuff = not nameless and filter == "HARMFUL" and (unit == "player" or unit == "pet" or UNIT_OK[unit] == "group") and not open
   if friendlyDebuff then
     if unit == "player" and data and data.foreverEngineSelfDebuff == true then
       -- the approximation: a debuff on you with the same fingerprint (duration, dispel type, flags)
@@ -911,6 +924,8 @@ local function AnalyseAuraTrigger(t, no, data)
     else
       no(unit == "pet"
         and T("Blizzard does not let addons pick debuffs on your pet by spell while auras are secret")
+        or UNIT_OK[unit] == "group"
+        and T("Blizzard does not let addons pick debuffs on group members by spell while auras are secret; pick them by their Debuff Type (Magic, Poison ...) without spell names instead")
         or T("Blizzard does not let addons pick debuffs on yourself by spell while auras are secret; turn on 'Match debuffs on you by their properties' on the Display tab to track it approximately"))
     end
   end
@@ -5376,6 +5391,9 @@ local function ScanLearnable()
           if RecordAura(seen, a, filter, unit) then changed = true end
         end
       end
+      -- group members: the names our triggers use are learned here too (player, target, focus and pet
+      -- learn on their own UNIT_AURA), coalesced like this scan
+      if UNIT_OK[unit] == "group" and Engine.LearnFromUnit then Engine.LearnFromUnit(unit) end
     end
     if done >= LEARN_PER_SCAN then break end
   end
@@ -5453,6 +5471,8 @@ local function LearnFromUnit(unit)
   if changed then QueueSpellbookRefresh() end   -- bumps the generation: re-classify, re-add, refilter
 end
 
+Engine.LearnFromUnit = LearnFromUnit
+
 local function LearnFromAllUnits()
   for unit in pairs(UNIT_OK) do LearnFromUnit(unit) end
 end
@@ -5485,6 +5505,16 @@ QueueSpellbookRefresh = function()
 end
 
 ---------------------------------------------------------------------------- events
+function Engine.RefreshContainers(att)
+  local function one(a)
+    if not (a and a.container) then return end
+    pcall(a.container.UpdateAllAuras, a.container)
+    if a.pclipShown and a.container2 then pcall(a.container2.UpdateAllAuras, a.container2) end
+  end
+  one(att)
+  for i = 2, 4 do one(att.variants and att.variants[i]) end
+end
+
 local REFRESH = { PLAYER_TARGET_CHANGED = "target", PLAYER_FOCUS_CHANGED = "focus", UNIT_PET = "pet" }
 local ev = CreateFrame("Frame")
 Private.frames["ForeverEngine Events"] = ev
@@ -5493,6 +5523,7 @@ ev:RegisterEvent("PLAYER_FOCUS_CHANGED")
 ev:RegisterUnitEvent("UNIT_PET", "player")
 ev:RegisterEvent("PLAYER_REGEN_ENABLED")
 ev:RegisterEvent("PLAYER_ENTERING_WORLD")
+ev:RegisterEvent("GROUP_ROSTER_UPDATE")
 ev:RegisterEvent("SPELLS_CHANGED")
 ev:RegisterEvent("LEARNED_SPELL_IN_SKILL_LINE")
 ev:RegisterEvent("PLAYER_LEVEL_UP")
@@ -5520,13 +5551,15 @@ ev:SetScript("OnEvent", function(_, event, arg1)
   end
   local unit = REFRESH[event]
   if unit then LearnFromUnit(unit) end
-  if unit or event == "PLAYER_ENTERING_WORLD" then pcall(Dyn.UpdateUnit, unit) end
+  local roster = event == "GROUP_ROSTER_UPDATE"
+  if unit or roster or event == "PLAYER_ENTERING_WORLD" then pcall(Dyn.UpdateUnit, unit) end
   for _, att in pairs(attachments) do
     -- Inbound secure delegate, PoC-verified in combat. The container refreshes itself only on
-    -- UNIT_AURA/UNIT_FACTION/UNIT_FLAGS/PLAYER_REGEN_*; unit swaps are our job.
-    if att.active and (event == "PLAYER_ENTERING_WORLD" or att.unit == unit) then
-      pcall(att.container.UpdateAllAuras, att.container)
-      if att.pclipShown then pcall(att.container2.UpdateAllAuras, att.container2) end
+    -- UNIT_AURA/UNIT_FACTION/UNIT_FLAGS/PLAYER_REGEN_*; unit swaps are our job, for every container of
+    -- the display (its looks of conditions on stacks or the time left have their own).
+    if att.active and (event == "PLAYER_ENTERING_WORLD" or att.unit == unit
+                       or (roster and UNIT_OK[att.unit or ""] == "group")) then
+      Engine.RefreshContainers(att)
     end
   end
 end)
