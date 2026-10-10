@@ -21,7 +21,8 @@
 -- frame anchored to its fill reveals a copy of the display's texture as the aura runs out. Circular
 -- ones are the game's cooldown swipe drawn with the display's texture. Texture displays (Show On: Found
 -- or Missing) are icons without a timer: a copy of their texture on the slot button or in the Missing clip.
--- Text displays: plain text the same way, or exactly %p / %s / %n as the engine's own texts (Found).
+-- Text displays: plain text the same way, or %p / %s / %n as the engine's own texts, time and stacks
+-- together as two of them side by side (Found).
 -- Dynamic Groups whose children are all engine-driven Found displays are packed by the game: a chain of
 -- containers sized by the children's auras places them (see "dynamic groups" below).
 --
@@ -1091,8 +1092,8 @@ local ENGINE_REGIONS = { icon = true, aurabar = true, progresstexture = true, te
 local KIND_NAME = { aurabar = "Progress Bars", progresstexture = "Progress Textures", texture = "Textures", text = "Texts",
                     stopmotion = "Stop Motions", model = "Models" }
 
--- What a Text display shows: "plain" (no placeholders), or exactly one aura value the engine can draw
--- itself: "p" (time left), "s" (stacks), "n" (spell name). nil = something else (mixed text, %c, ...).
+-- What a Text display (or a sub-text) shows: "plain" (no placeholders), one aura value the engine can draw
+-- itself (time, stacks, name), or time and stacks together. nil = something else (%c, ...).
 local TextPlan
 do
   -- WA's placeholder grammar (M33kAuras.lua nextState): "%%" is a literal %, "%{...}" and "%" followed by
@@ -1141,16 +1142,52 @@ do
     end
   end
 
-  -- What a Text display shows, or nil + the reason the engine cannot draw it:
+  local DURATION_SYMS = { p = true, t = true }
+
+  -- Time and stacks in one text ("%p (%s)"): the game writes one value into a text, so they are two of the
+  -- button's texts side by side. tp.durParts: the duration text's parts (the time and the words on its side,
+  -- a format string as for "dur"); tp.cParts: the stack count's (the rest). The words BETWEEN the two go
+  -- with the stacks: the game writes the count for every aura it shows, but switches the duration text off
+  -- for an aura without a duration. tp.order: "dc" time first, "cd" stacks first.
+  local function PairPlan(tp)
+    local parts = tp.parts
+    local si, d1, d2
+    for i, part in ipairs(parts) do
+      if part.key == "s" then si = i
+      elseif DURATION_SYMS[part.key] then d1 = d1 or i; d2 = i end
+    end
+    if d1 < si and d2 > si then
+      return nil, T("the time is on both sides of the stacks; the engine draws time and stacks as two texts side by side")
+    end
+    for _, part in ipairs(parts) do
+      if part.lit and (part.lit:find("\n", 1, true) or part.lit:find("|n", 1, true)) then
+        return nil, T("a text with both the time and the stacks has a line break; the engine draws them as two texts side by side, on one line")
+      end
+    end
+    local timeFirst = d2 < si
+    local durParts, cParts = {}, {}
+    for i, part in ipairs(parts) do
+      if (timeFirst and i <= d2) or (not timeFirst and i >= d1) then durParts[#durParts + 1] = part
+      else cParts[#cParts + 1] = part end
+    end
+    for _, part in ipairs(durParts) do
+      local lit = part.lit and (WA.ReplaceRaidMarkerSymbols and WA.ReplaceRaidMarkerSymbols(part.lit) or part.lit)
+      if lit and lit:find("[{}]") then return nil, T("the text around %p contains { or }, which the game's time format uses itself") end
+    end
+    tp.kind, tp.order, tp.durParts, tp.cParts = "pair", timeFirst and "dc" or "cd", durParts, cParts
+    return tp
+  end
+
+  -- What a Text display shows (or text: a sub-text's), or nil + the reason the engine cannot draw it:
   --   kind "plain": text only; %n and %i become the tracked spell's name and icon when it is one spell
   --   kind "dur"  : text with %p (time left) and/or %t (total time): the engine's duration text, whose
   --                 format string takes the text around them ("Corruption: {}")
   --   kind "count": text with one %s: the engine's stack count, through a rule formatter ("Stacks: %d")
   --   kind "name" : exactly %n: the engine's spell name (any aura the display matches)
+  --   kind "pair" : one %s and the time on one side of it (PairPlan): the duration text and the stack count
   -- tp.pure: the text is that one placeholder alone.
-  local DURATION_SYMS = { p = true, t = true }
-  function TextPlan(data)
-    local parts = ParseText(tostring(data.displayText or ""))
+  function TextPlan(data, text)
+    local parts = ParseText(tostring(text or data.displayText or ""))
     local single, auraIdx = SingleSpell(data)
     local kinds, nsyms, lits = {}, 0, false
     for _, part in ipairs(parts) do
@@ -1180,14 +1217,14 @@ do
     if kinds.name and not (nsyms == 1 and not lits) then
       return nil, T("a text with other words can show the aura's name only when the display tracks one spell")
     end
-    local n = (kinds.dur and 1 or 0) + (kinds.count and 1 or 0) + (kinds.name and 1 or 0)
-    if n > 1 or (kinds.count or 0) > 1 then
-      return nil, T("the text shows more than one kind of aura value (time, stacks, name); one per text (so far)")
+    if (kinds.count or 0) > 1 then
+      return nil, T("the text shows the stacks more than once; the engine draws them once per text")
     end
     local tp = { parts = parts, single = single, pure = nsyms == 1 and not lits }
     if tp.pure then
       for _, part in ipairs(parts) do if part.key == "n" then kinds.name = true end end   -- the engine's name
     end
+    if kinds.dur and kinds.count then return PairPlan(tp) end
     if kinds.dur then tp.kind = "dur"
     elseif kinds.count then tp.kind = "count"
     elseif kinds.name then
@@ -1201,6 +1238,15 @@ do
       end
     end
     return tp
+  end
+
+  -- The placeholders a text reads, as a set ("%1.p" counts as "p"), whatever TextPlan makes of it.
+  function Engine.TextKeys(text)
+    local keys = {}
+    for _, part in ipairs(ParseText(tostring(text or ""))) do
+      if part.sym then keys[part.sym:match("^%d+%.(.+)$") or part.sym] = true end
+    end
+    return keys
   end
 end
 
@@ -1654,7 +1700,7 @@ function Engine.Explain(data, plan, reasons)
         and T("animated (the aura's total duration is known: %s s), also while it runs out"):format(tostring(plan.parts.lateTotal))
         or T("WeakAuras' own animated glow while the aura is missing, a static glow while it runs out (animated once the aura's total duration is known: seen out of combat, or read from the spell's description)")
       if plan.parts.found then
-        txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows the live aura while it is present and adds the glow %s. The game checks the time left itself, so it never has to be read. Kept: position, size, groups, %%p/%%s texts, static colour/desaturate/zoom, cooldown swipe; glow %s. Not available: the border (hidden while engine-driven), conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
+        txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows the live aura while it is present and adds the glow %s. The game checks the time left itself, so it never has to be read. Kept: position, size, groups, %%p/%%s texts (also in one, '%%p (%%s)'), static colour/desaturate/zoom, cooldown swipe; glow %s. Not available: the border (hidden while engine-driven), conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
           :format(plan.unit, plan.parts.found.filterString, table.concat(when, T(" or ")), glowTxt)
       else
         txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s). It shows your icon %s, and nothing otherwise. The game checks the time left itself, so it never has to be read. Kept: position, size, groups, the %%p text, static colour/zoom; glow %s. Not available: the border (hidden while engine-driven), cooldown swipe, stack count and desaturation on the time-left icon, conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
@@ -1673,38 +1719,51 @@ function Engine.Explain(data, plan, reasons)
         what = lone and T("the aura's stacks") or T("your text with the aura's stacks (0 stacks read 0)")
       elseif kind == "name" then
         what = T("the aura's name")
+      elseif kind == "pair" then
+        -- the stacks' rules are tested when the look is applied (Engine.PairStackFormatter)
+        what = Engine.PairRuleOK(tp, plan) == false
+          and T("your text with the aura's time and stacks, as two texts of the game side by side (0 stacks read 0)")
+          or T("your text with the aura's time and stacks, as two texts of the game side by side (0 stacks leave the number out, as in WeakAuras)")
       end
       local when = plan.mode == "missing" and T("while the aura is absent and nothing while it is present")
                                          or T("while the aura is present and nothing while it is absent")
       txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows %s %s. Kept: position, size, groups, font, size, outline (SLUG drawn as a normal outline), colour, shadow, justify and width. Not available: %sconditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
         :format(plan.unit, plan.filterString, what, when,
-                kind == "dur" and T("WeakAuras' %p formatting options (the game formats the time itself), ") or "")
+                (kind == "dur" or kind == "pair") and T("WeakAuras' %p formatting options (the game formats the time itself), ") or "")
+      if kind == "pair" then
+        if data.automaticWidth == "Fixed" then
+          txt = txt .. " " .. T("|cffff9933Note:|r time and stacks are drawn on one line at their own width: the fixed width only places them (by the justify), word wrap is not applied.")
+        end
+        if Engine.TextChainPoint(data) == "CENTER" then
+          txt = txt .. " " .. T("Centred by an estimate of the stacks' width, so the text may sit a pixel or two beside WeakAuras' place.")
+        end
+      end
     elseif data.regionType == "model" then
       local when = plan.mode == "missing" and T("while the aura is absent and disappears completely while it is present")
                                          or T("while the aura is present and nothing while it is absent")
-      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows your model %s. Kept: position, size, groups, the model file or display ID, its position or transform, rotation, portrait zoom, animation and alpha, %%p/%%s/%%n texts, the glow (shown only while the model is). Not drawn: the border (hidden while engine-driven). Not available: a unit's model, conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
+      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows your model %s. Kept: position, size, groups, the model file or display ID, its position or transform, rotation, portrait zoom, animation and alpha, %%p/%%s/%%n texts (time and stacks also in one, '%%p (%%s)'), the glow (shown only while the model is). Not drawn: the border (hidden while engine-driven). Not available: a unit's model, conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
         :format(plan.unit, plan.filterString, when)
     elseif data.regionType == "stopmotion" then
       local when = plan.missingPart and T("while the aura is absent and while its stacks match (below), nothing otherwise")
                    or plan.mode == "missing" and T("while the aura is absent and disappears completely while it is present")
                                          or T("while the aura is present and nothing while it is absent")
-      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It plays your animation %s, as a FlipBook animation of the game (scripts cannot run there). Kept: position, size, groups, the texture's frames, frame rate, Loop or Bounce, Inverse, End, colours, desaturate, blend mode, the background frame, %%p/%%s/%%n texts, the glow (shown only while the animation is). Not drawn: the border (hidden while engine-driven). Not available: Once and Progress animations, a Start above 0%%, conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
+      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It plays your animation %s, as a FlipBook animation of the game (scripts cannot run there). Kept: position, size, groups, the texture's frames, frame rate, Loop or Bounce, Inverse, End, colours, desaturate, blend mode, the background frame, %%p/%%s/%%n texts (time and stacks also in one, '%%p (%%s)'), the glow (shown only while the animation is). Not drawn: the border (hidden while engine-driven). Not available: Once and Progress animations, a Start above 0%%, conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
         :format(plan.unit, plan.filterString, when)
     elseif data.regionType == "texture" then
       local when = plan.missingPart and T("while the aura is absent and while its stacks match (below), nothing otherwise")
                    or plan.mode == "missing" and T("while the aura is absent and disappears completely while it is present")
                                          or T("while the aura is present and nothing while it is absent")
-      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows your texture %s. Kept: position, size, groups, texture, colour, rotation, mirror, desaturate, blend mode, %%p/%%s/%%n texts, the glow (shown only while the texture is, animated like WeakAuras' own). Not drawn: the border (hidden while engine-driven). Not available: conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
+      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows your texture %s. Kept: position, size, groups, texture, colour, rotation, mirror, desaturate, blend mode, %%p/%%s/%%n texts (time and stacks also in one, '%%p (%%s)'), the glow (shown only while the texture is, animated like WeakAuras' own). Not drawn: the border (hidden while engine-driven). Not available: conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
         :format(plan.unit, plan.filterString, when)
     elseif data.regionType == "progresstexture" and Engine.UsesArcPieces(data) then
       local n, step = Engine.ArcPieces(data)
-      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows the texture while the aura is present and its arc runs out the way WeakAuras' own does as the aura runs out (grows with 'Inverse'), in %d steps of %s degrees: frames that follow the game's timer bar show the arc piece by piece, so the time left never has to be read. Kept: position, size, groups, textures, colours, desaturate, blend mode, crop, mirror, rotation, legacy rotation, start and end angle, the direction, the background, %%p/%%s/%%n texts, the glow (shown only while the texture is, animated like WeakAuras' own). Not drawn: additional progress and the border (hidden while engine-driven). Not available: conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
+      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows the texture while the aura is present and its arc runs out the way WeakAuras' own does as the aura runs out (grows with 'Inverse'), in %d steps of %s degrees: frames that follow the game's timer bar show the arc piece by piece, so the time left never has to be read. Kept: position, size, groups, textures, colours, desaturate, blend mode, crop, mirror, rotation, legacy rotation, start and end angle, the direction, the background, %%p/%%s/%%n texts (time and stacks also in one, '%%p (%%s)'), the glow (shown only while the texture is, animated like WeakAuras' own). Not drawn: additional progress and the border (hidden while engine-driven). Not available: conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
         :format(plan.unit, plan.filterString, n, ("%.1f"):format(step))
     elseif data.regionType == "progresstexture" and IsCircular(data) then
-      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows the texture while the aura is present and the game's cooldown swipe sweeps it away as the aura runs out (draws the time gone with 'Inverse'); the game checks the time left itself, so it never has to be read. Kept: position, size, groups, textures, colours, crop, mirror, rotation, start angle, the background, %%p/%%s/%%n texts, the glow (shown only while the texture is, animated like WeakAuras' own). Not drawn on the sweeping part: desaturate, blend mode, legacy rotation. Not drawn: additional progress and the border (hidden while engine-driven). Not available: conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
+      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows the texture while the aura is present and the game's cooldown swipe sweeps it away as the aura runs out (draws the time gone with 'Inverse'); the game checks the time left itself, so it never has to be read. Kept: position, size, groups, textures, colours, crop, mirror, rotation, start angle, the background, %%p/%%s/%%n texts (time and stacks also in one, '%%p (%%s)'), the glow (shown only while the texture is, animated like WeakAuras' own). Not drawn on the sweeping part: desaturate, blend mode, legacy rotation. Not drawn: additional progress and the border (hidden while engine-driven). Not available: conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
         :format(plan.unit, plan.filterString)
     elseif data.regionType == "progresstexture" then
-      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows the texture while the aura is present and empties it as the aura runs out (fills it with 'Inverse'); the game checks the time left itself, so it never has to be read. Kept: position, size, groups, textures, colours, desaturate, blend mode, crop, rotation, mirror, 'Compress', the background, %%p/%%s/%%n texts, the glow (shown only while the texture is, animated like WeakAuras' own). Not drawn: slanted ends (drawn straight), additional progress and the border (hidden while engine-driven). Not available: conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
+      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows the texture while the aura is present and empties it as the aura runs out (fills it with 'Inverse'); the game checks the time left itself, so it never has to be read. Kept: position, size, groups, textures, colours, desaturate, blend mode, crop, rotation, mirror, 'Compress', the background, %%p/%%s/%%n texts (time and stacks also in one, '%%p (%%s)'), the glow (shown only while the texture is, animated like WeakAuras' own). Not drawn: slanted ends (drawn straight), additional progress and the border (hidden while engine-driven). Not available: conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
         :format(plan.unit, plan.filterString)
     else
       local kept = T("border and glow")
@@ -1715,6 +1774,10 @@ function Engine.Explain(data, plan, reasons)
       end
       txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It %s. Kept: position, size, groups, %%n/%%i texts, static colour/desaturate/zoom, %s; cooldown numbers count like the buff frame. Not available: conditions and texts that read aura state (stacks, remaining, active), show/hide animations and actions on aura gain/loss other than sounds.")
         :format(plan.unit, plan.filterString, T(MODE_TEXT[plan.missingPart and "refresh" or plan.mode]), kept)
+    end
+    -- sub-texts with time and stacks together, drawn with the live aura
+    if data.regionType ~= "text" and ((plan.parts and plan.parts.found) or (not plan.parts and plan.mode ~= "missing")) then
+      for _, n in ipairs(Engine.SubTextNotes(data, (plan.parts and plan.parts.found) or plan)) do txt = txt .. " " .. n end
     end
     if (plan.parts or plan.missingPart) and Engine.HasGlowPartChoice(data) and (data.foreverEngineGlowPart or "both") ~= "both" then
       txt = txt .. " " .. (data.foreverEngineGlowPart == "remaining"
@@ -2481,11 +2544,17 @@ function Engine.SetAnchors(att, obj, pts)
   end
 end
 
-local function StyleShadowText(region, fs, sub, isCount, att)
+-- a WA sub-text's font, size and outline (SLUG drawn as a normal outline)
+function Engine.SubFont(sub)
   local font = (sub.text_font and LSM:Fetch("font", sub.text_font)) or STANDARD_TEXT_FONT
   local ft = sub.text_fontType
   local flags = (not ft or ft == "None") and "" or ft:gsub("|?SLUG", "")
-  fs:SetFont(font, sub.text_fontSize or 12, flags)
+  return font, sub.text_fontSize or 12, flags
+end
+
+-- Returns the points it set (WA's one point for the sub-text).
+local function StyleShadowText(region, fs, sub, isCount, att)
+  fs:SetFont(Engine.SubFont(sub))
   if isCount and sub.text_color then fs:SetTextColor(unpack(sub.text_color)) end -- duration colour is engine-owned
   if sub.text_shadowColor then fs:SetShadowColor(unpack(sub.text_shadowColor)) end
   fs:SetShadowOffset(sub.text_shadowXOffset or 0, sub.text_shadowYOffset or 0)
@@ -2502,35 +2571,170 @@ local function StyleShadowText(region, fs, sub, isCount, att)
   region:AnchorSubRegion(rec, "point", sub.anchor_point, ResolveSelfPoint(sub, region.regionType),
     tonumber(sub.text_anchorXOffset) or 0, tonumber(sub.text_anchorYOffset) or 0)
   Engine.SetAnchors(att, fs, rec.pts)
+  return rec.pts
+end
+
+-- Time and stacks in one text (TextPlan kind "pair"): two texts of the game, the second hung by ONE point on
+-- the end of the first, so it follows the first as the game rewrites it (probe /fdpair 2026-10-10: in and
+-- out of combat, on a duration text and on a count text). base: the one point WA hangs the whole text by
+-- { point, rel, relPoint, x, y }; its side picks the layout. LEFT / RIGHT: the piece on that side takes the
+-- point, exact. Centred: the time hangs by its own point, shifted by half the stacks' estimated width
+-- (Engine.ChainEstimate), so only (stacks' width - estimate) / 2 is off. The lead is set first and every
+-- piece is cleared first, so switching sides never hangs a text on one that hangs on it.
+-- Engine.chainRetry[region] / att.chainRetry: centred before the font was loaded (estimate 0), so again later.
+Engine.chainRetry = setmetatable({}, { __mode = "k" })
+function Engine.PlaceChain(att, region, dur, count, timeFirst, base, font, size, flags, prefix, suffix)
+  local p = tostring(base[1]):upper()
+  local v = p:match("^TOP") or p:match("^BOTTOM") or ""
+  local h = p:match("LEFT$") or p:match("RIGHT$") or ""
+  for _, fs in ipairs({ dur, count }) do fs:SetWidth(0); fs:SetWordWrap(false) end
+  local first, second = dur, count
+  if not timeFirst then first, second = count, dur end
+  if h == "LEFT" then
+    Engine.SetAnchors(att, first, { base })
+    Engine.SetAnchors(att, second, { { v .. "LEFT", first, v .. "RIGHT", 0, 0 } })
+  elseif h == "RIGHT" then
+    Engine.SetAnchors(att, second, { base })
+    Engine.SetAnchors(att, first, { { v .. "RIGHT", second, v .. "LEFT", 0, 0 } })
+  else
+    local est = Engine.ChainEstimate(font, size, flags, prefix, suffix)
+    if est <= 0 then
+      att.chainRetry = true
+      if region then Engine.chainRetry[region] = true end
+    end
+    local shift = timeFirst and -est / 2 or est / 2
+    Engine.SetAnchors(att, dur, { { base[1], base[2], base[3], (base[4] or 0) + shift, base[5] or 0 } })
+    if timeFirst then
+      Engine.SetAnchors(att, count, { { v .. "LEFT", dur, v .. "RIGHT", 0, 0 } })
+    else
+      Engine.SetAnchors(att, count, { { v .. "RIGHT", dur, v .. "LEFT", 0, 0 } })
+    end
+  end
+end
+
+-- The stacks piece's width for centring: the mean of 0 stacks (its words alone) and 3 stacks, so 0 to 9
+-- stacks are off by a quarter digit at most. Measured on a hidden text of ours outside any aura button (the
+-- game's own texts and their widths are secret, even out of combat); spaces at the edges count (/fdpair).
+-- 0 while the font is not loaded yet: not kept, the look is applied again (Engine.chainRetry). SetFont says
+-- so by returning false and keeping the font it had (the last one measured), so that is checked too.
+Engine.chainWidths = {}
+function Engine.ChainEstimate(font, size, flags, prefix, suffix)
+  local key = table.concat({ tostring(font), tostring(size), tostring(flags), prefix, suffix }, "\1")
+  if Engine.chainWidths[key] then return Engine.chainWidths[key] end
+  local m = Engine.meter
+  if not m then
+    local holder = CreateFrame("Frame", nil, UIParent)
+    holder:SetSize(1, 1)
+    holder:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", 0, 0)
+    holder:SetAlpha(0)
+    m = holder:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    m:SetPoint("BOTTOMLEFT", holder, "BOTTOMLEFT")
+    Engine.meter = m
+  end
+  if not font then return 0 end
+  local okF, set = pcall(m.SetFont, m, font, size, flags)
+  if not okF or set == false or not m:GetFont() then return 0 end
+  m:SetWordWrap(false)
+  local function width(t)
+    local ok, w = pcall(function() m:SetText(t); return m:GetStringWidth() end)
+    if ok and type(w) == "number" and not issecretvalue(w) then return w end
+  end
+  local w0, w3 = width(prefix .. suffix), width(prefix .. "3" .. suffix)
+  if not (w0 and w3) or w3 <= 0 then return 0 end
+  Engine.chainWidths[key] = (w0 + w3) / 2
+  return Engine.chainWidths[key]
+end
+
+-- A sub-text with time and stacks: both texts in its look, bound to the aura (Engine.BindPair) and chained.
+-- att.durBind / att.countBind: what the two are bound to beyond BuildSlot's plain binding. plan: the display's,
+-- whose first spell id gives %i (and %n) of a spell tracked by name.
+function Engine.MirrorPair(att, region, sub, tp, plan)
+  local s = att.shadows
+  local base = StyleShadowText(region, s.duration, sub, false, att)[1]
+  StyleShadowText(region, s.count, sub, true, att)
+  local c = sub.text_color or { 1, 1, 1, 1 }
+  local sp = tp.single
+  local key = table.concat({ Trim(sub.text_text), table.concat(c, ","), tostring(sp and (sp.name or sp.id) or ""),
+                             tostring(plan and plan.firstId or "") }, "|")
+  local prefix, suffix = att.pairWords and att.pairWords[1], att.pairWords and att.pairWords[2]
+  if att.durBind ~= key or att.countBind ~= key or not prefix then
+    prefix, suffix = Engine.BindPair(att, s.duration, s.count, tp, plan, c)
+    att.durBind, att.countBind, att.pairWords = key, key, { prefix, suffix }
+  end
+  if base then
+    local font, size, flags = Engine.SubFont(sub)
+    Engine.PlaceChain(att, region, s.duration, s.count, tp.order == "dc", base, font, size, flags, prefix, suffix)
+  end
+  s.duration:Show()
+  s.count:SetAlpha(1)
+end
+
+-- The sub-text with time and stacks in one text ("%p (%s)"), as TextPlan reads it, or nil.
+function Engine.PairSubPlan(data, txt)
+  if txt == "%p" or txt == "%s" or txt == "%n" then return nil end
+  local tp = TextPlan(data, txt)
+  return tp and tp.kind == "pair" and tp or nil
+end
+
+-- Which sub-texts take the button's duration text and stack count, first come, first served (each button
+-- has one of each), by index in data.subRegions: "p" / "s" a lone %p / %s, "pair" time and stacks in one
+-- text (plans[i]: its TextPlan), "time" / "stacks" a text whose time / stacks an earlier text already took
+-- (hidden, not left reading nothing); nil: anything else. The one walk of MirrorTexts, Engine.SubTextNotes
+-- and Engine.UsesDurationText.
+function Engine.SubTextRoles(data)
+  local roles, plans, haveP, haveS = {}, {}, nil, nil
+  for i, sub in ipairs(data.subRegions or {}) do
+    if sub.type == "subtext" and sub.text_visible ~= false then
+      local txt = Trim(sub.text_text)
+      if txt == "%p" then
+        if not haveP then roles[i], haveP = "p", "lone" elseif haveP == "pair" then roles[i] = "time" end
+      elseif txt == "%s" then
+        if not haveS then roles[i], haveS = "s", "lone" elseif haveS == "pair" then roles[i] = "stacks" end
+      else
+        local tp = Engine.PairSubPlan(data, txt)
+        if tp and not (haveP or haveS) then
+          roles[i], plans[i], haveP, haveS = "pair", tp, "pair", "pair"
+        elseif tp then
+          roles[i] = haveP and "time" or "stacks"
+        end
+      end
+    end
+  end
+  return roles, plans
 end
 
 -- region.subRegions is built from data.subRegions skipping unknown types (RegionPrototype), so walk
 -- both with the same rule. Remembers the live WA sub-texts that read aura state (%p / %s): in slot
 -- mode they are mirrored onto engine-fed shadows, in every mode the WA originals are hidden.
-local function MirrorTexts(att, region, data, useShadows)
+-- A text with time and stacks takes both the duration text and the stack count (each button has one of
+-- each), so first come, first served (Engine.SubTextRoles): a later text that needs one of them is hidden
+-- and named on the status line (Engine.SubTextNotes). plan: the display's, for %i / %n in such a text.
+local function MirrorTexts(att, region, data, useShadows, plan)
   local s = att.shadows
   att.mirrored = {}
-  local haveP, haveS, haveN
+  local roles, plans = Engine.SubTextRoles(data)
+  local haveP, haveS, haveN, pair
   local ri = 0
-  for _, sub in ipairs(data.subRegions or {}) do
+  for i, sub in ipairs(data.subRegions or {}) do
     if Private.subRegionTypes[sub.type] then
       ri = ri + 1
       local live = region.subRegions and region.subRegions[ri]
-      if sub.type == "subtext" and sub.text_visible ~= false then
-        local txt = Trim(sub.text_text)
-        if not haveP and txt == "%p" then
-          haveP = true
-          if live then att.mirrored[live] = true end
-          if useShadows then StyleShadowText(region, s.duration, sub, false, att); s.duration:Show() end
-        elseif not haveS and txt == "%s" then
-          haveS = true
-          if live then att.mirrored[live] = true end
-          if useShadows then StyleShadowText(region, s.count, sub, true, att); s.count:SetAlpha(1) end
-        elseif not haveN and txt == "%n" and useShadows and s.name then
-          haveN = true
-          if live then att.mirrored[live] = true end
-          StyleShadowText(region, s.name, sub, true, att); s.name:SetAlpha(1)
-        end
+      local role = roles[i]
+      if role and live then att.mirrored[live] = true end
+      if role == "p" then
+        haveP = true
+        if useShadows then StyleShadowText(region, s.duration, sub, false, att); s.duration:Show() end
+      elseif role == "s" then
+        haveS = true
+        if useShadows then StyleShadowText(region, s.count, sub, true, att); s.count:SetAlpha(1) end
+      elseif role == "pair" then
+        haveP, haveS, pair = true, true, true
+        if useShadows and att.button then Engine.MirrorPair(att, region, sub, plans[i], plan) end
+      elseif not role and not haveN and useShadows and s.name and sub.type == "subtext" and sub.text_visible ~= false
+             and Trim(sub.text_text) == "%n" then
+        haveN = true
+        if live then att.mirrored[live] = true end
+        StyleShadowText(region, s.name, sub, true, att); s.name:SetAlpha(1)
       end
     end
   end
@@ -2538,7 +2742,40 @@ local function MirrorTexts(att, region, data, useShadows)
     if not haveP then s.duration:Hide() end     -- Shown is not a secret aspect of the duration text
     if not haveS then s.count:SetAlpha(0) end   -- Shown IS secret on the count text; Alpha is ours
     if s.name and not haveN then s.name:SetAlpha(0) end
+    if not pair then Engine.UnbindPair(att) end
   end
+end
+
+-- The status line's words on sub-texts with time and stacks in one text, on sub-texts left undrawn because
+-- such a text took the duration text or the stack count (Engine.SubTextRoles), and on texts with time and
+-- stacks the engine cannot draw (left to WeakAuras). plan: the display's, for the stacks' words.
+function Engine.SubTextNotes(data, plan)
+  local out = {}
+  local roles, plans = Engine.SubTextRoles(data)
+  for i, sub in ipairs(data.subRegions or {}) do
+    local role = roles[i]
+    local txt = sub.type == "subtext" and sub.text_visible ~= false and Trim(sub.text_text)
+    local shown = txt and txt:gsub("|", "||")   -- the text as typed, not read as a colour or a line break
+    if role == "pair" then
+      local side = ResolveSelfPoint(sub, data.regionType):upper()
+      local centred = not (side:find("LEFT", 1, true) or side:find("RIGHT", 1, true))
+      out[#out + 1] = T("|cff33ff99Time and stacks:|r the text '%s' is drawn as two texts of the game side by side, the second hung on the end of the first%s (%s).")
+        :format(shown, centred and T(", centred by an estimate of the stacks' width") or "",
+                Engine.PairRuleOK(plans[i], plan) == false and T("0 stacks read 0") or T("0 stacks leave the number out, as in WeakAuras"))
+    elseif role == "time" or role == "stacks" then
+      out[#out + 1] = T("|cffff9933Note:|r the text '%s' is not drawn (hidden): an earlier text already shows the aura's %s, and each aura has one time text and one stack text.")
+        :format(shown, role == "time" and T("time") or T("stacks"))
+    elseif txt and not role then
+      local keys = Engine.TextKeys(txt)
+      if (keys.p or keys.t) and keys.s then
+        local _, why = TextPlan(data, txt)
+        if why then
+          out[#out + 1] = T("|cffff9933Note:|r the text '%s' is left to WeakAuras, which cannot read the aura in combat: %s."):format(shown, why)
+        end
+      end
+    end
+  end
+  return out
 end
 
 -- Glow. WA's glow sits on the WA region, which stays visible while the engine decides what is drawn,
@@ -2753,7 +2990,7 @@ local function ApplyBarLook(att, region, data, plan)
   local ic = data.icon_color or { 1, 1, 1, 1 }
   s.icon:SetVertexColor(ic[1] or 1, ic[2] or 1, ic[3] or 1, ic[4] or 1)
   pcall(s.icon.SetDesaturation, s.icon, data.desaturate and 1 or 0)
-  MirrorTexts(att, region, data, true)
+  MirrorTexts(att, region, data, true, plan)
   ApplyFoundGlow(att, region, data, plan)
   pcall(att.button.EnableMouseMotion, att.button, data.useTooltip and true or false)
 end
@@ -3006,7 +3243,7 @@ local function ApplyTexLook(att, region, data, plan)
       if ok then att.barDirection = dir end
     end
   end
-  MirrorTexts(att, region, data, true)
+  MirrorTexts(att, region, data, true, plan)
   ApplyFoundGlow(att, region, data, plan)
   pcall(att.button.EnableMouseMotion, att.button, data.useTooltip and true or false)
 end
@@ -3032,7 +3269,7 @@ end
 
 local function ApplyPicLook(att, region, data, plan)
   CopyPictureLook(att.shadows.pic, region, data)
-  MirrorTexts(att, region, data, true)
+  MirrorTexts(att, region, data, true, plan)
   ApplyFoundGlow(att, region, data, plan)
   pcall(att.button.EnableMouseMotion, att.button, data.useTooltip and true or false)
 end
@@ -3226,11 +3463,16 @@ do
     if region.text and region.text.SetShown then region.text:SetShown(shown) end
   end
 
-  local function StyleTextLike(fs, region, data, anchor, isEngineText)
+  local function TextFont(region)
     local font, size, flags = region.text:GetFont()
     -- SLUG (vector) text ignores the Missing clip (seen in game 2026-10-01: an OUTLINE|SLUG text stayed
     -- visible while the aura was up); the copy is drawn as a normal font, like the icons' texts
     flags = tostring(flags or ""):gsub("[|,]?%s*SLUG", ""):gsub("^[|,]%s*", "")
+    return font, size, flags
+  end
+
+  local function StyleTextLike(fs, region, data, anchor, isEngineText)
+    local font, size, flags = TextFont(region)
     if font then fs:SetFont(font, size, flags) end
     if not isEngineText then
       local c = data.color or { 1, 1, 1, 1 }
@@ -3352,32 +3594,129 @@ do
     return stackFormatters[key] or nil
   end
 
+  -- The stacks of a text with time and stacks, as WA writes %s: nothing at 0 stacks (the words stay), the
+  -- number from 1 up. Two rules, the first without a number (allowed: "at most one" %d; probe /fdpair
+  -- 2026-10-10 read " ()", " (1)", " (3)", also in combat). Tried once here on plain numbers, out of
+  -- combat; when the game formats them otherwise, StackFormatter's one rule (0 stacks read 0).
+  -- Engine.pairRuleOK[words]: each try's verdict, for the status line (Engine.PairRuleOK).
+  local pairFormatters = {}
+  Engine.pairRuleOK = {}
+  function Engine.PairStackFormatter(prefix, suffix)
+    local key = prefix .. "\1" .. suffix
+    if pairFormatters[key] ~= nil then return pairFormatters[key] or StackFormatter(prefix, suffix) end
+    pairFormatters[key] = false
+    if not (C_StringUtil and C_StringUtil.CreateNumericRuleFormatter) then return nil end
+    local ok, f = pcall(C_StringUtil.CreateNumericRuleFormatter)
+    if not ok or not f then return nil end
+    local function esc(x) return (x:gsub("%%", "%%%%")) end
+    local R = (Enum and Enum.NumericRuleFormatRounding) or {}
+    local okB = pcall(f.SetBreakpoints, f, {
+      { threshold = 0, step = 1, rounding = R.Down or 2, format = esc(prefix .. suffix) },
+      { threshold = 1, step = 1, rounding = R.Down or 2, format = esc(prefix) .. "%d" .. esc(suffix) },
+    })
+    local function reads(n, want)
+      local okF, out = pcall(f.FormatNumber, f, n)
+      return okF and type(out) == "string" and not issecretvalue(out) and out == want
+    end
+    if okB and reads(0, prefix .. suffix) and reads(2, prefix .. "2" .. suffix) then
+      pairFormatters[key], Engine.pairRuleOK[key] = f, true
+      return f
+    end
+    Engine.pairRuleOK[key] = false
+    return StackFormatter(prefix, suffix)
+  end
+
+  -- The stacks' words before and after the number in a text with time and stacks (plain data, any time).
+  function Engine.PairWords(tp, plan)
+    local whole = TextWith({ parts = tp.cParts, single = tp.single }, plan, function() return "\1" end)
+    local at = whole:find("\1", 1, true)
+    return whole:sub(1, at - 1), whole:sub(at + 1)
+  end
+
+  -- Whether the stacks' two rules of that text read right: true, false (one rule: 0 stacks read 0), nil
+  -- while not tried (the look is not applied yet).
+  function Engine.PairRuleOK(tp, plan)
+    local prefix, suffix = Engine.PairWords(tp, plan)
+    return Engine.pairRuleOK[prefix .. "\1" .. suffix]
+  end
+
+  -- The duration text's options for parts of a text (dtp: { parts, single }); bare: the time alone, in the
+  -- game's own format. Its colour is the engine's: a constant colour curve carries WA's.
+  local function DurationOptions(dtp, bare, plan, c)
+    local P = (Enum and Enum.DurationTextBindingProperty) or {}
+    local opts = {}
+    if C_CurveUtil and CreateColor then
+      opts.textColor = { curve = ConstantColorCurve(c), property = P.RemainingDuration or 0 }
+    end
+    if not bare then
+      local fmt, comps = AuraDurationFormatter(), {}
+      local formatString = TextWith(dtp, plan, function(key)
+        comps[#comps + 1] = { property = key == "t" and (P.TotalDuration or 4) or (P.RemainingDuration or 0), formatter = fmt }
+        return "{}"
+      end)
+      if fmt then opts.textFormat = { formatString = formatString, components = comps } end
+    end
+    return opts
+  end
+
+  -- Time and stacks in one text (TextPlan kind "pair"): the duration text gets the time and the words on its
+  -- side, the stack count the rest, in colour c. Returns the stacks' words before and after the number.
+  function Engine.BindPair(att, dur, count, tp, plan, c)
+    local durParts = tp.durParts
+    local bare = #durParts == 1 and durParts[1].key == "p"
+    pcall(att.button.SetDurationText, att.button, dur, DurationOptions({ parts = durParts, single = tp.single }, bare, plan, c))
+    local prefix, suffix = Engine.PairWords(tp, plan)
+    local f = Engine.PairStackFormatter(prefix, suffix)
+    pcall(att.button.SetApplicationCount, att.button, count, f and { formatter = f } or nil)
+    count:SetTextColor(c[1] or 1, c[2] or 1, c[3] or 1, c[4] or 1)
+    return prefix, suffix
+  end
+
+  -- A sub-text back to a lone %p / %s (or none) after time and stacks: the duration text keeps the colour
+  -- the pair's curve wrote, so it gets a white one (as BuildSlot's plain binding draws it), the stack count
+  -- its plain binding. Once: att.durBind / att.countBind say what they are bound to.
+  function Engine.UnbindPair(att)
+    if not (att.button and (att.durBind or att.countBind)) then return end
+    local s = att.shadows
+    if att.durBind then
+      pcall(att.button.SetDurationText, att.button, s.duration, DurationOptions(nil, true, nil, { 1, 1, 1, 1 }))
+    end
+    if att.countBind then pcall(att.button.SetApplicationCount, att.button, s.count, nil) end
+    att.durBind, att.countBind, att.pairWords = nil, nil, nil
+  end
+
+  -- Where a Text display with time and stacks hangs its two texts: the point of the button that stays put
+  -- as WA's text changes width. Auto width: WA sizes the display to its text and pins it by its own
+  -- 'Anchor' self point (RegionPrototype SetAnchor), in a Dynamic Group by the group's; only that point's
+  -- side counts (the text is one line, centred on the display vertically). Fixed width: the justify.
+  function Engine.TextChainPoint(data)
+    if data.automaticWidth == "Fixed" then return (tostring(data.justify or "LEFT"):upper()) end
+    local gdata = data.parent and WA.GetData(data.parent)
+    local ap = (gdata and gdata.regionType == "dynamicgroup") and (gdata.selfPoint or "CENTER") or (data.selfPoint or "BOTTOM")
+    ap = tostring(ap):upper()
+    return ap:match("LEFT$") or ap:match("RIGHT$") or "CENTER"
+  end
+
   function ApplyTextLook(att, region, data, plan)
     local s = att.shadows
     local tp = TextPlan(data) or { kind = "plain", parts = { { lit = tostring(data.displayText or "") } } }
     local kind = tp.kind
-    local fs = ({ plain = s.label, dur = s.duration, count = s.count, name = s.name })[kind]
+    local fs = ({ plain = s.label, dur = s.duration, count = s.count, name = s.name, pair = s.duration })[kind]
     StyleTextLike(fs, region, data, att.button, kind ~= "plain")
     local c = data.color or { 1, 1, 1, 1 }
     if kind == "plain" then
       fs:SetText(HasSymbols(tp) and TextWith(tp, plan, function() return "" end) or PlainText(region, data))
       fs:Show()
+    elseif kind == "pair" then
+      -- time and stacks: two texts in WA's look, the second hung on the end of the first
+      StyleTextLike(s.count, region, data, att.button, true)
+      local prefix, suffix = Engine.BindPair(att, s.duration, s.count, tp, plan, c)
+      local pt = Engine.TextChainPoint(data)
+      local font, size, flags = TextFont(region)
+      Engine.PlaceChain(att, region, s.duration, s.count, tp.order == "dc", { pt, att.button, pt, 0, 0 },
+                        font, size, flags, prefix, suffix)
     elseif kind == "dur" then
-      -- the duration text's colour is the engine's: a constant colour curve carries WA's
-      local P = (Enum and Enum.DurationTextBindingProperty) or {}
-      local opts = {}
-      if C_CurveUtil and CreateColor then
-        opts.textColor = { curve = ConstantColorCurve(c), property = P.RemainingDuration or 0 }
-      end
-      if not (tp.pure and tp.parts[1].key == "p") then
-        local fmt, comps = AuraDurationFormatter(), {}
-        local formatString = TextWith(tp, plan, function(key)
-          comps[#comps + 1] = { property = key == "t" and (P.TotalDuration or 4) or (P.RemainingDuration or 0), formatter = fmt }
-          return "{}"
-        end)
-        if fmt then opts.textFormat = { formatString = formatString, components = comps } end
-      end
-      pcall(att.button.SetDurationText, att.button, s.duration, opts)
+      pcall(att.button.SetDurationText, att.button, s.duration, DurationOptions(tp, tp.pure and tp.parts[1].key == "p", plan, c))
     elseif kind == "count" then
       local f
       if not tp.pure then
@@ -3391,8 +3730,9 @@ do
       fs:SetTextColor(c[1] or 1, c[2] or 1, c[3] or 1, c[4] or 1)
     end
     if kind ~= "plain" then s.label:Hide() end
-    if kind == "dur" then s.duration:Show() else s.duration:Hide() end -- Shown is not secret on it
-    s.count:SetAlpha(kind == "count" and 1 or 0)                      -- Shown IS secret on these two
+    local pair = kind == "pair"
+    if kind == "dur" or pair then s.duration:Show() else s.duration:Hide() end   -- Shown is not secret on it
+    s.count:SetAlpha((kind == "count" or pair) and 1 or 0)                        -- Shown IS secret on these two
     s.name:SetAlpha(kind == "name" and 1 or 0)
     MirrorTexts(att, region, data, false)
     ApplyFoundGlow(att, region, data, plan)
@@ -3454,7 +3794,7 @@ local function ApplySlotLook(att, region, data, plan)
   if att.isMotion or att.isModel then
     if att.isModel then Engine.StyleModel(att.shadows.model, data)
     else Engine.StyleMotion(att.shadows.motion, region, data) end
-    MirrorTexts(att, region, data, true)
+    MirrorTexts(att, region, data, true, plan)
     ApplyFoundGlow(att, region, data, plan)
     pcall(att.button.EnableMouseMotion, att.button, data.useTooltip and true or false)
     return
@@ -3481,7 +3821,7 @@ local function ApplySlotLook(att, region, data, plan)
     local w, h = RegionSize(region)
     StyleGlowTexture(s.glow, att.button, w, h, (found and not plan.noGlow and not animated) and GlowSpec(data) or nil)
   end
-  MirrorTexts(att, region, data, true)
+  MirrorTexts(att, region, data, true, plan)
   if found then HideStaticDecor(att, region, data, false) end
   pcall(att.button.EnableMouseMotion, att.button, data.useTooltip and true or false)
 end
@@ -3641,6 +3981,15 @@ end
 local function CountdownSub(data)
   for _, sub in ipairs(data.subRegions or {}) do
     if sub.type == "subtext" and sub.text_visible ~= false and Trim(sub.text_text) == "%p" then return sub end
+  end
+end
+
+-- The sub-text drawn on the button's duration text, if the display has one: a lone %p, or time and stacks
+-- in one text that is drawn (not one whose stacks an earlier '%s' took: Engine.SubTextRoles, as MirrorTexts).
+function Engine.UsesDurationText(data)
+  local roles = Engine.SubTextRoles(data)
+  for i, sub in ipairs(data.subRegions or {}) do
+    if roles[i] == "p" or roles[i] == "pair" then return Trim(sub.text_text) end
   end
 end
 
@@ -3859,7 +4208,8 @@ local function ApplyCompositeLook(att, region, data, plan)
   if plan.parts.missing then ApplyUnderlayLook(att, region, data, plan.parts.missing, not missingGlow) end
   if plan.parts.found then
     -- the Found slot looks like a single Found plan, but its glow belongs to the time-left part
-    ApplySlotLook(att, region, data, { mode = "active", filterString = plan.parts.found.filterString, noGlow = true })
+    ApplySlotLook(att, region, data, { mode = "active", filterString = plan.parts.found.filterString, noGlow = true,
+                                       firstId = plan.parts.found.firstId })
     StopAnimatedGlow(att.pglow)
     if att.shadows.glow then att.shadows.glow:Hide() end
   end
@@ -4609,11 +4959,16 @@ do
     end
     local tl, _, notes = Engine.TimeLooks(data, 1, kind == "aurabar" and "aurabar" or "icon")
     notes = notes or {}
+    local usedBy = tl and kind ~= "aurabar" and Engine.UsesDurationText(data)
     if tl and kind == "aurabar" then
       notes[#notes + 1] = T("its 'Remaining Duration' conditions are not drawn in a sorted row of bars, so far")
       tl = nil
-    elseif tl and CountdownSub(data) then
+    elseif usedBy == "%p" then
       notes[#notes + 1] = T("its 'Remaining Duration' conditions need the frames' duration text, which its %p text uses (hide the %p text: the countdown numbers show the time)")
+      tl = nil
+    elseif usedBy then
+      notes[#notes + 1] = T("its 'Remaining Duration' conditions need the frames' duration text, which its '%s' text uses (the time and the stacks in one text; a lone '%%s' text leaves it free, the countdown numbers show the time)")
+        :format((usedBy:gsub("|", "||")))
       tl = nil
     end
     if not tl then return GlowCopy(GlowSub(data)), nil, notes end
@@ -4896,9 +5251,12 @@ do
     if not gl then return false end
     -- glows are the frames' own animated ones (SortedExtras), not the static texture
     if FG() and (gp.glow or gp.time) then tplPlan = setmetatable({ noGlow = true }, { __index = tplPlan }) end
+    local again = false
     for _, fr in ipairs(st.frames) do
       fr.anchors = setmetatable({}, { __mode = "k" })
+      fr.chainRetry = nil
       ApplySlotLook(fr, tplRegion, tplData, tplPlan)
+      again = again or fr.chainRetry or false
       -- colours that change with the time left are multiplied over a white icon
       if gp.time and gp.time.overlay then fr.shadows.icon:SetVertexColor(1, 1, 1, 1) end
       for obj, pts in pairs(fr.anchors) do
@@ -4918,7 +5276,7 @@ do
         for _, p in ipairs(out) do obj:SetPoint(p[1], p[2], p[3], p[4] or 0, p[5] or 0) end
       end
     end
-    st.styled = true
+    st.styled = not again   -- a centred text measured before its font was loaded: styled again next time
     return true
   end
 
@@ -5481,6 +5839,8 @@ local function ApplyUnguarded(region)
   end
   att.host:Show()
   att.mode, att.active, att.sig = "on", true, att.wantSig
+  -- a text centred before its font was loaded (Engine.PlaceChain): applied again on the next Sync
+  if Engine.chainRetry[region] then Engine.chainRetry[region] = nil; att.sig = nil end
   local okS, errS = pcall(ApplySounds, att, region, data, plan)
   if not okS and not soundReported then
     soundReported = true
@@ -5596,7 +5956,9 @@ local function ComputeSig(region, data, plan)
       parts[#parts + 1] = tostring(data[k])
     end
     parts[#parts + 1] = table.concat(data.shadowColor or {}, ",")
-    if region.text and TextKind(data) == "plain" then parts[#parts + 1] = PlainText(region, data) end
+    local kind = TextKind(data)
+    if region.text and kind == "plain" then parts[#parts + 1] = PlainText(region, data) end
+    if kind == "pair" then parts[#parts + 1] = Engine.TextChainPoint(data) end   -- selfPoint, the group's
   end
   for _, sub in ipairs(data.subRegions or {}) do
     if sub.type == "subtext" then
