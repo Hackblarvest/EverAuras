@@ -853,18 +853,23 @@ function Engine.GroupTrigger(t, no)
       no(T("Auto-clone with a Unit Count other than '> 0' cannot be expressed by the engine"))
       return nil
     end
+    if t.useGroup_count and mode == "unaffected" then
+      no(T("Auto-clone for 'Unaffected' members together with a Unit Count cannot be expressed by the engine; untick Unit Count"))
+      return nil
+    end
   else
     pattern = t.useGroup_count and Engine.GroupPattern(t.group_countOperator, t.group_count) or nil
   end
   if not pattern then
-    no(T("a group trigger is engine-driven with the Unit Count '> 0' (anyone has it) or '< 100%%' (someone lacks it), or with Auto-clone"))
+    no(T("a group trigger is engine-driven with the Unit Count '> 0' (anyone has it) or '< 100%' (someone lacks it), or with Auto-clone"))
     return nil
   end
   local units = {}
   if not t.ignoreSelf then units[1] = "player" end
   for i = 1, 4 do units[#units + 1] = "party" .. i end
   local clones = t.showClones and true or false
-  return { pattern = pattern, units = units, clones = clones, ignoreSelf = t.ignoreSelf and true or false,
+  return { pattern = pattern, units = units, clones = clones, ignoreInvisible = t.ignoreInvisible and true or false,
+           ignoreSelf = t.ignoreSelf and true or false,
            ignoreDead = t.ignoreDead and true or false, ignoreDisconnected = t.ignoreDisconnected and true or false,
            key = ("%s:%s:%s:%s:%s"):format(pattern, tostring(clones), tostring(t.ignoreSelf), tostring(t.ignoreDead),
                                           tostring(t.ignoreDisconnected)) }
@@ -1748,7 +1753,10 @@ function Engine.Explain(data, plan, reasons)
           and T("|cff33ff99Group:|r drawn once per member of your party (%s), each copy shown while that member lacks the aura%s, in combat too."):format(who, left)
           or T("|cff33ff99Group:|r drawn once per member of your party (%s), each copy showing that member's aura where it is%s, in combat too: one of them shows when several have it."):format(who, left))
       end
-      txt = txt .. " " .. T("In a raid it follows your own party; sounds on aura gain/loss are not played for group triggers yet.")
+      txt = txt .. " " .. T("In a raid it watches only your own party (you and party1 to party4); sounds on aura gain/loss are not played for group triggers yet.")
+      if g.ignoreInvisible then
+        txt = txt .. " " .. T("'Ignore out of checking range' is not applied yet: a member out of range counts as one without the aura.")
+      end
     end
     if plan.timeLooks then
       txt = txt .. " " .. T("|cff33ff99Conditions on the time left:|r drawn as two looks, from %s s up and below %s s, each by an aura slot of its own behind a time gate (the game formats the time and the gate hangs on the text), so the game shows the one that matches, in combat too."):format(tostring(plan.timeLooks), tostring(plan.timeLooks))
@@ -3909,10 +3917,22 @@ local function ApplySounds(att, region, data, plan)
       end
     end
   end
+  local mute = {}
+  if plan.group then
+    for _, when in ipairs({ "start", "finish" }) do
+      local acts = data.actions and data.actions[when]
+      if type(acts) == "table" and acts.do_sound and acts.sound then mute[when] = true; sig[#sig + 1] = "mute/" .. when end
+    end
+    want = {}
+  end
   sig = table.concat(sig, ";")
   if att.soundSig == sig then return end
   ClearSounds(att)
   att.soundSig, att.soundIDs, att.soundRouted = sig, {}, {}
+  if next(mute) then
+    for when in pairs(mute) do att.soundRouted[when] = true end
+    HookSoundPlay(att, region)
+  end
   if #want == 0 then return end
   HookSoundPlay(att, region)
   local t0 = debugprofilestop and debugprofilestop()
