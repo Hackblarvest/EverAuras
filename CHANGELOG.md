@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.8.16-alpha (2026-10-10)
+
+- **Auras on party and raid members.** An Aura trigger on a *Specific Unit* from party1 to party4 or raid1
+  to raid40 is engine-driven: your Renew, Power Word: Shield or Fortitude on a group member, in combat too,
+  with its countdown and conditions on the time left. When the roster changes, the display follows whoever
+  is in that slot. Blizzard does not let addons pick debuffs on group members by spell while auras are
+  secret; by *Debuff Type* alone (Magic, Poison ..., no spell names, *Show On: Aura(s) Found*) they work.
+- **Group triggers: someone has it, someone lacks it.** An Aura trigger on *Unit: Party* or *Smart Group*
+  with *Unit Count* '> 0' (or '>= 1', '!= 0') or '< 100%' (or '!= 100%') now works in combat, for example
+  "SOMEONE NEEDS FORTITUDE" while one of you lacks it, gone once all have it. EverAuras keeps a copy of the
+  display for each of you (you and party1 to party4), all at the display's place: it shows while anyone has
+  (or lacks) the aura, and when several have it you see one of them (not necessarily the one with the least
+  time left; Auto-Clone shows each). *Ignore Self*, *Ignore Dead* and *Ignore Disconnected* apply. In a
+  raid, Party and Smart Group watch only your own party.
+- **Auto-Clone per party member.** *Auto-Clone (Show All Matches)* on *Unit: Party* or *Smart Group* draws a
+  copy per member who has the aura, or, with *Combine Matches Per Unit* and *Show Matches for: Unaffected*,
+  per member who lacks it. In a Dynamic Group with *Group by Frame* set to *Unit Frames*, each copy sits at
+  its member's unit frame in the display's own place among the group's children (for example Renew first,
+  Shield second, a "no Fortitude" icon third; a place stays empty while its aura is absent), growing Left,
+  Right, Up or Down. Your own copy needs a party frame for you: raid-style party frames have one, Blizzard's
+  classic party frames do not, so there you get none, as in WeakAuras. In a Dynamic Group that does not
+  group by frame, the copies stand in a row from the display's place, one place per member (they do not
+  push the group's other children aside, so put such a display last or in a group of its own); outside a
+  Dynamic Group, all copies sit at the display's place, as WeakAuras' clones do.
+- Not yet for group triggers (the status line says so): *Unit: Raid*, other Unit Counts, *Remaining Time*
+  and *Stack Count* on the trigger, a second Aura trigger on the display, the class / role / name / pet /
+  Match Count filters, debuffs by spell, *Auto-Clone* for *All* members or for *Unaffected* together with a
+  Unit Count, and sounds on aura gain/loss (they are muted rather than played once at login). Conditions on
+  stacks or the time left are not drawn, and *Ignore out of checking range* is not applied yet.
+- Spell names you track on others are now also learned from party and raid members' auras out of combat.
+- When you switch target or focus, the extra looks drawn for conditions on stacks or the time left are
+  refreshed along with the display.
+- A trigger switched from Party back to a single unit no longer falls back to the classic scanner over its
+  leftover Unit Count.
+
 ## 0.8.15-alpha (2026-10-09)
 
 - **Timer bars sorted by the time left.** A Dynamic Group of alike horizontal Progress Bars set to sort

@@ -30,7 +30,7 @@ Forever runs on the modern engine with its "secret values" system: the moment yo
 
 ### What works in combat
 
-- **Buff and debuff auras** on you, your target, focus and pet, by spell name or spell ID, including **"show when missing"**: an icon for Serpent Sting or Corruption that disappears the moment the debuff lands.
+- **Buff and debuff auras** on you, your target, focus and pet, and **buffs on a party or raid member** (Specific Unit party1–4, raid1–40), by spell name or spell ID, including **"show when missing"**: an icon for Serpent Sting or Corruption that disappears the moment the debuff lands.
 - **Timer bars** for DoTs and buffs, filled by the game itself.
 - **Progress Textures** for buff and debuff timers, straight, circular (rings) or part circles (arcs), with your own texture, in combat too.
 - **Time left:** an icon that shows only while a DoT or buff has less than X seconds left, or the classic "missing or about to run out" icon for refreshing DoTs, with its countdown and a glow.
@@ -40,6 +40,7 @@ Forever runs on the modern engine with its "secret values" system: the moment yo
 - **Texts**: "NO DEMON SKIN!" while a buff is missing, "Corruption: 12 s" while a DoT runs, in combat too.
 - **Stack Count**: show an aura only at 3+ stacks (or at most, or exactly, N), and **conditions on stacks**: change its colour, glow, text or alpha by the stack count, in combat too.
 - **Dynamic Groups** that close up in combat: a DoT row without holes, growing left, right, up, down or from the centre, or **sorted by the time left** (icons or timer bars), with **conditions on the time left** per icon (e.g. red and glowing below 4 s).
+- **Party auras for healers**: "someone in the party lacks Fortitude", "someone has my Renew", or **Auto-Clone**: in a Dynamic Group set to *Group by Frame: Unit Frames*, a copy at each party member's frame, such as Renew with its countdown on whoever has it and a Fortitude icon at whoever lacks it, in combat too (your own party, also in a raid).
 - **Animated glows** (Button, Pixel, Autocast, Proc) on these icons, textures and bars, shown only while they are, also in combat, including a glow that starts when an aura has X seconds left.
 - **Debuffs on you** such as Weakened Soul or Forbearance, matched by their properties, since Blizzard hides which debuff it is in combat.
 - **Auras by dispel type**: "a poison on me", "a Magic debuff on me", "a Magic buff on my target" for Purge, with the aura's own icon and countdown.
