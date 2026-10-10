@@ -3847,7 +3847,7 @@ local function SetRemainLevels(att)
     -- the late clip hangs on the aura button's bar and is forbidden to us while an aura is shown (even
     -- GetFrameLevel): its levels come from the present clip, which is ours to ask, and are best effort
     if rs.clip and att.pclip then
-      local pl = att.pclip:GetFrameLevel()
+      local pl = base + 2                                -- the present clip's level (ApplyEngineFrameLevels)
       pcall(rs.clip.SetFrameLevel, rs.clip, pl + 1)
       if rs.glowHolder then pcall(rs.glowHolder.SetFrameLevel, rs.glowHolder, pl + 2) end
     end
@@ -5775,15 +5775,18 @@ ApplyEngineFrameLevels = function(region, frameLevel)
   if not (att and att.active and att.host) then return end
   local base = frameLevel or (Private.frameLevels and Private.frameLevels[region.id]) or 5
   att.host:SetFrameLevel(region:GetFrameLevel() + 1)       -- L+2 (region is L+1 via subbackground)
-  Engine.SafeLevel(att.container, att.host:GetFrameLevel())
-  if att.shadows.clip then att.shadows.clip:SetFrameLevel(att.host:GetFrameLevel()) end
-  Engine.SafeLevel(att.container2, att.host:GetFrameLevel())
-  if att.pclip then att.pclip:SetFrameLevel(att.host:GetFrameLevel() + 2) end
+  -- the clips hang on the containers' secret edges and are forbidden to us while an aura is shown in
+  -- combat (as the late clip): best effort, every level from the host's, which is ours to ask
+  local h = att.host:GetFrameLevel()
+  Engine.SafeLevel(att.container, h)
+  Engine.SafeLevel(att.shadows.clip, h)
+  Engine.SafeLevel(att.container2, h)
+  Engine.SafeLevel(att.pclip, h + 2)
   for _, k in ipairs(PGLOW_KEYS) do
-    if att[k] and att.pclip then att[k]:SetFrameLevel(att.pclip:GetFrameLevel() + 2) end
+    if att.pclip then Engine.SafeLevel(att[k], h + 4) end
   end
-  if att.mglowHolder and att.shadows.clip then att.mglowHolder:SetFrameLevel(att.shadows.clip:GetFrameLevel() + 2) end
-  SetRemainLevels(att)
+  if att.shadows.clip then Engine.SafeLevel(att.mglowHolder, h + 2) end
+  pcall(SetRemainLevels, att)
   if region.subRegions then
     for index, sub in pairs(region.subRegions) do
       if sub.type ~= "subbackground" and sub.SetFrameLevel then sub:SetFrameLevel(base + index + 1) end
