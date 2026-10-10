@@ -837,21 +837,37 @@ function Engine.GroupTrigger(t, no)
     no(T("Unit 'Raid' is not engine-driven yet; 'Party' and 'Smart Group' (your party) are"))
     return nil
   end
-  if t.showClones then no(T("'Auto-clone' (a display per group member) is not engine-driven yet")) end
   for _, k in ipairs(Engine.GROUP_UNSUPPORTED) do
     if t[k] then no(T("option '%s' of a group trigger cannot be expressed by the engine"):format(k)) end
   end
-  local pattern = t.useGroup_count and Engine.GroupPattern(t.group_countOperator, t.group_count) or nil
+  local pattern
+  if t.showClones then
+    -- Auto-clone: a copy per member who has it ('Affected', and a clone per aura), or who lacks it
+    local mode = t.combinePerUnit and (t.perUnitMode or "affected") or "affected"
+    if mode == "all" then
+      no(T("Auto-clone for 'All' members is not engine-driven yet ('Affected' and 'Unaffected' are)"))
+      return nil
+    end
+    pattern = (mode == "unaffected") and "lacks" or "any"
+    if t.useGroup_count and Engine.GroupPattern(t.group_countOperator, t.group_count) ~= "any" then
+      no(T("Auto-clone with a Unit Count other than '> 0' cannot be expressed by the engine"))
+      return nil
+    end
+  else
+    pattern = t.useGroup_count and Engine.GroupPattern(t.group_countOperator, t.group_count) or nil
+  end
   if not pattern then
-    no(T("a group trigger is engine-driven with the Unit Count '> 0' (anyone has it) or '< 100%%' (someone lacks it)"))
+    no(T("a group trigger is engine-driven with the Unit Count '> 0' (anyone has it) or '< 100%%' (someone lacks it), or with Auto-clone"))
     return nil
   end
   local units = {}
   if not t.ignoreSelf then units[1] = "player" end
   for i = 1, 4 do units[#units + 1] = "party" .. i end
-  return { pattern = pattern, units = units, ignoreSelf = t.ignoreSelf and true or false,
+  local clones = t.showClones and true or false
+  return { pattern = pattern, units = units, clones = clones, ignoreSelf = t.ignoreSelf and true or false,
            ignoreDead = t.ignoreDead and true or false, ignoreDisconnected = t.ignoreDisconnected and true or false,
-           key = ("%s:%s:%s:%s"):format(pattern, tostring(t.ignoreSelf), tostring(t.ignoreDead), tostring(t.ignoreDisconnected)) }
+           key = ("%s:%s:%s:%s:%s"):format(pattern, tostring(clones), tostring(t.ignoreSelf), tostring(t.ignoreDead),
+                                          tostring(t.ignoreDisconnected)) }
 end
 
 local function AnalyseAuraTrigger(t, no, data)
@@ -927,7 +943,8 @@ local function AnalyseAuraTrigger(t, no, data)
   for _, k in ipairs(UNSUPPORTED) do
     -- the Unit Count only counts for group triggers (Engine.GroupTrigger reads it and Auto-clone), and WA
     -- ignores a leftover one on a single unit
-    local handled = (k == "useGroup_count") or (group and k == "showClones")
+    local groupUnit = t.unit == "party" or t.unit == "group" or t.unit == "raid"
+    local handled = (k == "useGroup_count") or (groupUnit and k == "showClones")
     if t[k] and not handled then no(T("option '%s' cannot be expressed by the engine"):format(k)) end
   end
   if t.ownOnly == false then no(T("'Own Only' set to 'others only' cannot be expressed by the engine")) end
@@ -1718,12 +1735,20 @@ function Engine.Explain(data, plan, reasons)
       local skip = {}
       if g.ignoreDead then skip[#skip + 1] = T("dead") end
       if g.ignoreDisconnected then skip[#skip + 1] = T("offline") end
-      txt = txt .. " " .. ((g.pattern == "lacks")
-        and T("|cff33ff99Group:|r drawn once per member of your party (%s), each copy shown while that member lacks the aura%s, in combat too."):format(who,
-          #skip > 0 and T(" (%s members left out)"):format(table.concat(skip, ", ")) or "")
-        or T("|cff33ff99Group:|r drawn once per member of your party (%s), each copy showing that member's aura where it is%s, in combat too: one of them shows when several have it."):format(who,
-          #skip > 0 and T(" (%s members left out)"):format(table.concat(skip, ", ")) or ""))
-        .. " " .. T("In a raid it follows your own party; sounds on aura gain/loss are not played for group triggers yet.")
+      local left = #skip > 0 and T(" (%s members left out)"):format(table.concat(skip, ", ")) or ""
+      if g.clones then
+        local layout = Engine.CopyLayout(data, plan)
+        local where = (layout == "frame") and T("on that member's unit frame (the Dynamic Group groups by frame; the display's place among its group's children is kept even when the others are absent)")
+          or (layout == "row") and T("in a row along the Dynamic Group's growth, one fixed place per member (an absent one leaves its place empty)")
+          or T("all at the display's own place (as WeakAuras' clones without a Dynamic Group)")
+        txt = txt .. " " .. T("|cff33ff99Auto-clone:|r a copy per member of your party (%s) who %s%s, %s, in combat too."):format(who,
+          (g.pattern == "lacks") and T("lacks the aura") or T("has the aura, with that member's aura"), left, where)
+      else
+        txt = txt .. " " .. ((g.pattern == "lacks")
+          and T("|cff33ff99Group:|r drawn once per member of your party (%s), each copy shown while that member lacks the aura%s, in combat too."):format(who, left)
+          or T("|cff33ff99Group:|r drawn once per member of your party (%s), each copy showing that member's aura where it is%s, in combat too: one of them shows when several have it."):format(who, left))
+      end
+      txt = txt .. " " .. T("In a raid it follows your own party; sounds on aura gain/loss are not played for group triggers yet.")
     end
     if plan.timeLooks then
       txt = txt .. " " .. T("|cff33ff99Conditions on the time left:|r drawn as two looks, from %s s up and below %s s, each by an aura slot of its own behind a time gate (the game formats the time and the gate hangs on the text), so the game shows the one that matches, in combat too."):format(tostring(plan.timeLooks), tostring(plan.timeLooks))
@@ -1774,6 +1799,7 @@ function Engine.PrepareTriggerInfo(info, trigger, data)
     info.matchCountFunc, info.remainingFunc, info.remainingCheck = nil, nil, 0
     info.scanFunc, info.fetchTooltip, info.fetchRole, info.fetchRaidMark = nil, nil, nil, nil
     info.groupCountFunc, info.matchPerUnitCountFunc = nil, nil       -- group triggers: the copies decide
+    if plan.group then info.combineMode, info.perUnitMode = "showOne", nil end   -- the copies are the clones
     -- The constant state must collapse when target/focus/pet is gone, and LoadAura only registers
     -- the unit-existence kick when unitExists is non-nil. Default it to "hide" for non-player units.
     if plan.unit ~= "player" and info.unitExists == nil then
@@ -3420,7 +3446,10 @@ end
 local function DisableKind(att, kind)
   local c = att.container
   if kind == "copies" then
-    for _, cp in pairs(att.copies or {}) do cp.ok = false; Engine.DisableCopy(cp) end
+    for _, set in ipairs({ "copies", "fcopies" }) do
+      for _, cp in pairs(att[set] or {}) do cp.ok = false; Engine.DisableCopy(cp) end
+    end
+    if att.copyRoot then att.copyRoot:Hide() end
     return
   end
   if kind == "slot" and att.slotBuilt then pcall(c.SetAuraSlotEnabled, c, KEY, false) end
@@ -4950,25 +4979,90 @@ end
 -- copies the display while the member lacks it. Engine.GateCopies shows a copy only while its member is
 -- there (and alive / online when the trigger ignores the others), from plain unit state.
 do
-  local function Copy(att, region, u)
-    local cp = att.copies[u]
+  -- Auto-clone in a Dynamic Group that groups by unit frame: the copies hang on the members' frames, which
+  -- WA would do with its clones; they live under a root of their own, since WA hides a region without a
+  -- unit in such a group (and the display's region is that). Otherwise they stay in the display's host.
+  local function Layout(data, plan)
+    if not (plan.group and plan.group.clones) then return "stack" end
+    local gdata = data.parent and WA.GetData(data.parent)
+    if not (gdata and gdata.regionType == "dynamicgroup") then return "stack" end
+    if gdata.useAnchorPerUnit then return gdata.anchorPerUnit == "UNITFRAME" and "frame" or "stack", gdata end
+    return "row", gdata
+  end
+  Engine.CopyLayout = Layout
+
+  local function Copy(att, region, u, layout)
+    local set = (layout == "frame") and "fcopies" or "copies"
+    att[set] = att[set] or {}
+    local cp = att[set][u]
     if not cp then
       cp = { region = region, shadows = {}, isBar = att.isBar, isTex = att.isTex, isPic = att.isPic,
              isMotion = att.isMotion, isModel = att.isModel, isText = att.isText, copyOf = att, copyUnit = u }
-      cp.host, cp.container, cp.gates = BuildHost(region, att.host)
-      att.copies[u] = cp
+      if layout == "frame" then
+        if not att.copyRoot then
+          att.copyRoot = CreateFrame("Frame", nil, UIParent, "DisableUntrustedLayoutScriptsTemplate")
+          att.copyRoot:SetAllPoints(UIParent)
+          att.copyRoot:SetFrameStrata("HIGH")
+        end
+        cp.host, cp.container, cp.gates = BuildHost(region, att.copyRoot)
+      else
+        cp.host, cp.container, cp.gates = BuildHost(region, att.host)
+      end
+      att[set][u] = cp
     end
     return cp
   end
 
+  local GROW_DIR = { RIGHT = { 1, 0 }, LEFT = { -1, 0 }, UP = { 0, 1 }, DOWN = { 0, -1 } }
+  -- the place of each copy: on its member's frame (frame), at its member's place in a row (row), or the
+  -- display's own (stack). Plain anchors, also in combat (nothing here hangs on the aura's frames).
+  function Engine.PlaceCopies(att)
+    local data = att.region and WA.GetData(att.region.id)
+    local plan = att.want
+    if not (data and plan and plan.group) then return end
+    local layout, gdata = Layout(data, plan)
+    local w, h = RegionSize(att.region)
+    if layout == "frame" then
+      local k = 0
+      for i, id in ipairs(gdata.controlledChildren or {}) do if id == data.id then k = i - 1 end end
+      local d = GROW_DIR[gdata.grow or "RIGHT"] or GROW_DIR.RIGHT
+      local space = tonumber(gdata.space) or 0
+      local dx = d[1] * k * (w + space) + (tonumber(gdata.xOffset) or 0)
+      local dy = d[2] * k * (h + space) + (tonumber(gdata.yOffset) or 0)
+      for u, cp in pairs(att.fcopies or {}) do
+        local f = WA.GetUnitFrame and WA.GetUnitFrame(u)
+        cp.frame = f
+        if f then
+          cp.host:ClearAllPoints()
+          cp.host:SetSize(w, h)
+          cp.host:SetPoint(gdata.selfPoint or "CENTER", f, gdata.anchorPoint or "CENTER", dx, dy)
+        end
+      end
+    elseif layout == "row" then
+      local d = GROW_DIR[gdata.grow or "RIGHT"] or GROW_DIR.RIGHT
+      local space = tonumber(gdata.space) or 0
+      for i, u in ipairs(plan.group.units) do
+        local cp = att.copies and att.copies[u]
+        if cp then
+          cp.host:ClearAllPoints()
+          cp.host:SetSize(w, h)
+          cp.host:SetPoint("CENTER", att.host, "CENTER", d[1] * (i - 1) * (w + space) + 0, d[2] * (i - 1) * (h + space) + 0)
+        end
+      end
+    end
+  end
+
   function Engine.ApplyCopies(att, region, data, plan)
     local g = plan.group
-    att.copies = att.copies or {}
+    local layout = Layout(data, plan)
+    local set = (layout == "frame") and "fcopies" or "copies"
+    att.copies, att.fcopies = att.copies or {}, att.fcopies or {}
     att.mirrored = att.mirrored or {}
+    att.copyLayout = layout
     local want = {}
     for _, u in ipairs(g.units) do
       want[u] = true
-      local cp = Copy(att, region, u)
+      local cp = Copy(att, region, u, layout)
       local ok
       if plan.mode == "missing" then
         local w, h = RegionSize(region)
@@ -5004,9 +5098,13 @@ do
       end
       cp.ok = ok and true or false
     end
-    for u, cp in pairs(att.copies) do
-      if not want[u] then cp.ok = false; Engine.DisableCopy(cp) end
+    for _, other in ipairs({ "copies", "fcopies" }) do
+      for u, cp in pairs(att[other]) do
+        if other ~= set or not want[u] then cp.ok = false; Engine.DisableCopy(cp) end
+      end
     end
+    if att.copyRoot then att.copyRoot:SetShown(layout == "frame") end
+    Engine.PlaceCopies(att)
     Engine.GateCopies(att)
     return true
   end
@@ -5022,13 +5120,32 @@ do
   -- a copy shows while its member is there; plain unit state, also in combat
   function Engine.GateCopies(att)
     local g = att.want and att.want.group
-    if not (g and att.copies) then return end
-    for u, cp in pairs(att.copies) do
-      local on = cp.ok and UnitExists(u) and true or false
-      if on and g.ignoreDead and UnitIsDeadOrGhost(u) then on = false end
-      if on and g.ignoreDisconnected and UnitIsConnected and not UnitIsConnected(u) then on = false end
-      cp.host:SetShown(on)
+    if not g then return end
+    for _, set in ipairs({ "copies", "fcopies" }) do
+      for u, cp in pairs(att[set] or {}) do
+        local on = cp.ok and UnitExists(u) and true or false
+        if on and set == "fcopies" and not cp.frame then on = false end
+        if on and g.ignoreDead and UnitIsDeadOrGhost(u) then on = false end
+        if on and g.ignoreDisconnected and UnitIsConnected and not UnitIsConnected(u) then on = false end
+        cp.host:SetShown(on)
+      end
     end
+  end
+
+  -- LibGetFrame tells when a unit frame shows another member, or goes: the frame copies follow
+  local LGF = LibStub and LibStub("LibGetFrame-1.0", true)
+  if LGF and LGF.RegisterCallback then
+    local function moved()
+      for _, att in pairs(attachments) do
+        if att.active and att.fcopies and next(att.fcopies) then
+          pcall(Engine.PlaceCopies, att)
+          Engine.GateCopies(att)
+        end
+      end
+    end
+    pcall(LGF.RegisterCallback, "EverAurasEngineCopies", "FRAME_UNIT_UPDATE", moved)
+    pcall(LGF.RegisterCallback, "EverAurasEngineCopies", "FRAME_UNIT_ADDED", moved)
+    pcall(LGF.RegisterCallback, "EverAurasEngineCopies", "FRAME_UNIT_REMOVED", moved)
   end
 end
 
@@ -5704,6 +5821,7 @@ function Engine.RefreshContainers(att)
   one(att)
   for i = 2, 4 do one(att.variants and att.variants[i]) end
   for _, cp in pairs(att.copies or {}) do one(cp) end
+  for _, cp in pairs(att.fcopies or {}) do one(cp) end
 end
 
 local REFRESH = { PLAYER_TARGET_CHANGED = "target", PLAYER_FOCUS_CHANGED = "focus", UNIT_PET = "pet" }
@@ -5760,7 +5878,10 @@ ev:SetScript("OnEvent", function(_, event, arg1)
     if att.active and (event == "PLAYER_ENTERING_WORLD" or att.unit == unit
                        or (roster and (UNIT_OK[att.unit or ""] == "group" or att.copies))) then
       Engine.RefreshContainers(att)
-      if att.copies then Engine.GateCopies(att) end
+      if att.copies then
+        if att.fcopies and next(att.fcopies) then pcall(Engine.PlaceCopies, att) end
+        Engine.GateCopies(att)
+      end
     end
   end
 end)
