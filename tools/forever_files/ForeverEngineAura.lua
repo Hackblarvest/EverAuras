@@ -808,8 +808,59 @@ local function HasEntries(on, list)
   return false
 end
 
+-- Unit 'Party' / 'Smart Group' without clones: WA shows the display while the number of members with the
+-- aura passes the trigger's Unit Count. Two counts can be drawn, both as copies of the display, one per
+-- member (Engine.ApplyCopies): 'anyone has it' (> 0, >= 1, != 0, > 0%) as Found copies, each showing its
+-- member's aura where it is, and 'someone lacks it' (< 100%, != 100%) as Missing copies, one per member
+-- who is there (alive and online when the trigger ignores the others). Returns { pattern, units, ... }.
+Engine.GROUP_UNSUPPORTED = { "useClass", "useGroupRole", "useRaidRole", "useUnitName", "useActualSpec", "useHostility",
+  "useMatch_count", "useMatchPerUnit_count", "includePets", "useNpcId", "useArenaSpec" }
+function Engine.GroupPattern(op, raw)
+  raw = Trim(tostring(raw or ""))
+  local frac, n = false, nil
+  if raw:sub(-1) == "%" then
+    n = tonumber(raw:sub(1, -2)); n = n and n / 100; frac = true
+  elseif raw:find("/") then
+    local a, b = raw:match("(%d+)%s*/%s*(%d+)")
+    a, b = tonumber(a), tonumber(b)
+    n = (a and b and b > 0) and a / b or nil; frac = true
+  else
+    n = tonumber(raw)
+  end
+  if not n then return nil end
+  if (op == ">" and n == 0) or (op == "~=" and n == 0) or (not frac and op == ">=" and n == 1) then return "any" end
+  if frac and (op == "<" or op == "~=") and n == 1 then return "lacks" end
+  return nil
+end
+function Engine.GroupTrigger(t, no)
+  if t.unit == "raid" then
+    no(T("Unit 'Raid' is not engine-driven yet; 'Party' and 'Smart Group' (your party) are"))
+    return nil
+  end
+  if t.showClones then no(T("'Auto-clone' (a display per group member) is not engine-driven yet")) end
+  for _, k in ipairs(Engine.GROUP_UNSUPPORTED) do
+    if t[k] then no(T("option '%s' of a group trigger cannot be expressed by the engine"):format(k)) end
+  end
+  local pattern = t.useGroup_count and Engine.GroupPattern(t.group_countOperator, t.group_count) or nil
+  if not pattern then
+    no(T("a group trigger is engine-driven with the Unit Count '> 0' (anyone has it) or '< 100%%' (someone lacks it)"))
+    return nil
+  end
+  local units = {}
+  if not t.ignoreSelf then units[1] = "player" end
+  for i = 1, 4 do units[#units + 1] = "party" .. i end
+  return { pattern = pattern, units = units, ignoreSelf = t.ignoreSelf and true or false,
+           ignoreDead = t.ignoreDead and true or false, ignoreDisconnected = t.ignoreDisconnected and true or false,
+           key = ("%s:%s:%s:%s"):format(pattern, tostring(t.ignoreSelf), tostring(t.ignoreDead), tostring(t.ignoreDisconnected)) }
+end
+
 local function AnalyseAuraTrigger(t, no, data)
   local unit = t.unit or "player"
+  local group
+  if unit == "party" or unit == "group" or unit == "raid" then
+    group = Engine.GroupTrigger(t, no)
+    unit = "player"                       -- the display's own slot is not drawn; its copies follow the members
+  end
   if unit == "member" then unit = Trim(tostring(t.specificUnit or "")):lower() end
   if not UNIT_OK[unit] then
     if t.unit == "member" then
@@ -823,6 +874,7 @@ local function AnalyseAuraTrigger(t, no, data)
   local filter = t.debuffType or "HELPFUL"
   if filter ~= "HELPFUL" and filter ~= "HARMFUL" then no(T("Aura Type must be Buff or Debuff (not Both)")) end
   local mode = MODE[t.matchesShowOn or "showOnActive"]
+  if group then mode = (group.pattern == "lacks") and "missing" or "active" end
   if not mode then no(T("'Show On: Match Count' cannot be expressed by the engine")) end
   -- WeakAuras applies the property options only where it checks matches (Found), like Remaining Time
   local props, propsKey, propsText
@@ -873,10 +925,16 @@ local function AnalyseAuraTrigger(t, no, data)
     end
   end
   for _, k in ipairs(UNSUPPORTED) do
-    if t[k] then no(T("option '%s' cannot be expressed by the engine"):format(k)) end
+    -- the Unit Count only counts for group triggers (Engine.GroupTrigger reads it and Auto-clone), and WA
+    -- ignores a leftover one on a single unit
+    local handled = (k == "useGroup_count") or (group and k == "showClones")
+    if t[k] and not handled then no(T("option '%s' cannot be expressed by the engine"):format(k)) end
   end
   if t.ownOnly == false then no(T("'Own Only' set to 'others only' cannot be expressed by the engine")) end
   local rem
+  if group and (t.useRem or t.useStacks) then
+    no(T("'Remaining Time' and 'Stack Count' of a group trigger cannot be expressed by the engine"))
+  end
   if t.useRem and mode == "active" then
     local op, x = t.remOperator or ">=", tonumber(t.rem)
     if REM_OPS[op] and x and x >= 0 then
@@ -897,9 +955,9 @@ local function AnalyseAuraTrigger(t, no, data)
   local candidate, byDuration, durationFromSetting, fingerprint = { includeSpellIDs = ids }, nil, nil, nil
   if nameless then candidate = {} end
   local open = NeverSecret(sorted)
-  local friendlyDebuff = not nameless and filter == "HARMFUL" and (unit == "player" or unit == "pet" or UNIT_OK[unit] == "group") and not open
+  local friendlyDebuff = not nameless and filter == "HARMFUL" and (unit == "player" or unit == "pet" or UNIT_OK[unit] == "group" or group) and not open
   if friendlyDebuff then
-    if unit == "player" and data and data.foreverEngineSelfDebuff == true then
+    if unit == "player" and not group and data and data.foreverEngineSelfDebuff == true then
       -- the approximation: a debuff on you with the same fingerprint (duration, dispel type, flags)
       if data.uid then fpUsers[data.uid] = true end
       local fp = FingerprintOf(sorted)
@@ -924,7 +982,7 @@ local function AnalyseAuraTrigger(t, no, data)
     else
       no(unit == "pet"
         and T("Blizzard does not let addons pick debuffs on your pet by spell while auras are secret")
-        or UNIT_OK[unit] == "group"
+        or (UNIT_OK[unit] == "group" or group)
         and T("Blizzard does not let addons pick debuffs on group members by spell while auras are secret; pick them by their Debuff Type (Magic, Poison ...) without spell names instead")
         or T("Blizzard does not let addons pick debuffs on yourself by spell while auras are secret; turn on 'Match debuffs on you by their properties' on the Display tab to track it approximately"))
     end
@@ -943,7 +1001,7 @@ local function AnalyseAuraTrigger(t, no, data)
     end
     if not own then warn = (filter == "HARMFUL") and "friendly" or "hostile" end
   end
-  return { unit = unit, filter = filter, filterString = filterString, mode = mode, rem = rem, stacks = stacks,
+  return { unit = unit, group = group, filter = filter, filterString = filterString, mode = mode, rem = rem, stacks = stacks,
            candidate = candidate, ids = sorted, firstId = sorted[1], byDuration = byDuration, warn = warn,
            durationFromSetting = durationFromSetting,
            byName = byName, unresolved = unresolved, unseen = unseen,
@@ -1197,6 +1255,9 @@ function Engine.Classify(data)
   for _, inf in ipairs(infos) do
     if inf.unit ~= unit then no(T("all Aura triggers must watch the same unit")); break end
   end
+  for _, inf in ipairs(infos) do
+    if inf.group and #infos > 1 then no(T("a group trigger is engine-driven as the display's only Aura trigger")); break end
+  end
   local gates = n - #auraIdx
 
   if #infos == 1 and not infos[1].rem then
@@ -1236,7 +1297,14 @@ function Engine.Classify(data)
     if inf.mode == "active" then looks, lookConds, lookNotes = Engine.StackLooks(data, auraIdx[1], rt, inf.stacks) end
     -- conditions on the time left: two looks (from X up, below X), each behind a time gate (as for stacks)
     local timeLooks
-    if inf.mode == "active" then
+    if inf.group then
+      local tl = Engine.TimeLooks(data, auraIdx[1], rt)
+      if looks or tl then
+        lookNotes = lookNotes or {}
+        lookNotes[#lookNotes + 1] = T("conditions on stacks or the time left are not drawn for a group trigger")
+        looks, lookConds = nil, nil
+      end
+    elseif inf.mode == "active" then
       local tl, tconds, tnotes = Engine.TimeLooks(data, auraIdx[1], rt)
       if tnotes and #tnotes > 0 then
         lookNotes = lookNotes or {}
@@ -1260,14 +1328,15 @@ function Engine.Classify(data)
       end
       looksKey = table.concat(parts, "|")
     end
-    local key = table.concat({ unit, inf.mode, inf.key }, ";")
+    local key = table.concat({ unit, inf.mode, inf.key, inf.group and inf.group.key or "" }, ";")
     return { unit = unit, filter = inf.filter, filterString = inf.filterString, mode = inf.mode,
              candidate = inf.candidate, firstId = inf.firstId, key = key, byDuration = inf.byDuration, warn = inf.warn,
              durationFromSetting = inf.durationFromSetting, fingerprint = inf.fingerprint,
              nameless = inf.nameless, propsText = inf.propsText, propsKey = inf.propsKey,
              ids = inf.ids, byName = inf.byName, gen = spellbookGen, unresolved = inf.unresolved, unseen = inf.unseen,
              auraTriggers = auraTriggers, gates = gates, stacks = inf.stacks,
-             looks = looks, looksKey = looksKey, lookConds = lookConds, lookNotes = lookNotes, timeLooks = timeLooks }
+             looks = looks, looksKey = looksKey, lookConds = lookConds, lookNotes = lookNotes, timeLooks = timeLooks,
+             group = inf.group }
   end
 
   if rt ~= "icon" then
@@ -1408,7 +1477,7 @@ local SOUND_ROUTES = {
 
 -- The routes of a plan, or nil: Always shows all the time, so its sounds stay WeakAuras' own.
 local function SoundRoutes(plan)
-  if not plan or not plan.ids then return nil end
+  if not plan or not plan.ids or plan.group then return nil end
   if #plan.ids == 0 and not plan.nameless then return nil end
   if plan.parts then
     if plan.parts.missing then return SOUND_ROUTES.missing end
@@ -1643,6 +1712,19 @@ function Engine.Explain(data, plan, reasons)
                 or T("at %s or fewer"):format(n(st.le))
       txt = txt .. " " .. T("|cff33ff99Stack Count:|r shown only %s. The game compares the stacks itself: a frame around the display opens and closes with the engine's own stack bar. Sounds still play when the aura comes or goes."):format(when)
     end
+    if plan.group then
+      local g = plan.group
+      local who = g.ignoreSelf and T("party1 to party4") or T("you and party1 to party4")
+      local skip = {}
+      if g.ignoreDead then skip[#skip + 1] = T("dead") end
+      if g.ignoreDisconnected then skip[#skip + 1] = T("offline") end
+      txt = txt .. " " .. ((g.pattern == "lacks")
+        and T("|cff33ff99Group:|r drawn once per member of your party (%s), each copy shown while that member lacks the aura%s, in combat too."):format(who,
+          #skip > 0 and T(" (%s members left out)"):format(table.concat(skip, ", ")) or "")
+        or T("|cff33ff99Group:|r drawn once per member of your party (%s), each copy showing that member's aura where it is%s, in combat too: one of them shows when several have it."):format(who,
+          #skip > 0 and T(" (%s members left out)"):format(table.concat(skip, ", ")) or ""))
+        .. " " .. T("In a raid it follows your own party; sounds on aura gain/loss are not played for group triggers yet.")
+    end
     if plan.timeLooks then
       txt = txt .. " " .. T("|cff33ff99Conditions on the time left:|r drawn as two looks, from %s s up and below %s s, each by an aura slot of its own behind a time gate (the game formats the time and the gate hangs on the text), so the game shows the one that matches, in combat too."):format(tostring(plan.timeLooks), tostring(plan.timeLooks))
     elseif plan.looks then
@@ -1691,6 +1773,7 @@ function Engine.PrepareTriggerInfo(info, trigger, data)
   if plan then
     info.matchCountFunc, info.remainingFunc, info.remainingCheck = nil, nil, 0
     info.scanFunc, info.fetchTooltip, info.fetchRole, info.fetchRaidMark = nil, nil, nil, nil
+    info.groupCountFunc, info.matchPerUnitCountFunc = nil, nil       -- group triggers: the copies decide
     -- The constant state must collapse when target/focus/pet is gone, and LoadAura only registers
     -- the unit-existence kick when unitExists is non-nil. Default it to "hide" for non-player units.
     if plan.unit ~= "player" and info.unitExists == nil then
@@ -3336,6 +3419,10 @@ end
 
 local function DisableKind(att, kind)
   local c = att.container
+  if kind == "copies" then
+    for _, cp in pairs(att.copies or {}) do cp.ok = false; Engine.DisableCopy(cp) end
+    return
+  end
   if kind == "slot" and att.slotBuilt then pcall(c.SetAuraSlotEnabled, c, KEY, false) end
   if kind == "slot" then DisablePresentClip(att) end
   if (kind == "group" or kind == "composite") and att.groupBuilt then
@@ -3933,6 +4020,9 @@ do
       if p.looks then
         return nil, T("'%s' has conditions on its stacks or time left (drawn as looks of their own)"):format(tostring(id))
       end
+      if p.group then
+        return nil, T("'%s' follows a whole group (drawn as a copy per member)"):format(tostring(id))
+      end
       if p.parts or p.mode ~= "active" then
         return nil, T("'%s' is not shown on Aura(s) Found (only those leave a gap to close)"):format(tostring(id))
       end
@@ -4391,7 +4481,7 @@ do
       if kind == "aurabar" and tostring(cd.orientation or "HORIZONTAL"):find("VERTICAL") then
         return nil, T("'%s' is a vertical bar (a group sorted by the time left draws horizontal bars, so far)"):format(tostring(id))
       end
-      if p.parts or p.mode ~= "active" or p.stacks or (p.looks and not p.timeLooks) then
+      if p.parts or p.group or p.mode ~= "active" or p.stacks or (p.looks and not p.timeLooks) then
         return nil, T("'%s' is not a plain 'Aura(s) Found' display (a group sorted by the time left draws those, so far)"):format(tostring(id))
       end
       if p.nameless or p.byDuration then
@@ -4802,6 +4892,7 @@ do
   end
 
   local MAX_VARIANTS = 4
+  Engine.CopyLevels = Levels
 
   function Engine.ApplyVariants(att, region, data, plan, on)
     local looks = on and plan and plan.looks or nil
@@ -4853,10 +4944,97 @@ do
   end
 end
 
+-- Group triggers (Engine.GroupTrigger): a copy of the display per member, inside the display's host, each with
+-- its own container on its member's unit token: Found copies draw the member's aura where it is, Missing
+-- copies the display while the member lacks it. Engine.GateCopies shows a copy only while its member is
+-- there (and alive / online when the trigger ignores the others), from plain unit state.
+do
+  local function Copy(att, region, u)
+    local cp = att.copies[u]
+    if not cp then
+      cp = { region = region, shadows = {}, isBar = att.isBar, isTex = att.isTex, isPic = att.isPic,
+             isMotion = att.isMotion, isModel = att.isModel, isText = att.isText, copyOf = att, copyUnit = u }
+      cp.host, cp.container, cp.gates = BuildHost(region, att.host)
+      att.copies[u] = cp
+    end
+    return cp
+  end
+
+  function Engine.ApplyCopies(att, region, data, plan)
+    local g = plan.group
+    att.copies = att.copies or {}
+    att.mirrored = att.mirrored or {}
+    local want = {}
+    for _, u in ipairs(g.units) do
+      want[u] = true
+      local cp = Copy(att, region, u)
+      local ok
+      if plan.mode == "missing" then
+        local w, h = RegionSize(region)
+        local m = ClipMargin(w, h, data, GlowSpec(data))
+        if cp.isText then m = math.max(m, 3) end
+        ok = EnsureGroup(cp, region, plan, m)
+        if ok then ApplyUnderlayLook(cp, region, data, plan) end
+      else
+        if not cp.slotBuilt then
+          if BuildSlot(cp, region, plan) then cp.slotFilter, cp.slotKey = plan.filterString, plan.key end
+        else
+          local c = cp.container
+          if cp.slotFilter ~= plan.filterString then c:SetAuraSlotFilterString(KEY, plan.filterString); cp.slotFilter = plan.filterString end
+          if cp.slotKey ~= plan.key then c:SetAuraSlotCandidateFilters(KEY, plan.candidate); cp.slotKey = plan.key end
+          c:SetAuraSlotEnabled(KEY, true)
+        end
+        ok = cp.slotBuilt
+        if ok then
+          local glowSub = GlowSub(data)
+          if glowSub then
+            local w, h = RegionSize(region)
+            cp.pclipShown = EnsurePresentClip(cp, region, plan, AnimatedGlowMargin(w, h, glowSub))
+          else
+            DisablePresentClip(cp)
+          end
+          ApplySlotLook(cp, region, data, plan)
+        end
+      end
+      if ok then
+        if cp.unit ~= u then cp.container:SetUnit(u); cp.unit = u end
+        Engine.CopyLevels(cp)
+        for live in pairs(cp.mirrored or {}) do att.mirrored[live] = true end
+      end
+      cp.ok = ok and true or false
+    end
+    for u, cp in pairs(att.copies) do
+      if not want[u] then cp.ok = false; Engine.DisableCopy(cp) end
+    end
+    Engine.GateCopies(att)
+    return true
+  end
+
+  function Engine.DisableCopy(cp)
+    local c = cp.container
+    if cp.slotBuilt then pcall(c.SetAuraSlotEnabled, c, KEY, false) end
+    if cp.groupBuilt then pcall(c.SetAuraGroupEnabled, c, KEY, false) end
+    DisablePresentClip(cp)
+    cp.host:Hide()
+  end
+
+  -- a copy shows while its member is there; plain unit state, also in combat
+  function Engine.GateCopies(att)
+    local g = att.want and att.want.group
+    if not (g and att.copies) then return end
+    for u, cp in pairs(att.copies) do
+      local on = cp.ok and UnitExists(u) and true or false
+      if on and g.ignoreDead and UnitIsDeadOrGhost(u) then on = false end
+      if on and g.ignoreDisconnected and UnitIsConnected and not UnitIsConnected(u) then on = false end
+      cp.host:SetShown(on)
+    end
+  end
+end
+
 local function TurnOff(att, region, data, mode)
   if att.host then att.host:Hide() end
   pcall(Dyn.Leave, att, region, data)
-  DisableKind(att, "slot"); DisableKind(att, "group"); DisableKind(att, "composite")
+  DisableKind(att, "slot"); DisableKind(att, "group"); DisableKind(att, "composite"); DisableKind(att, "copies")
   StopPresentGlows(att); StopAnimatedGlow(att.mglowHolder)
   for _, rs in pairs(att.rslots or {}) do if rs.glowHolder then StopAnimatedGlow(rs.glowHolder) end end
   RemoveGate(att)
@@ -4890,7 +5068,7 @@ local function ApplyUnguarded(region)
   if not att.host then att.host, att.container, att.gates = BuildHost(region) end
   if att.isText then FitTextHost(att, region, data, plan) end
   local c = att.container
-  local kind = plan.parts and "composite" or ((plan.mode == "missing") and "group" or "slot")
+  local kind = plan.group and "copies" or plan.parts and "composite" or ((plan.mode == "missing") and "group" or "slot")
   if att.kind and att.kind ~= kind then DisableKind(att, att.kind) end
   -- conditions on stacks: the slot draws the first look (the others are variants, below)
   local mainLook = (kind == "slot") and plan.looks and plan.looks[1] or nil
@@ -4917,6 +5095,16 @@ local function ApplyUnguarded(region)
     local m = ClipMargin(w, h, data, GlowSpec(data))
     if att.isText then m = math.max(m, 3) end      -- the outline reaches past the measured text
     if not EnsureGroup(att, region, plan, m) then TurnOff(att, region, data, "off"); return end
+  elseif kind == "copies" then
+    local okC, errC = pcall(Engine.ApplyCopies, att, region, data, plan)
+    if not okC then
+      if not att.copyWarned then
+        att.copyWarned = true
+        WA.prettyPrint(("%s: engine group copies failed: %s"):format(tostring(region.id), tostring(errC)))
+      end
+      TurnOff(att, region, data, "off")
+      return
+    end
   else
     if not EnsureComposite(att, region, data, plan) then TurnOff(att, region, data, "off"); return end
   end
@@ -4934,6 +5122,7 @@ local function ApplyUnguarded(region)
   local okLook, err
   if kind == "slot" then okLook, err = pcall(ApplySlotLook, att, region, ldata, plan)
   elseif kind == "group" then okLook, err = pcall(ApplyUnderlayLook, att, region, data, plan)
+  elseif kind == "copies" then okLook = true       -- each copy took its look in Engine.ApplyCopies
   else okLook, err = pcall(ApplyCompositeLook, att, region, data, plan) end
   if not okLook and not att.lookWarned then
     att.lookWarned = true
@@ -5513,6 +5702,7 @@ function Engine.RefreshContainers(att)
   end
   one(att)
   for i = 2, 4 do one(att.variants and att.variants[i]) end
+  for _, cp in pairs(att.copies or {}) do one(cp) end
 end
 
 local REFRESH = { PLAYER_TARGET_CHANGED = "target", PLAYER_FOCUS_CHANGED = "focus", UNIT_PET = "pet" }
@@ -5524,6 +5714,8 @@ ev:RegisterUnitEvent("UNIT_PET", "player")
 ev:RegisterEvent("PLAYER_REGEN_ENABLED")
 ev:RegisterEvent("PLAYER_ENTERING_WORLD")
 ev:RegisterEvent("GROUP_ROSTER_UPDATE")
+ev:RegisterEvent("UNIT_FLAGS")
+ev:RegisterEvent("UNIT_CONNECTION")
 ev:RegisterEvent("SPELLS_CHANGED")
 ev:RegisterEvent("LEARNED_SPELL_IN_SKILL_LINE")
 ev:RegisterEvent("PLAYER_LEVEL_UP")
@@ -5531,6 +5723,13 @@ ev:RegisterUnitEvent("UNIT_AURA", "player", "target", "focus", "pet")
 ev:SetScript("OnEvent", function(_, event, arg1)
   if event == "UNIT_AURA" then
     LearnFromUnit(arg1)      -- plain data out of combat; a no-op while auras are secret
+    return
+  end
+  if event == "UNIT_FLAGS" or event == "UNIT_CONNECTION" then
+    -- a member died, came back or went offline: the copies of group triggers follow
+    if arg1 == "player" or UNIT_OK[arg1 or ""] == "group" then
+      for _, att in pairs(attachments) do if att.active and att.copies then Engine.GateCopies(att) end end
+    end
     return
   end
   if event == "SPELLS_CHANGED" or event == "LEARNED_SPELL_IN_SKILL_LINE" or event == "PLAYER_LEVEL_UP" then
@@ -5558,8 +5757,9 @@ ev:SetScript("OnEvent", function(_, event, arg1)
     -- UNIT_AURA/UNIT_FACTION/UNIT_FLAGS/PLAYER_REGEN_*; unit swaps are our job, for every container of
     -- the display (its looks of conditions on stacks or the time left have their own).
     if att.active and (event == "PLAYER_ENTERING_WORLD" or att.unit == unit
-                       or (roster and UNIT_OK[att.unit or ""] == "group")) then
+                       or (roster and (UNIT_OK[att.unit or ""] == "group" or att.copies))) then
       Engine.RefreshContainers(att)
+      if att.copies then Engine.GateCopies(att) end
     end
   end
 end)
