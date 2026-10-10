@@ -4878,6 +4878,7 @@ do
   -- frame levels inside a variant's host, as ApplyUnguarded sets them for a slot
   local function Levels(v)
     local c, sh = v.container, v.shadows
+    if not v.button then return end                 -- a Missing copy (Engine.ApplyCopies) has no slot button
     pcall(v.button.SetFrameLevel, v.button, c:GetFrameLevel())
     if v.isBar and sh.bar then
       pcall(sh.bar.SetFrameLevel, sh.bar, c:GetFrameLevel() + 1)
