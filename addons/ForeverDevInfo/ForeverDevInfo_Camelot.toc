@@ -14,3 +14,5 @@ Probe_Dyn.lua
 Probe_Stacks.lua
 Probe_Sort.lua
 Probe_TimeGate.lua
+Probe_Pair.lua
+Probe_Anim.lua
