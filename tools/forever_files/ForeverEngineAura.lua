@@ -4372,6 +4372,9 @@ do
   function Dyn.Note(data)
     local gdata = ParentOf(data)
     if not gdata then return nil end
+    -- a group trigger's copies are placed by the engine itself (its Group / Auto-clone line says where)
+    local own = data.uid and decided[data.uid]
+    if own and own.group then return nil end
     local gp, why = Dyn.Plan(gdata)
     if gp and gp.sorted then
       local s = T("|cff33ff99Dynamic Group:|r sorted by the time left by the game (%s first), in combat too: the group is drawn as one row of its auras in the look of '%s' (the border and texts other than %s are hidden). This display itself is not drawn while it is in the row."):format(
