@@ -1700,10 +1700,10 @@ function Engine.Explain(data, plan, reasons)
         and T("animated (the aura's total duration is known: %s s), also while it runs out"):format(tostring(plan.parts.lateTotal))
         or T("WeakAuras' own animated glow while the aura is missing, a static glow while it runs out (animated once the aura's total duration is known: seen out of combat, or read from the spell's description)")
       if plan.parts.found then
-        txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows the live aura while it is present and adds the glow %s. The game checks the time left itself, so it never has to be read. Kept: position, size, groups, %%p/%%s texts (also in one, '%%p (%%s)'), static colour/desaturate/zoom, cooldown swipe; glow %s. Not available: the border (hidden while engine-driven), conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
+        txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows the live aura while it is present and adds the glow %s. The game checks the time left itself, so it never has to be read. Kept: position, size, groups, %%p/%%s texts (also in one, '%%p (%%s)'), static colour/desaturate/zoom, cooldown swipe; glow %s. Not available: the border (hidden while engine-driven), conditions and texts that read aura state, and actions on aura gain/loss other than sounds.")
           :format(plan.unit, plan.parts.found.filterString, table.concat(when, T(" or ")), glowTxt)
       else
-        txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s). It shows your icon %s, and nothing otherwise. The game checks the time left itself, so it never has to be read. Kept: position, size, groups, the %%p text, static colour/zoom; glow %s. Not available: the border (hidden while engine-driven), cooldown swipe, stack count and desaturation on the time-left icon, conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
+        txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s). It shows your icon %s, and nothing otherwise. The game checks the time left itself, so it never has to be read. Kept: position, size, groups, the %%p text, static colour/zoom; glow %s. Not available: the border (hidden while engine-driven), cooldown swipe, stack count and desaturation on the time-left icon, conditions and texts that read aura state, and actions on aura gain/loss other than sounds.")
           :format(plan.unit, table.concat(when, T(" or ")), glowTxt)
       end
     elseif data.regionType == "text" then
@@ -1727,7 +1727,7 @@ function Engine.Explain(data, plan, reasons)
       end
       local when = plan.mode == "missing" and T("while the aura is absent and nothing while it is present")
                                          or T("while the aura is present and nothing while it is absent")
-      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows %s %s. Kept: position, size, groups, font, size, outline (SLUG drawn as a normal outline), colour, shadow, justify and width. Not available: %sconditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
+      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows %s %s. Kept: position, size, groups, font, size, outline (SLUG drawn as a normal outline), colour, shadow, justify and width. Not available: %sconditions and texts that read aura state, and actions on aura gain/loss other than sounds.")
         :format(plan.unit, plan.filterString, what, when,
                 (kind == "dur" or kind == "pair") and T("WeakAuras' %p formatting options (the game formats the time itself), ") or "")
       if kind == "pair" then
@@ -1741,29 +1741,29 @@ function Engine.Explain(data, plan, reasons)
     elseif data.regionType == "model" then
       local when = plan.mode == "missing" and T("while the aura is absent and disappears completely while it is present")
                                          or T("while the aura is present and nothing while it is absent")
-      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows your model %s. Kept: position, size, groups, the model file or display ID, its position or transform, rotation, portrait zoom, animation and alpha, %%p/%%s/%%n texts (time and stacks also in one, '%%p (%%s)'), the glow (shown only while the model is). Not drawn: the border (hidden while engine-driven). Not available: a unit's model, conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
+      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows your model %s. Kept: position, size, groups, the model file or display ID, its position or transform, rotation, portrait zoom, animation and alpha, %%p/%%s/%%n texts (time and stacks also in one, '%%p (%%s)'), the glow (shown only while the model is). Not drawn: the border (hidden while engine-driven). Not available: a unit's model, conditions and texts that read aura state, and actions on aura gain/loss other than sounds.")
         :format(plan.unit, plan.filterString, when)
     elseif data.regionType == "stopmotion" then
       local when = plan.missingPart and T("while the aura is absent and while its stacks match (below), nothing otherwise")
                    or plan.mode == "missing" and T("while the aura is absent and disappears completely while it is present")
                                          or T("while the aura is present and nothing while it is absent")
-      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It plays your animation %s, as a FlipBook animation of the game (scripts cannot run there). Kept: position, size, groups, the texture's frames, frame rate, Loop or Bounce, Inverse, End, colours, desaturate, blend mode, the background frame, %%p/%%s/%%n texts (time and stacks also in one, '%%p (%%s)'), the glow (shown only while the animation is). Not drawn: the border (hidden while engine-driven). Not available: Once and Progress animations, a Start above 0%%, conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
+      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It plays your animation %s, as a FlipBook animation of the game (scripts cannot run there). Kept: position, size, groups, the texture's frames, frame rate, Loop or Bounce, Inverse, End, colours, desaturate, blend mode, the background frame, %%p/%%s/%%n texts (time and stacks also in one, '%%p (%%s)'), the glow (shown only while the animation is). Not drawn: the border (hidden while engine-driven). Not available: Once and Progress animations, a Start above 0%%, conditions and texts that read aura state, and actions on aura gain/loss other than sounds.")
         :format(plan.unit, plan.filterString, when)
     elseif data.regionType == "texture" then
       local when = plan.missingPart and T("while the aura is absent and while its stacks match (below), nothing otherwise")
                    or plan.mode == "missing" and T("while the aura is absent and disappears completely while it is present")
                                          or T("while the aura is present and nothing while it is absent")
-      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows your texture %s. Kept: position, size, groups, texture, colour, rotation, mirror, desaturate, blend mode, %%p/%%s/%%n texts (time and stacks also in one, '%%p (%%s)'), the glow (shown only while the texture is, animated like WeakAuras' own). Not drawn: the border (hidden while engine-driven). Not available: conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
+      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows your texture %s. Kept: position, size, groups, texture, colour, rotation, mirror, desaturate, blend mode, %%p/%%s/%%n texts (time and stacks also in one, '%%p (%%s)'), the glow (shown only while the texture is, animated like WeakAuras' own). Not drawn: the border (hidden while engine-driven). Not available: conditions and texts that read aura state, and actions on aura gain/loss other than sounds.")
         :format(plan.unit, plan.filterString, when)
     elseif data.regionType == "progresstexture" and Engine.UsesArcPieces(data) then
       local n, step = Engine.ArcPieces(data)
-      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows the texture while the aura is present and its arc runs out the way WeakAuras' own does as the aura runs out (grows with 'Inverse'), in %d steps of %s degrees: frames that follow the game's timer bar show the arc piece by piece, so the time left never has to be read. Kept: position, size, groups, textures, colours, desaturate, blend mode, crop, mirror, rotation, legacy rotation, start and end angle, the direction, the background, %%p/%%s/%%n texts (time and stacks also in one, '%%p (%%s)'), the glow (shown only while the texture is, animated like WeakAuras' own). Not drawn: additional progress and the border (hidden while engine-driven). Not available: conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
+      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows the texture while the aura is present and its arc runs out the way WeakAuras' own does as the aura runs out (grows with 'Inverse'), in %d steps of %s degrees: frames that follow the game's timer bar show the arc piece by piece, so the time left never has to be read. Kept: position, size, groups, textures, colours, desaturate, blend mode, crop, mirror, rotation, legacy rotation, start and end angle, the direction, the background, %%p/%%s/%%n texts (time and stacks also in one, '%%p (%%s)'), the glow (shown only while the texture is, animated like WeakAuras' own). Not drawn: additional progress and the border (hidden while engine-driven). Not available: conditions and texts that read aura state, and actions on aura gain/loss other than sounds.")
         :format(plan.unit, plan.filterString, n, ("%.1f"):format(step))
     elseif data.regionType == "progresstexture" and IsCircular(data) then
-      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows the texture while the aura is present and the game's cooldown swipe sweeps it away as the aura runs out (draws the time gone with 'Inverse'); the game checks the time left itself, so it never has to be read. Kept: position, size, groups, textures, colours, crop, mirror, rotation, start angle, the background, %%p/%%s/%%n texts (time and stacks also in one, '%%p (%%s)'), the glow (shown only while the texture is, animated like WeakAuras' own). Not drawn on the sweeping part: desaturate, blend mode, legacy rotation. Not drawn: additional progress and the border (hidden while engine-driven). Not available: conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
+      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows the texture while the aura is present and the game's cooldown swipe sweeps it away as the aura runs out (draws the time gone with 'Inverse'); the game checks the time left itself, so it never has to be read. Kept: position, size, groups, textures, colours, crop, mirror, rotation, start angle, the background, %%p/%%s/%%n texts (time and stacks also in one, '%%p (%%s)'), the glow (shown only while the texture is, animated like WeakAuras' own). Not drawn on the sweeping part: desaturate, blend mode, legacy rotation. Not drawn: additional progress and the border (hidden while engine-driven). Not available: conditions and texts that read aura state, and actions on aura gain/loss other than sounds.")
         :format(plan.unit, plan.filterString)
     elseif data.regionType == "progresstexture" then
-      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows the texture while the aura is present and empties it as the aura runs out (fills it with 'Inverse'); the game checks the time left itself, so it never has to be read. Kept: position, size, groups, textures, colours, desaturate, blend mode, crop, rotation, mirror, 'Compress', the background, %%p/%%s/%%n texts (time and stacks also in one, '%%p (%%s)'), the glow (shown only while the texture is, animated like WeakAuras' own). Not drawn: slanted ends (drawn straight), additional progress and the border (hidden while engine-driven). Not available: conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
+      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows the texture while the aura is present and empties it as the aura runs out (fills it with 'Inverse'); the game checks the time left itself, so it never has to be read. Kept: position, size, groups, textures, colours, desaturate, blend mode, crop, rotation, mirror, 'Compress', the background, %%p/%%s/%%n texts (time and stacks also in one, '%%p (%%s)'), the glow (shown only while the texture is, animated like WeakAuras' own). Not drawn: slanted ends (drawn straight), additional progress and the border (hidden while engine-driven). Not available: conditions and texts that read aura state, and actions on aura gain/loss other than sounds.")
         :format(plan.unit, plan.filterString)
     else
       local kept = T("border and glow")
@@ -1772,13 +1772,16 @@ function Engine.Explain(data, plan, reasons)
       elseif data.regionType == "aurabar" then
         kept = T("the bar colours and gradient, the border (also while nothing is drawn), and the glow: shown only while the bar is, and animated like WeakAuras' own (a glow on the bar's fill goes around the whole bar)")
       end
-      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It %s. Kept: position, size, groups, %%n/%%i texts, static colour/desaturate/zoom, %s; cooldown numbers count like the buff frame. Not available: conditions and texts that read aura state (stacks, remaining, active), show/hide animations and actions on aura gain/loss other than sounds.")
+      txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It %s. Kept: position, size, groups, %%n/%%i texts, static colour/desaturate/zoom, %s; cooldown numbers count like the buff frame. Not available: conditions and texts that read aura state (stacks, remaining, active), and actions on aura gain/loss other than sounds.")
         :format(plan.unit, plan.filterString, T(MODE_TEXT[plan.missingPart and "refresh" or plan.mode]), kept)
     end
     -- sub-texts with time and stacks together, drawn with the live aura
     if data.regionType ~= "text" and ((plan.parts and plan.parts.found) or (not plan.parts and plan.mode ~= "missing")) then
       for _, n in ipairs(Engine.SubTextNotes(data, (plan.parts and plan.parts.found) or plan)) do txt = txt .. " " .. n end
     end
+    -- start / finish animations played by the game (Engine.ApplyStartAnim / Engine.ApplyFinishAnim)
+    local animNote = Engine.AnimNotes(data, plan)
+    if animNote then txt = txt .. " " .. animNote end
     if (plan.parts or plan.missingPart) and Engine.HasGlowPartChoice(data) and (data.foreverEngineGlowPart or "both") ~= "both" then
       txt = txt .. " " .. (data.foreverEngineGlowPart == "remaining"
         and (plan.missingPart and T("The glow is drawn only on the live aura.") or T("The glow is drawn only while it runs out."))
@@ -1995,11 +1998,17 @@ local function BuildHost(region, parent)
   local le = CreateFrame("Frame", nil, ge, "DisableUntrustedLayoutScriptsTemplate")
   le:SetAllPoints(host)
   le:SetFrameLevel(host:GetFrameLevel())
-  local c = CreateFrame("AuraContainer", nil, le, "CustomAuraContainerTemplate")
+  -- the start animation's gate (Engine.ApplyStartAnim): inside the Stack Count gates, around the container
+  -- only, so the animated copy beside it (a container of its own in "le") still follows the stacks. Clips
+  -- only while a start animation is drawn.
+  local an = CreateFrame("Frame", nil, le, "DisableUntrustedLayoutScriptsTemplate")
+  an:SetAllPoints(host)
+  an:SetFrameLevel(host:GetFrameLevel())
+  local c = CreateFrame("AuraContainer", nil, an, "CustomAuraContainerTemplate")
   -- TOPLEFT only: the engine sets the container's size (secretly). Nothing of ours ever reads it.
   c:SetPoint("TOPLEFT", host, "TOPLEFT")
   c:SetFrameLevel(host:GetFrameLevel())
-  return host, c, { ge = ge, le = le }
+  return host, c, { ge = ge, le = le, an = an }
 end
 
 -- Found / Always: a slot whose button draws the live aura on top of the region.
@@ -2264,10 +2273,11 @@ do
   end
 
   -- The formatter of a time gate's duration text: wide below x seconds, narrow from x up. Shared with
-  -- the frames of sorted rows (Dyn.SortedExtras).
+  -- the frames of sorted rows (Dyn.SortedExtras) and the animations' elapsed-time gates (low: where the wide
+  -- rule starts, below 0 for a time counted up that may read a hair under 0; default 0).
   Engine.gateFormatters = {}
-  function Engine.GateFormatter(x, wide)
-    local key = tostring(x) .. "|" .. wide
+  function Engine.GateFormatter(x, wide, low)
+    local key = tostring(x) .. "|" .. wide .. (low and ("|" .. tostring(low)) or "")
     local cache = Engine.gateFormatters
     if cache[key] ~= nil then return cache[key] or nil end
     cache[key] = false
@@ -2276,7 +2286,7 @@ do
     local ok, f = pcall(C_StringUtil.CreateNumericRuleFormatter)
     if not ok or not f then return nil end
     local okB = pcall(f.SetBreakpoints, f, {
-      { threshold = 0, step = 1, rounding = R.Down or 2, format = wide .. "%d" },
+      { threshold = low or 0, step = 1, rounding = R.Down or 2, format = wide .. "%d" },
       { threshold = x, step = 1, rounding = R.Down or 2, format = "%d" },
     })
     if okB then cache[key] = f end
@@ -2397,10 +2407,13 @@ local function BuildGroup(att, region, plan, m)
     maxFrameCount = 1,
     layout = GroupLayout(w, h, m),
     initializeFrame = function(button)
-      -- Ten of these are pre-created per group (the engine hides counts that way). They draw nothing.
+      -- Ten of these are pre-created per group (the engine hides counts that way). They draw nothing,
+      -- except a finish animation's copy when the aura comes (Engine.ApplyFinishAnim): kept for that.
       button:SetSize(w + 1 + 2 * m, h)
       pcall(button.SetMouseClickEnabled, button, false)
       pcall(button.EnableMouseMotion, button, false)
+      att.groupButtons = att.groupButtons or {}
+      att.groupButtons[#att.groupButtons + 1] = button
     end,
   })
   if not ok then
@@ -3739,6 +3752,14 @@ do
     pcall(att.button.EnableMouseMotion, att.button, data.useTooltip and true or false)
   end
 
+  -- a plain text's still copy, hung by its justify point on anchor (the animations' copies, Engine.ApplyStartAnim)
+  function Engine.CopyPlainText(fs, region, data, plan, anchor)
+    StyleTextLike(fs, region, data, anchor, false)
+    local tp = TextPlan(data)
+    fs:SetText((tp and HasSymbols(tp)) and TextWith(tp, plan, function() return "" end) or PlainText(region, data))
+    fs:Show()
+  end
+
   -- plain text in the Missing clip; created in place, like everything in these clips
   function StyleUnderlayText(att, region, data, plan)
     local s = att.shadows
@@ -3788,6 +3809,20 @@ do
   end
 end
 
+-- An icon's live look: its texture (fed by the game) and cooldown swipe as WA draws them. Also the start
+-- animation's copy (Engine.ApplyStartAnim).
+function Engine.StyleIconLook(icon, cd, region, data)
+  icon:SetTexCoord(region.icon:GetTexCoord())     -- WA already applied zoom/aspect/offset to its own texture
+  pcall(icon.SetDesaturation, icon, data.desaturate and 1 or 0)
+  local col = data.color or { 1, 1, 1, 1 }
+  icon:SetVertexColor(col[1] or 1, col[2] or 1, col[3] or 1, col[4] or 1)
+  cd:SetAlpha(data.cooldown and 1 or 0)
+  pcall(cd.SetDrawSwipe, cd, data.cooldownSwipe ~= false)
+  pcall(cd.SetDrawEdge, cd, data.cooldownEdge and true or false)
+  pcall(cd.SetReverse, cd, not data.inverse)                   -- Icon.lua: WA reverses unless 'inverse'
+  pcall(cd.SetHideCountdownNumbers, cd, (not data.cooldown) or data.cooldownTextDisabled or false)
+end
+
 local function ApplySlotLook(att, region, data, plan)
   if att.isText then return ApplyTextLook(att, region, data, plan) end
   if att.isPic then return ApplyPicLook(att, region, data, plan) end
@@ -3802,16 +3837,7 @@ local function ApplySlotLook(att, region, data, plan)
   if att.isBar then return ApplyBarLook(att, region, data, plan) end
   if att.isTex then return ApplyTexLook(att, region, data, plan) end
   local s = att.shadows
-  s.icon:SetTexCoord(region.icon:GetTexCoord())     -- WA already applied zoom/aspect/offset to its own texture
-  pcall(s.icon.SetDesaturation, s.icon, data.desaturate and 1 or 0)
-  local col = data.color or { 1, 1, 1, 1 }
-  s.icon:SetVertexColor(col[1] or 1, col[2] or 1, col[3] or 1, col[4] or 1)
-  local cd = s.cooldown
-  cd:SetAlpha(data.cooldown and 1 or 0)
-  pcall(cd.SetDrawSwipe, cd, data.cooldownSwipe ~= false)
-  pcall(cd.SetDrawEdge, cd, data.cooldownEdge and true or false)
-  pcall(cd.SetReverse, cd, not data.inverse)                   -- Icon.lua: WA reverses unless 'inverse'
-  pcall(cd.SetHideCountdownNumbers, cd, (not data.cooldown) or data.cooldownTextDisabled or false)
+  Engine.StyleIconLook(s.icon, s.cooldown, region, data)
   local found = plan.mode == "active"                  -- Always: the WA icon is always there, so is WA's glow
   local glowSub = found and not plan.noGlow and GlowSub(data) or nil
   local gw, gh = RegionSize(region)
@@ -3888,6 +3914,624 @@ local function ApplyUnderlayLook(att, region, data, plan, noGlow)
   HideStaticDecor(att, region, data, att.isPic or att.isMotion or att.isModel)   -- a Texture's border would frame an empty spot
 end
 
+---------------------------------------------------------------------------- start and finish animations
+-- WeakAuras plays a display's Start animation when it shows and its Finish when it hides. An engine-driven
+-- display shows and hides by the game's aura buttons, where no script of ours runs, so the game plays
+-- them: an aura button plays the animation groups handed to it (AddAuraShownAnimation) each time it goes
+-- from hidden to shown, also in combat (/fdanim, 2026-10-10). A Found display's slot shows when its aura
+-- comes: its Start. A Missing display's group button shows when its aura comes, which is when the display
+-- goes: its Finish. Nothing shows when an aura goes, so the other two are out of reach.
+-- The game also hides and shows every button whenever it rebuilds a container (each UNIT_FLAGS on you:
+-- combat start and end, loot, ...), which plays them again. So an animation plays on a COPY of the display
+-- inside a clip that is open only during the first X seconds after the aura was put on (or refreshed): an
+-- invisible duration text in the same button counts the aura's ELAPSED time, wide below X and short from X
+-- up, and the clip hangs on its end (the time gates' text-width trick, counting up; /fdanim2 2026-10-11:
+-- no replay at combat start or end, loot or a rebuild by hand, in combat too).
+-- Start: the copy lives in an aura slot of its own beside the display's container (container "A", in the
+-- Stack Count gates), and the gate "an" around the container (BuildHost) hangs on the same text the other
+-- way round: the display's own drawing shows from X seconds on. Finish: every group button of the Missing
+-- display carries a copy at alpha 0, seen only while the animation plays.
+-- A group is complete before the hand-over: no animation can be added to it afterwards, no target changed,
+-- no progress read (never IsPlaying / GetProgress). Changes go through the setters, which the game still
+-- takes after it (/fdanim B). Each group: an Alpha, a Scale and a Path through sampled points (any WA slide
+-- function, eased as WA eases it), all on the copy.
+do
+  local MARGIN, SHIFT = 300, 620            -- room around the display; the text hangs SHIFT px left of it
+  local N = 20                              -- the path's samples: N + 1 control points
+  local ANIM_KEY = KEY .. "A"
+  local LINEAR = function(p) return p end
+  -- WA eases its progress, which runs backwards for a Start: WoW's smoothing of the same curve
+  local SMOOTH = {
+    start = { easeIn = "OUT", easeOut = "IN", easeOutIn = "IN_OUT" },
+    finish = { easeIn = "IN", easeOut = "OUT", easeOutIn = "IN_OUT" },
+  }
+  local animReported = false
+
+  local function Report(o, what, err)
+    if animReported then return end
+    animReported = true
+    WA.prettyPrint(("%s: engine %s animation failed: %s"):format(tostring(o.region and o.region.id), what, tostring(err)))
+  end
+
+  -- WA's function strings and custom functions, compiled as WA compiles them (its custom environment)
+  Engine.animFuncs = {}
+  local function Func(src, id)
+    if type(src) ~= "string" or src == "" then return nil end
+    local cache = Engine.animFuncs
+    if cache[src] == nil then
+      local ok, f = pcall(WA.LoadFunction, "return " .. src, id)
+      cache[src] = (ok and type(f) == "function") and f or false
+    end
+    return cache[src] or nil
+  end
+
+  -- The elapsed text's options: wide below x seconds. Tried in turn as /fdanim2 does: the wide rule from -60 s
+  -- (a time counted up may read a hair under 0), then from 0; 60 W's, then 30 (still far past the display),
+  -- in case the game refuses one. nil: no formatter at all, so no gate and nothing drawn (Engine.AnimPlan).
+  local function ElapsedOptions(x)
+    local f
+    for _, t in ipairs({ { -60, 60 }, { 0, 60 }, { -60, 30 }, { 0, 30 } }) do
+      f = f or Engine.GateFormatter(x, Engine.TIME_WIDE:sub(1, t[2]), t[1])
+    end
+    if not f then return nil end
+    local P = Enum and Enum.DurationTextBindingProperty
+    return { textFormat = { formatString = "{}",
+                            components = { { property = (P and P.ElapsedDuration) or 2, formatter = f } } } }
+  end
+
+  local function Finite(...)
+    for i = 1, select("#", ...) do
+      local v = select(i, ...)
+      if type(v) ~= "number" or v ~= v or v == math.huge or v == -math.huge then return false end
+    end
+    return true
+  end
+
+  -- A display's start or finish animation as the game is to play it (WA's Animate, Animations.lua: a Start
+  -- runs WA's progress backwards): { d = seconds, x = gate seconds, a0/a1 = alpha from/to (of the display's
+  -- own), s0/s1 = scale from/to, origin, smooth, pts = the path's N + 1 points, key, notes }, or nil plus
+  -- why it is not drawn (nil, nil: no animation, or one WA does not play either).
+  -- kind: "icon" | "texture" | "text" (WA's Text displays have no Scale).
+  function Engine.AnimSpec(data, which, kind)
+    local raw = type(data.animation) == "table" and data.animation[which] or nil
+    if type(raw) ~= "table" or (raw.type ~= "preset" and raw.type ~= "custom") then return nil end
+    local a = raw
+    if raw.type == "preset" then
+      a = raw.preset and Private.anim_presets and Private.anim_presets[raw.preset] or nil
+      if type(a) ~= "table" then return nil, T("its preset '%s' is unknown"):format(tostring(raw.preset)) end
+    end
+    if (a.duration_type or "seconds") ~= "seconds" then
+      return nil, T("its duration is relative to the aura's progress, which addons cannot read")
+    end
+    local useT, useA, useS = a.use_translate and true or false, a.use_alpha and true or false,
+                             (a.use_scale and kind ~= "text") and true or false
+    local turns = a.use_rotate and kind == "texture"
+    if not (useT or useA or useS) then
+      if turns or a.use_color then return nil, T("it only turns or changes colour, which is not drawn yet") end
+      return nil
+    end
+    local notes = {}
+    if turns then notes[#notes + 1] = T("its rotation is not drawn") end
+    if a.use_color then notes[#notes + 1] = T("its colour change is not drawn") end
+    local inverse = which == "start"
+    local easeType = a.easeType or "none"
+    local ease = (Private.anim_ease_functions and Private.anim_ease_functions[easeType]) or LINEAR
+    local power = tonumber(a.easeStrength) or 3
+    local function P(t)                       -- WA's eased progress at time fraction t
+      local p = inverse and (1 - t) or t
+      local ok, e = pcall(ease, p, power)
+      return (ok and Finite(e)) and e or p
+    end
+    local d = tonumber(a.duration) or 0
+    if d <= 0 then d = 1 end                  -- WA runs a duration of 0 over one second
+    -- the gate's whole seconds: the elapsed time counts from when the aura was put on, the animation from
+    -- when its button shows, a moment later (0.2 s of room for that)
+    local spec = { which = which, d = d, x = math.max(1, math.ceil(d + 0.2)), notes = notes,
+                   smooth = SMOOTH[which][easeType] or "NONE", a0 = 1, a1 = 1, s0 = { 1, 1 }, s1 = { 1, 1 } }
+    local fns = Private.anim_function_strings or {}
+    local function pick(typeKey, funcKey, default)
+      local t = a[typeKey] or default
+      return Func((t == "custom" and a[funcKey]) or fns[t], tostring(data.id)), t
+    end
+    if useA then
+      local f, t = pick("alphaType", "alphaFunc", "straight")
+      if f then
+        -- WA fades the region from its own alpha; the copy's alpha multiplies with it
+        local base = tonumber(data.alpha) or 1
+        local dA = (tonumber(a.alpha) or 0) - base
+        local ok0, v0 = pcall(f, P(0), base, dA)
+        local ok1, v1 = pcall(f, P(1), base, dA)
+        if not (ok0 and ok1 and Finite(v0, v1)) then return nil, T("its fade function failed") end
+        local function rel(v)
+          v = math.min(1, math.max(0, v))
+          return base > 0 and math.min(1, v / base) or 1
+        end
+        spec.a0, spec.a1 = rel(v0), rel(v1)
+        if t ~= "straight" then notes[#notes + 1] = T("its fade is drawn as a straight change") end
+      end
+    end
+    if useS then
+      local f, t = pick("scaleType", "scaleFunc", "straightScale")
+      if f then
+        local sx, sy = tonumber(a.scalex) or 1, tonumber(a.scaley) or 1
+        local ok0, x0, y0 = pcall(f, P(0), 1, 1, sx, sy)
+        local ok1, x1, y1 = pcall(f, P(1), 1, 1, sx, sy)
+        if not (ok0 and ok1 and Finite(x0, y0, x1, y1)) then return nil, T("its zoom function failed") end
+        local function cl(v) return math.max(0.01, math.abs(v)) end   -- the game scales by more than 0
+        spec.s0, spec.s1 = { cl(x0), cl(y0) }, { cl(x1), cl(y1) }
+        if t ~= "straightScale" then notes[#notes + 1] = T("its zoom is drawn as a straight change") end
+      end
+    end
+    -- WA resizes a display around the point it hangs by: its own, in a Dynamic Group the group's
+    local gdata = data.parent and WA.GetData(data.parent)
+    local origin = (gdata and gdata.regionType == "dynamicgroup" and gdata.selfPoint) or data.selfPoint or "CENTER"
+    spec.origin = tostring(origin):upper()
+    local pts = {}
+    if useT then
+      local f = pick("translateType", "translateFunc", "straightTranslate")
+      if f then
+        local dx, dy = tonumber(a.x) or 0, tonumber(a.y) or 0
+        local function at(t)
+          local ok, x, y = pcall(f, P(t), 0, 0, dx, dy)
+          if ok and Finite(x, y) then return x, y end
+        end
+        local x0, y0 = at(0)
+        if not x0 then return nil, T("its slide function failed") end
+        -- the path starts where the copy rests: a start further out jumps there in its first step (hidden by
+        -- the fade of every WA preset); else the steps follow the time evenly (the game gives each the same)
+        local jump = math.abs(x0) > 0.5 or math.abs(y0) > 0.5
+        for j = 0, N do
+          local x, y
+          if jump then x, y = at(j / N) else x, y = at((j + 1) / (N + 1)) end
+          if not x then return nil, T("its slide function failed") end
+          pts[#pts + 1] = { math.floor(x * 10 + 0.5) / 10, math.floor(y * 10 + 0.5) / 10 }
+        end
+      end
+    end
+    if #pts == 0 then for j = 1, N + 1 do pts[j] = { 0, 0 } end end
+    spec.pts = pts
+    local k = { which, d, spec.x, spec.a0, spec.a1, spec.s0[1], spec.s0[2], spec.s1[1], spec.s1[2], spec.origin, spec.smooth }
+    for _, p in ipairs(pts) do k[#k + 1] = p[1] .. "," .. p[2] end
+    spec.key = table.concat(k, "|")
+    return spec
+  end
+
+  -- a display in a Dynamic Group the game draws as one sorted row (its own drawing is hidden there)
+  local function InSortedRow(data)
+    local gdata = data.parent and WA.GetData(data.parent)
+    if not (gdata and gdata.regionType == "dynamicgroup" and Engine.DynPlan) then return false end
+    local ok, gp = pcall(Engine.DynPlan, gdata)
+    return ok and type(gp) == "table" and gp.sorted and true or false
+  end
+
+  -- Which of a display's Start and Finish the game plays: { start = spec, finish = spec } plus, for one
+  -- that is set but not drawn, startWhy / finishWhy.
+  function Engine.AnimPlan(data, plan)
+    local out = {}
+    if not plan then return out end
+    local rt = data.regionType
+    local kind = (rt == "icon" and "icon") or (rt == "texture" and "texture")
+                 or (rt == "text" and TextKind(data) == "plain" and "text") or nil
+    local parts = plan.parts
+    local found = plan.mode == "active" and not parts and not plan.missingPart
+    local missing = (plan.mode == "missing" and not parts) or (parts and parts.missing and not parts.found)
+    for _, which in ipairs({ "start", "finish" }) do
+      local raw = type(data.animation) == "table" and data.animation[which] or nil
+      if type(raw) == "table" and (raw.type == "preset" or raw.type == "custom") then
+        local spec, why
+        if plan.mode == "always" then
+          why = (which == "start") and T("WeakAuras' own, played when the display loads (it is always shown)")
+                or T("WeakAuras' own, played when the display hides (it is always shown while it is loaded)")
+        elseif plan.missingPart then
+          why = T("not on a display shown while the aura is missing or its stacks match: WeakAuras keeps it shown when the aura comes with matching stacks, which the game does not tell addons")
+        elseif which == "start" and not found then
+          why = (plan.mode == "missing" and not parts)
+            and T("not available while the display shows for a missing aura: the game gives addons no moment when an aura goes")
+            or (parts and parts.found) and T("not drawn yet on a display with a time-left part")
+            or (parts and parts.missing) and T("not available: the display shows when the aura goes or runs low, and the game gives addons no moment for either")
+            or T("not available: the display shows when the aura runs low, and the game gives addons no moment for that")
+        elseif which == "finish" and not missing then
+          why = found
+            and T("not available while the display shows the aura: the game gives addons no moment when an aura goes")
+            or T("not available: the display goes when the aura goes, and the game gives addons no moment for that")
+        elseif which == "start" and plan.stacks and (plan.stacks.ge or 0) >= 2 then
+          -- the game plays it when the slot's button shows: with the aura's first stack, behind the shut
+          -- Stack Count gate; reaching N stacks shows nothing anew (a look of conditions on stacks alike)
+          why = T("not on a display shown from %d stacks: it appears when a stack is added, which the game gives addons no moment for")
+                :format(plan.stacks.ge)
+        elseif not kind then
+          why = (rt == "text") and T("not drawn yet on texts with the aura's time, stacks or name (plain texts only)")
+                or T("not drawn yet on %s (Icons, Textures and plain Texts only)"):format(T(KIND_NAME[rt] or tostring(rt)))
+        elseif which == "start" and InSortedRow(data) then
+          why = T("not drawn yet in a Dynamic Group sorted by the time left")
+        else
+          spec, why = Engine.AnimSpec(data, which, kind)
+          if spec and not ElapsedOptions(spec.x) then
+            spec, why = nil, T("not drawn: the game took no elapsed-time text, which keeps it from playing again at every redraw")
+          end
+        end
+        out[which], out[which .. "Why"] = spec, why
+      end
+    end
+    return out
+  end
+
+  -- The status line's sentence on animations, nil when the display has none.
+  function Engine.AnimNotes(data, plan)
+    local anim = type(data.animation) == "table" and data.animation or {}
+    local function set(which)
+      local a = anim[which]
+      return type(a) == "table" and (a.type == "preset" or a.type == "custom")
+    end
+    if not (set("start") or set("main") or set("finish")) then return nil end
+    local ap = Engine.AnimPlan(data, plan)
+    local said = {}
+    -- the gate counts the aura's elapsed time: an aura met already on (a new target, a member joining, a
+    -- reload) is past it, and an aura without a duration has no elapsed time the game writes
+    if ap.start then
+      local isText = data.regionType == "text"
+      local copy = isText and T("on a copy of the text")
+                   or T("on a copy of the display that keeps only a lone stack count (%s) of its texts")
+      local takeOver = isText and T("the text itself takes over")
+                       or T("the display itself takes over with all its texts and a static glow (an animated glow shows at once)")
+      said[#said + 1] = T("Start is played by the game when the aura is put on, also in combat (not when you switch to a target or meet someone who already has it; not for auras without a duration), %s; after %d s %s. After each refresh of the aura (also a stack that refreshes it) the copy stands in again for %d s, and if the game redraws its auras within the first %d s (it does when you enter or leave combat), the animation starts again.")
+        :format(copy, ap.start.x, takeOver, ap.start.x, ap.start.x)
+    elseif ap.startWhy then
+      said[#said + 1] = T("Start: %s."):format(ap.startWhy)
+    end
+    if ap.finish then
+      said[#said + 1] = T("Finish is played by the game when the aura is put on and the display goes, also in combat (not when you switch to a target or meet someone who already has it; not for auras without a duration), on a copy of the display (without its glow). If the game redraws its auras within %d s after the aura is put on or refreshed (it does when you enter or leave combat), it plays again: pulling right after a re-buff flashes it once.")
+        :format(ap.finish.x)
+    elseif ap.finishWhy then
+      said[#said + 1] = T("Finish: %s."):format(ap.finishWhy)
+    end
+    for _, which in ipairs({ "start", "finish" }) do
+      for _, n in ipairs(ap[which] and ap[which].notes or {}) do
+        said[#said + 1] = T("%s: %s."):format(which == "start" and T("Start") or T("Finish"), n)
+      end
+    end
+    if set("main") then said[#said + 1] = T("Main stays WeakAuras' own and plays as usual.") end
+    -- a Start / Finish with nothing this display type draws (WA does not play it either): no sentence
+    if #said == 0 then return nil end
+    return T("|cff33ff99Animations:|r %s"):format(table.concat(said, " "))
+  end
+
+  -- For the signature: the animations' settings and what their look depends on.
+  function Engine.AnimKey(data)
+    local anim = type(data.animation) == "table" and data.animation or nil
+    if not anim then return "" end
+    local out = {}
+    for _, which in ipairs({ "start", "finish" }) do
+      local a = anim[which]
+      if type(a) == "table" and (a.type == "preset" or a.type == "custom") then
+        local keys = {}
+        for k, v in pairs(a) do
+          if type(k) == "string" and type(v) ~= "table" and type(v) ~= "function" then keys[#keys + 1] = k end
+        end
+        table.sort(keys)
+        local parts = { which }
+        for _, k in ipairs(keys) do parts[#parts + 1] = k .. "=" .. tostring(a[k]) end
+        out[#out + 1] = table.concat(parts, ",")
+      end
+    end
+    if #out == 0 then return "" end
+    local gdata = data.parent and WA.GetData(data.parent)
+    out[#out + 1] = table.concat({ tostring(data.alpha), tostring(data.selfPoint),
+      tostring(gdata and gdata.regionType == "dynamicgroup" and gdata.selfPoint or "") }, "/")
+    return table.concat(out, ";")
+  end
+
+  -- The elapsed time's text: invisible, 64 px (60 W some 3000 px wide, at most 7 digits some 250 px), hung
+  -- by ONE point SHIFT px left of anchor's bottom left, so its end lies far right of the display below X
+  -- seconds and left of it (less the margin) from X on. It starts out short ("0"): the game writes it only
+  -- while the aura has a duration (it switches the text off for one without, Blizzard_CustomAuraButton
+  -- ApplyDurationText), so an aura without one leaves the gate on the settled side, not on an empty text.
+  -- Not tried in game yet (/fdanim2 step 8), nor a button whose last aura went within X s: its text stays wide.
+  local function GateText(button, anchor)
+    local fs = button:CreateFontString(nil, "BACKGROUND")
+    fs:SetFont(STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF", 64, "")
+    fs:SetPoint("BOTTOMLEFT", anchor, "BOTTOMLEFT", -SHIFT, -MARGIN)
+    fs:SetTextColor(1, 1, 1, 0)
+    fs:SetText("0")
+    return fs
+  end
+
+  -- the clip open while that text is wide: from the display's top left (less the margin) to the text's end
+  local function FreshClip(button, anchor, fs)
+    local clip = CreateFrame("Frame", nil, button)
+    clip:SetClipsChildren(true)
+    clip:SetPoint("TOPLEFT", anchor, "TOPLEFT", -MARGIN, MARGIN)
+    clip:SetPoint("BOTTOMRIGHT", fs, "BOTTOMRIGHT")
+    return clip
+  end
+
+  -- the animation group on button, aimed at target: complete before it is handed over
+  local function NewGroup(rig, button, target)
+    local ag = button:CreateAnimationGroup()
+    local function new(what)
+      local a = ag:CreateAnimation(what)
+      a:SetTarget(target)
+      return a
+    end
+    rig.alpha, rig.scale, rig.path = new("Alpha"), new("Scale"), new("Path")
+    local curve = rig.path.SetCurveType or rig.path.SetCurve
+    if curve then pcall(curve, rig.path, "NONE") end
+    rig.cps = {}
+    for i = 1, N + 1 do rig.cps[i] = rig.path:CreateControlPoint(nil, nil, i) end
+    rig.ag = ag
+  end
+
+  -- the spec through the setters (before and after the hand-over alike)
+  local function SetRig(rig, spec)
+    local A, S, P = rig.alpha, rig.scale, rig.path
+    A:SetDuration(spec.d)
+    A:SetFromAlpha(spec.a0)
+    A:SetToAlpha(spec.a1)
+    pcall(A.SetSmoothing, A, spec.smooth)
+    S:SetDuration(spec.d)
+    S:SetScaleFrom(spec.s0[1], spec.s0[2])
+    S:SetScaleTo(spec.s1[1], spec.s1[2])
+    S:SetOrigin(spec.origin, 0, 0)
+    pcall(S.SetSmoothing, S, spec.smooth)
+    P:SetDuration(spec.d)
+    for i, cp in ipairs(rig.cps) do
+      local q = spec.pts[i] or spec.pts[#spec.pts]
+      cp:SetOffset(q[1], q[2])
+    end
+  end
+
+  -- A rig to spec: the setters when it changed, the gate's time, the hand-over (once: a group handed over
+  -- twice is an error). Without its time the gate stays shut and the copy unseen, so not handed over then.
+  local function Configure(rig, spec)
+    if rig.key ~= spec.key then
+      local ok = pcall(SetRig, rig, spec)
+      rig.key, rig.stale = ok and spec.key or nil, not ok
+    end
+    if rig.x ~= spec.x then
+      local opts = ElapsedOptions(spec.x)
+      if opts and pcall(rig.button.SetDurationText, rig.button, rig.fs, opts) then rig.x = spec.x end
+    end
+    if rig.x and not rig.added and pcall(rig.button.AddAuraShownAnimation, rig.button, rig.ag) then rig.added = true end
+  end
+
+  -- no animation any more: the group out of the button's list (clear = the gate's text too)
+  local function Unhand(rig, clear)
+    if rig.added and pcall(rig.button.RemoveAuraShownAnimation, rig.button, rig.ag) then rig.added = false end
+    if clear and rig.x then pcall(rig.button.ClearDurationText, rig.button); rig.x = nil end
+  end
+
+  -- Start: container "A" in the display's Stack Count gates with one slot on the display's aura. Its button
+  -- holds the gate text, the clip open below X, the copy in it (the live icon and swipe, fed by the game
+  -- like the display's own; a texture; a plain text) and the group; the display's gate "an" hangs on the
+  -- same text. All of it in initializeFrame, before the game guards the button.
+  local function BuildStartSlot(o, region, plan, spec)
+    local host, gates = o.host, o.gates
+    if not (host and gates and gates.le and gates.an) then return nil end
+    local cA = CreateFrame("AuraContainer", nil, gates.le, "CustomAuraContainerTemplate")
+    cA:SetPoint("TOPLEFT", host, "TOPLEFT")
+    cA:SetFrameLevel(host:GetFrameLevel())
+    local rig = { container = cA }
+    local ok, button = pcall(cA.AddAuraSlot, cA, ANIM_KEY, plan.filterString, {
+      candidateFilters = plan.candidate,
+      initializeFrame = function(button)
+        button:ClearAllPoints()
+        button:SetAllPoints(host)
+        button:SetFrameLevel(cA:GetFrameLevel())
+        pcall(button.SetMouseClickEnabled, button, false)
+        pcall(button.EnableMouseMotion, button, false)
+        rig.button = button
+        rig.fs = GateText(button, button)
+        rig.fresh = FreshClip(button, button, rig.fs)
+        rig.fresh:SetFrameLevel(button:GetFrameLevel() + 1)
+        local layer = CreateFrame("Frame", nil, rig.fresh)
+        layer:SetAllPoints(button)
+        layer:SetFrameLevel(button:GetFrameLevel() + 2)
+        rig.layer = layer
+        if o.isPic then
+          rig.pic = layer:CreateTexture(nil, "ARTWORK")
+          rig.pic:SetAllPoints(layer)
+          pcall(rig.pic.SetSnapToPixelGrid, rig.pic, false)
+          pcall(rig.pic.SetTexelSnappingBias, rig.pic, 0)
+        elseif o.isText then
+          rig.text = layer:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        else
+          rig.icon = layer:CreateTexture(nil, "ARTWORK")
+          rig.icon:SetAllPoints(layer)
+          pcall(rig.icon.SetSnapToPixelGrid, rig.icon, false)
+          pcall(rig.icon.SetTexelSnappingBias, rig.icon, 0)
+          rig.cd = CreateFrame("Cooldown", nil, layer, "CooldownFrameTemplate")
+          rig.cd:SetAllPoints(rig.icon)
+          pcall(rig.cd.SetDrawBling, rig.cd, false)
+          local fmt = Private.ForeverAuraCountdownFormatter()
+          if fmt then pcall(rig.cd.SetCountdownFormatter, rig.cd, fmt) end
+          button:SetIcon(rig.icon)
+          button:SetDurationCooldown(rig.cd)
+        end
+        if not o.isText then
+          -- the stack count, fed by the game like the display's own: a stacking aura refreshed by each new
+          -- stack would otherwise lose its number for X s every time (StyleStartCopy styles it)
+          rig.count = layer:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+          rig.count:SetPoint("CENTER")
+          button:SetApplicationCount(rig.count, nil)
+        end
+        -- the display's own drawing: from the text's end to the display's top right (plus the margin)
+        local an = gates.an
+        an:ClearAllPoints()
+        an:SetPoint("BOTTOMLEFT", rig.fs, "BOTTOMRIGHT")
+        an:SetPoint("TOPRIGHT", button, "TOPRIGHT", MARGIN, MARGIN)
+        NewGroup(rig, button, layer)
+        Configure(rig, spec)
+      end,
+    })
+    if not ok or not button or not rig.ag then
+      Report(o, "start", ok and "no animation group" or button)
+      pcall(cA.Hide, cA)
+      o.startBroken = true
+      return nil
+    end
+    rig.filter, rig.pkey, rig.on = plan.filterString, plan.key, true
+    o.startRig = rig
+    return rig
+  end
+
+  local function StyleStartCopy(o, rig, region, data, plan)
+    if rig.pic then CopyPictureLook(rig.pic, region, data)
+    elseif rig.text then Engine.CopyPlainText(rig.text, region, data, plan, rig.layer)
+    elseif rig.icon then Engine.StyleIconLook(rig.icon, rig.cd, region, data) end
+    if not rig.count then return end
+    -- a lone %s sub-text as the display draws it (MirrorTexts), hung on the copy so it moves with it; a
+    -- text with time and stacks together waits for the display (its time is the display's duration text)
+    local sub
+    for i, role in pairs((Engine.SubTextRoles(data))) do
+      if role == "s" then sub = data.subRegions[i] end
+    end
+    if not sub then rig.count:SetAlpha(0); return end
+    local pts = StyleShadowText(region, rig.count, sub, true, nil)
+    local okW, w, h = pcall(function() return region:GetWidth(), region:GetHeight() end)
+    for _, p in ipairs(pts) do
+      -- WA hangs it on its icon or on the icon's inner / outer frame, all on the display's centre: the same
+      -- point of the copy, shifted by half the size difference
+      local rel = p[2]
+      if rel ~= region and okW and type(rel) == "table" and rel.GetWidth then
+        local okR, rw, rh = pcall(function() return rel:GetWidth(), rel:GetHeight() end)
+        if okR and type(rw) == "number" and type(rh) == "number" and type(w) == "number" and type(h) == "number"
+           and not (issecretvalue(rw) or issecretvalue(rh) or issecretvalue(w) or issecretvalue(h)) then
+          local rp = tostring(p[3]):upper()
+          p[4] = (p[4] or 0) + ((rp:find("RIGHT") and 1) or (rp:find("LEFT") and -1) or 0) * (rw - w) / 2
+          p[5] = (p[5] or 0) + ((rp:find("TOP") and 1) or (rp:find("BOTTOM") and -1) or 0) * (rh - h) / 2
+        end
+      end
+      p[2] = rig.layer
+    end
+    Engine.SetAnchors(nil, rig.count, pts)
+    rig.count:SetAlpha(1)                       -- Shown is secret on a count text; Alpha is ours
+  end
+
+  -- o: the display's attachment, a look of it (Engine.ApplyVariants) or a member's copy (Engine.ApplyCopies);
+  -- data: the look's; unit: o's container's. on = o draws the live aura in its slot. Safe time only.
+  function Engine.ApplyStartAnim(o, region, data, plan, unit, on)
+    local spec = on and not o.startBroken and Engine.AnimPlan(data, plan).start or nil
+    if not spec then Engine.StopStartAnim(o); return false end
+    local rig = o.startRig
+    if not rig then
+      rig = BuildStartSlot(o, region, plan, spec)
+      if not rig then Engine.StopStartAnim(o); return false end
+    else
+      local cA = rig.container
+      if rig.filter ~= plan.filterString then cA:SetAuraSlotFilterString(ANIM_KEY, plan.filterString); rig.filter = plan.filterString end
+      if rig.pkey ~= plan.key then cA:SetAuraSlotCandidateFilters(ANIM_KEY, plan.candidate); rig.pkey = plan.key end
+      Configure(rig, spec)
+    end
+    -- without its elapsed text "an" would hang on a text nobody writes, and without the hand-over the copy
+    -- would only stand still where the display is shut: neither is drawn then
+    if not (rig.x and rig.added) then
+      Report(o, "start", "the game took no elapsed-time text or animation")
+      Engine.StopStartAnim(o)
+      return false
+    end
+    if not rig.on then rig.container:SetAuraSlotEnabled(ANIM_KEY, true); rig.on = true end
+    if rig.unit ~= unit then rig.container:SetUnit(unit); rig.unit = unit end
+    local okS, err = pcall(StyleStartCopy, o, rig, region, data, plan)
+    if not okS then Report(o, "start", err) end
+    local h = o.host:GetFrameLevel()
+    Engine.SafeLevel(rig.container, h)
+    Engine.SafeLevel(rig.button, h)
+    Engine.SafeLevel(rig.fresh, h + 1)
+    Engine.SafeLevel(rig.layer, h + 2)
+    o.gates.an:SetClipsChildren(true)
+    o.anClip = true
+    rig.container:Show()
+    pcall(rig.container.UpdateAllAuras, rig.container)
+    return true
+  end
+
+  function Engine.StopStartAnim(o)
+    local rig = o.startRig
+    if rig then
+      if rig.on then pcall(rig.container.SetAuraSlotEnabled, rig.container, ANIM_KEY, false); rig.on = false end
+      Unhand(rig, false)
+    end
+    if o.anClip and o.gates and o.gates.an then o.gates.an:SetClipsChildren(false); o.anClip = false end
+  end
+
+  -- Finish: in one of the Missing group's buttons (BuildGroup keeps them), hung on the host's plain rect,
+  -- not on the button's (the game lays the button out).
+  local function BuildFinishRig(o, button)
+    local host = o.host
+    local rig = { button = button }
+    rig.fs = GateText(button, host)
+    rig.fresh = FreshClip(button, host, rig.fs)
+    local copy = CreateFrame("Frame", nil, rig.fresh)
+    copy:SetAllPoints(host)
+    copy:SetAlpha(0)                         -- seen only while the animation plays
+    rig.layer = copy
+    local h = host:GetFrameLevel()
+    Engine.SafeLevel(rig.fresh, h + 3)
+    Engine.SafeLevel(copy, h + 4)
+    if o.isPic then
+      rig.pic = copy:CreateTexture(nil, "ARTWORK")
+      rig.pic:SetAllPoints(copy)
+    elseif o.isText then
+      rig.text = copy:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    else
+      rig.icon = copy:CreateTexture(nil, "ARTWORK")
+      rig.icon:SetAllPoints(copy)
+    end
+    for _, t in ipairs({ rig.pic or rig.icon }) do
+      pcall(t.SetSnapToPixelGrid, t, false)
+      pcall(t.SetTexelSnappingBias, t, 0)
+    end
+    NewGroup(rig, button, copy)
+    return rig
+  end
+
+  -- the copy looks like the Missing clip's underlay (part: the plan or the composite's missing part)
+  local function StyleFinishCopy(rig, region, data, part)
+    if rig.pic then CopyPictureLook(rig.pic, region, data)
+    elseif rig.text then Engine.CopyPlainText(rig.text, region, data, part, rig.layer)
+    elseif rig.icon then
+      local t = rig.icon
+      local tex = DisplayTexture(data, part.firstId)
+      if type(tex) == "string" and C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo(tex) then
+        t:SetAtlas(tex)
+      else
+        t:SetTexture(tex)
+      end
+      t:SetTexCoord(region.icon:GetTexCoord())
+      pcall(t.SetDesaturation, t, data.desaturate and 1 or 0)
+      local col = data.color or { 1, 1, 1, 1 }
+      t:SetVertexColor(col[1] or 1, col[2] or 1, col[3] or 1, col[4] or 1)
+    end
+  end
+
+  -- o: the display's attachment or a member's copy, with its Missing group built (EnsureGroup). on = o
+  -- draws a Missing part. Rigs are made when first wanted, in each of the group's buttons. Safe time only.
+  function Engine.ApplyFinishAnim(o, region, data, plan, on)
+    local spec = on and Engine.AnimPlan(data, plan).finish or nil
+    if not spec then
+      for _, rig in pairs(o.finRigs or {}) do if rig then Unhand(rig, true) end end
+      return false
+    end
+    o.finRigs = o.finRigs or {}
+    local part = (plan.parts and plan.parts.missing) or plan
+    for _, b in ipairs(o.groupButtons or {}) do
+      local rig = o.finRigs[b]
+      if rig == nil then
+        local ok, r = pcall(BuildFinishRig, o, b)
+        if not (ok and r) then Report(o, "finish", r) end
+        rig = (ok and r) or false              -- not tried again on this button
+        o.finRigs[b] = rig
+      end
+      if rig then
+        local okS, err = pcall(StyleFinishCopy, rig, region, data, part)
+        if not okS then Report(o, "finish", err) end
+        Configure(rig, spec)
+      end
+    end
+    return true
+  end
+end
+
 local function SetMirroredShown(att, shown)
   if not att.mirrored then return end
   for sub in pairs(att.mirrored) do
@@ -3924,7 +4568,7 @@ local function DisableKind(att, kind)
   end
   -- the Found slot: also a composite's Found part (it stayed drawing when a composite lost its Found part)
   if (kind == "slot" or kind == "composite") and att.slotBuilt then pcall(c.SetAuraSlotEnabled, c, KEY, false) end
-  if kind == "slot" then DisablePresentClip(att) end
+  if kind == "slot" then DisablePresentClip(att); Engine.StopStartAnim(att) end
   -- the Missing clip: also a refresh icon's (a slot plan with a missing part)
   if (kind == "group" or kind == "composite" or kind == "slot") and att.groupBuilt then
     pcall(c.SetAuraGroupEnabled, c, KEY, false)
@@ -5478,6 +6122,8 @@ do
           if v.unit ~= plan.unit then v.container:SetUnit(plan.unit); v.unit = plan.unit end
           ApplySlotLook(v, region, ldata, fg and plan or setmetatable({ noGlow = true }, { __index = plan }))
           Levels(v)
+          -- the look's stack range: a look shown from 2 stacks up never shows with the aura (Engine.AnimPlan)
+          pcall(Engine.ApplyStartAnim, v, region, ldata, Engine.LookPlan(plan, look), plan.unit, true)
           Engine.LookAlpha(v, data, ldata)
           att.mirrored = att.mirrored or {}
           for live in pairs(v.mirrored or {}) do att.mirrored[live] = true end
@@ -5487,6 +6133,7 @@ do
         end
       elseif v then
         if v.slotBuilt then pcall(v.container.SetAuraSlotEnabled, v.container, KEY, false) end
+        pcall(Engine.StopStartAnim, v)
         v.host:Hide()
       end
     end
@@ -5589,6 +6236,8 @@ do
         if cp.isText then m = math.max(m, 3) end
         ok = EnsureGroup(cp, region, plan, m)
         if ok then ApplyUnderlayLook(cp, region, data, plan) end
+        pcall(Engine.StopStartAnim, cp)
+        if ok then pcall(Engine.ApplyFinishAnim, cp, region, data, plan, true) end
       else
         if not cp.slotBuilt then
           if BuildSlot(cp, region, plan) then cp.slotFilter, cp.slotKey = plan.filterString, plan.key end
@@ -5608,7 +6257,9 @@ do
             DisablePresentClip(cp)
           end
           ApplySlotLook(cp, region, data, plan)
+          pcall(Engine.ApplyStartAnim, cp, region, data, plan, u, true)
         end
+        pcall(Engine.ApplyFinishAnim, cp, region, data, plan, false)
       end
       if ok then
         if cp.unit ~= u then cp.container:SetUnit(u); cp.unit = u end
@@ -5633,6 +6284,7 @@ do
     if cp.slotBuilt then pcall(c.SetAuraSlotEnabled, c, KEY, false) end
     if cp.groupBuilt then pcall(c.SetAuraGroupEnabled, c, KEY, false) end
     DisablePresentClip(cp)
+    pcall(Engine.StopStartAnim, cp)
     cp.host:Hide()
   end
 
@@ -5818,6 +6470,15 @@ local function ApplyUnguarded(region)
     pcall(sh.texClip.SetFrameLevel, sh.texClip, c:GetFrameLevel() + 1)
     pcall(sh.texts.SetFrameLevel, sh.texts, c:GetFrameLevel() + 2)
   end
+  -- the start animation of a Found slot, the finish of a Missing part (each copy has its own)
+  local okA, errA = pcall(function()
+    Engine.ApplyStartAnim(att, region, ldata, plan, plan.unit, kind == "slot")
+    Engine.ApplyFinishAnim(att, region, data, plan, kind == "group" or kind == "composite")
+  end)
+  if not okA and not att.animWarned then
+    att.animWarned = true
+    WA.prettyPrint(("%s: engine animations failed: %s"):format(tostring(region.id), tostring(errA)))
+  end
   local okV, errV = pcall(function()
     Engine.LookAlpha(att, data, ldata)
     Engine.ApplyVariants(att, region, data, plan, kind == "slot")
@@ -5917,7 +6578,8 @@ local function ComputeSig(region, data, plan)
     table.concat(data.backgroundColor or {}, ","), table.concat(data.icon_color or {}, ","),
     tostring(data.foreverEngineRange), tostring(data.foreverEngineRangeSpell), tostring(data.foreverEngineGlowPart),
     SoundSig(data), tostring(data.parent), Dyn.Sig(data), plan.stacks and plan.stacks.key or "", plan.looksKey or "",
-    table.concat(data.color or {}, ","), region.icon and table.concat({ region.icon:GetTexCoord() }, ",") or "" }
+    table.concat(data.color or {}, ","), region.icon and table.concat({ region.icon:GetTexCoord() }, ",") or "",
+    Engine.AnimKey(data) }
   if data.regionType == "progresstexture" then
     for _, k in ipairs({ "foregroundTexture", "backgroundTexture", "sameTexture", "desaturateForeground",
                          "desaturateBackground", "blendMode", "textureWrapMode", "backgroundOffset", "compress",
@@ -6148,6 +6810,13 @@ ApplyEngineFrameLevels = function(region, frameLevel)
     if att.pclip then Engine.SafeLevel(att[k], h + 4) end
   end
   if att.shadows.clip then Engine.SafeLevel(att.mglowHolder, h + 2) end
+  local rig = att.startRig                                   -- the start animation's slot (Engine.ApplyStartAnim)
+  if rig then
+    Engine.SafeLevel(rig.container, h)
+    Engine.SafeLevel(rig.button, h)
+    Engine.SafeLevel(rig.fresh, h + 1)
+    Engine.SafeLevel(rig.layer, h + 2)
+  end
   pcall(SetRemainLevels, att)
   if region.subRegions then
     for index, sub in pairs(region.subRegions) do
@@ -6369,6 +7038,8 @@ function Engine.RefreshContainers(att)
     if not (a and a.container) then return end
     pcall(a.container.UpdateAllAuras, a.container)
     if a.pclipShown and a.container2 then pcall(a.container2.UpdateAllAuras, a.container2) end
+    local rig = a.startRig
+    if rig and rig.on then pcall(rig.container.UpdateAllAuras, rig.container) end
   end
   one(att)
   for i = 2, 4 do one(att.variants and att.variants[i]) end
