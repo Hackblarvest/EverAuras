@@ -1239,6 +1239,47 @@ local function TextureFollowsAura(data, no)
   end
 end
 
+function Engine.JoinLists(a, b)
+  if not b or #b == 0 then return a end
+  local o = {}
+  for _, v in ipairs(a or {}) do o[#o + 1] = v end
+  for _, v in ipairs(b) do o[#o + 1] = v end
+  return o
+end
+
+-- A refresh icon: one 'Aura(s) Missing' and one 'Aura(s) Found' trigger without 'Remaining Time' (the Found
+-- one with a Stack Count or conditions on stacks, checked by the caller). Returns missing, found, the Found
+-- trigger's index, or nil.
+function Engine.RefreshPair(infos, auraIdx)
+  if #infos ~= 2 then return nil end
+  local m, f, ti
+  for k, inf in ipairs(infos) do
+    if inf.mode == "missing" and not inf.group then m = inf
+    elseif inf.mode == "active" and not inf.rem and not inf.group then f, ti = inf, auraIdx[k] end
+  end
+  if m and f then return m, f, ti end
+  return nil
+end
+
+-- The two triggers of a refresh icon must watch the same aura, or both parts could show at once: every
+-- spell of the Found trigger is one of the Missing trigger's, of the same kind (buff / debuff), and 'Own
+-- Only' on the Missing trigger is on the Found trigger too. Returns a reason, or nil.
+function Engine.RefreshSameAura(m, f)
+  if #f.ids == 0 and not f.nameless then return nil end        -- not resolved yet: the trigger says why
+  local same = not f.nameless and m.filter == f.filter
+  if same and (m.filterString or ""):find("PLAYER", 1, true) and not (f.filterString or ""):find("PLAYER", 1, true) then
+    same = false
+  end
+  if same then
+    local set = {}
+    for _, id in ipairs(m.ids or {}) do set[id] = true end
+    for _, id in ipairs(f.ids) do if not set[id] then same = false; break end end
+  end
+  if not same then
+    return T("the 'Aura(s) Missing' and the 'Aura(s) Found' trigger must track the same aura (the same spells, buff or debuff, and 'Own Only' on the Missing trigger needs it on the Found trigger too)")
+  end
+end
+
 function Engine.Classify(data)
   local r = {}
   local function no(msg)
@@ -1282,8 +1323,22 @@ function Engine.Classify(data)
   end
   local gates = n - #auraIdx
 
-  if #infos == 1 and not infos[1].rem then
-    local inf = infos[1]
+  -- Missing OR Found with a Stack Count (a refresh icon: absent, or too few stacks): drawn as the Found plan
+  -- behind its stack gates, plus the Missing clip outside them (plan.missingPart)
+  local refreshM, refreshF, refreshTi = Engine.RefreshPair(infos, auraIdx)
+  if refreshF and not (refreshF.stacks or Engine.StackLooks(data, refreshTi, rt, refreshF.stacks)) then
+    refreshM, refreshF = nil, nil
+  end
+  if refreshF then
+    if rt ~= "icon" and rt ~= "texture" and rt ~= "stopmotion" then
+      no(T("'Aura(s) Missing' together with 'Aura(s) Found' and a 'Stack Count' is engine-driven for Icons, Textures and Stop Motions (so far)"))
+    end
+    local why = Engine.RefreshSameAura(refreshM, refreshF)
+    if why then no(why) end
+  end
+  if (#infos == 1 and not infos[1].rem) or refreshF then
+    local inf, ti = infos[1], auraIdx[1]
+    if refreshF then inf, ti = refreshF, refreshTi end
     if FOUND_ONLY[rt] and inf.mode and inf.mode ~= "active" then   -- MODE maps showOnActive -> "active"
       no(T("%s are engine-driven with 'Show On: Aura(s) Found' only (so far)"):format(T(KIND_NAME[rt])))
     end
@@ -1316,18 +1371,18 @@ function Engine.Classify(data)
     end
     if #r > 0 then return nil, r end
     local looks, lookConds, lookNotes
-    if inf.mode == "active" then looks, lookConds, lookNotes = Engine.StackLooks(data, auraIdx[1], rt, inf.stacks) end
+    if inf.mode == "active" then looks, lookConds, lookNotes = Engine.StackLooks(data, ti, rt, inf.stacks) end
     -- conditions on the time left: two looks (from X up, below X), each behind a time gate (as for stacks)
     local timeLooks
     if inf.group then
-      local tl = Engine.TimeLooks(data, auraIdx[1], rt)
+      local tl = Engine.TimeLooks(data, ti, rt)
       if looks or tl then
         lookNotes = lookNotes or {}
         lookNotes[#lookNotes + 1] = T("conditions on stacks or the time left are not drawn for a group trigger")
         looks, lookConds = nil, nil
       end
     elseif inf.mode == "active" then
-      local tl, tconds, tnotes = Engine.TimeLooks(data, auraIdx[1], rt)
+      local tl, tconds, tnotes = Engine.TimeLooks(data, ti, rt)
       if tnotes and #tnotes > 0 then
         lookNotes = lookNotes or {}
         for _, n in ipairs(tnotes) do lookNotes[#lookNotes + 1] = n end
@@ -1350,12 +1405,15 @@ function Engine.Classify(data)
       end
       looksKey = table.concat(parts, "|")
     end
-    local key = table.concat({ unit, inf.mode, inf.key, inf.group and inf.group.key or "" }, ";")
-    return { unit = unit, filter = inf.filter, filterString = inf.filterString, mode = inf.mode,
+    local key = table.concat({ unit, inf.mode, inf.key, inf.group and inf.group.key or "",
+                               refreshM and ("M:" .. refreshM.key) or "" }, ";")
+    return { unit = unit, filter = inf.filter, filterString = inf.filterString, mode = inf.mode, missingPart = refreshM,
              candidate = inf.candidate, firstId = inf.firstId, key = key, byDuration = inf.byDuration, warn = inf.warn,
              durationFromSetting = inf.durationFromSetting, fingerprint = inf.fingerprint,
              nameless = inf.nameless, propsText = inf.propsText, propsKey = inf.propsKey,
-             ids = inf.ids, byName = inf.byName, gen = spellbookGen, unresolved = inf.unresolved, unseen = inf.unseen,
+             ids = inf.ids, byName = inf.byName or (refreshM and refreshM.byName) or false, gen = spellbookGen,
+             unresolved = Engine.JoinLists(inf.unresolved, refreshM and refreshM.unresolved),
+             unseen = Engine.JoinLists(inf.unseen, refreshM and refreshM.unseen),
              auraTriggers = auraTriggers, gates = gates, stacks = inf.stacks,
              looks = looks, looksKey = looksKey, lookConds = lookConds, lookNotes = lookNotes, timeLooks = timeLooks,
              group = inf.group }
@@ -1367,7 +1425,11 @@ function Engine.Classify(data)
   if data.uid then lateUsers[data.uid] = true end
   local missing, found, remaining = nil, nil, {}
   for _, inf in ipairs(infos) do
-    if inf.stacks then no(T("'Stack Count' is engine-driven on a display with one Aura trigger (so far)")) end
+    if inf.stacks and inf.rem then
+      no(T("'Stack Count' and 'Remaining Time' on the same trigger cannot be expressed by the engine"))
+    elseif inf.stacks then
+      no(T("'Stack Count' is engine-driven on a display with one Aura trigger, or with one 'Aura(s) Missing' trigger beside it (so far)"))
+    end
   end
   for _, inf in ipairs(infos) do
     if inf.mode == "missing" then
@@ -1385,8 +1447,8 @@ function Engine.Classify(data)
       no(T("'Show On: Always' cannot be combined with other Aura triggers"))
     end
   end
-  if found and missing then no(T("'Aura(s) Found' and 'Aura(s) Missing' without 'Remaining Time' cannot be combined")) end
-  if found and #remaining == 0 then no(T("two 'Aura(s) Found' triggers cannot be combined")) end
+  if found and missing then no(T("'Aura(s) Found' and 'Aura(s) Missing' without 'Remaining Time' cannot be combined (together they are 'Show On: Always'; give the Found trigger a 'Stack Count' for an icon shown while the aura is missing or has too few stacks)")) end
+  if found and not missing and #remaining == 0 then no(T("two 'Aura(s) Found' triggers cannot be combined")) end
   -- a time-left part gets an animated glow through a clip that needs the aura's total duration
   local lateTotal
   for _, rp in ipairs(remaining) do
@@ -1428,7 +1490,8 @@ function Engine.Classify(data)
 end
 
 -- Conditions on a delegated Aura trigger never see aura data (only 'Buffed' changes).
-local function InertConditions(data, plan)
+-- kind "show": instead, a 'Trigger Active' condition, which is always true on a delegated trigger.
+local function InertConditions(data, plan, kind)
   local aura = plan and plan.auraTriggers or { [1] = true }
   local function bad(check)
     if not check then return false end
@@ -1436,7 +1499,8 @@ local function InertConditions(data, plan)
       for _, c in ipairs(check.checks) do if bad(c) then return true end end
       return false
     end
-    return aura[check.trigger] and check.variable ~= nil and check.variable ~= "buffed"
+    if kind == "show" then return aura[check.trigger] and check.variable == "show" or false end
+    return aura[check.trigger] and check.variable ~= nil and check.variable ~= "buffed" and check.variable ~= "show"
   end
   local drawn = plan and plan.lookConds or {}
   for ci, c in ipairs(data.conditions or {}) do
@@ -1506,6 +1570,10 @@ local function SoundRoutes(plan)
     if plan.parts.found then return SOUND_ROUTES.active end
     return nil
   end
+  -- a refresh icon shows when the aura is lost (its Missing part's spells); it hides when the stacks reach
+  -- the count, which no aura event marks
+  -- (without a Stack Count, only conditions on stacks: one of the two triggers is always active, as Always)
+  if plan.missingPart then return plan.stacks and { start = "Removed" } or nil end
   return SOUND_ROUTES[plan.mode]
 end
 
@@ -1537,6 +1605,7 @@ local MODE_TEXT = {
   active = "shows the live aura while it is present, nothing while it is absent",
   missing = "shows your icon while the aura is absent and disappears completely while it is present",
   always = "shows your icon while the aura is absent and the live aura while it is present",
+  refresh = "shows your icon while the aura is absent and the live aura while its stacks match (below), nothing otherwise",
 }
 local REM_TEXT = { ["<"] = "less than %s s", ["<="] = "at most %s s", [">"] = "more than %s s", [">="] = "at least %s s" }
 
@@ -1616,12 +1685,14 @@ function Engine.Explain(data, plan, reasons)
       txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows your model %s. Kept: position, size, groups, the model file or display ID, its position or transform, rotation, portrait zoom, animation and alpha, %%p/%%s/%%n texts, the glow (shown only while the model is). Not drawn: the border (hidden while engine-driven). Not available: a unit's model, conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
         :format(plan.unit, plan.filterString, when)
     elseif data.regionType == "stopmotion" then
-      local when = plan.mode == "missing" and T("while the aura is absent and disappears completely while it is present")
+      local when = plan.missingPart and T("while the aura is absent and while its stacks match (below), nothing otherwise")
+                   or plan.mode == "missing" and T("while the aura is absent and disappears completely while it is present")
                                          or T("while the aura is present and nothing while it is absent")
       txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It plays your animation %s, as a FlipBook animation of the game (scripts cannot run there). Kept: position, size, groups, the texture's frames, frame rate, Loop or Bounce, Inverse, End, colours, desaturate, blend mode, the background frame, %%p/%%s/%%n texts, the glow (shown only while the animation is). Not drawn: the border (hidden while engine-driven). Not available: Once and Progress animations, a Start above 0%%, conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
         :format(plan.unit, plan.filterString, when)
     elseif data.regionType == "texture" then
-      local when = plan.mode == "missing" and T("while the aura is absent and disappears completely while it is present")
+      local when = plan.missingPart and T("while the aura is absent and while its stacks match (below), nothing otherwise")
+                   or plan.mode == "missing" and T("while the aura is absent and disappears completely while it is present")
                                          or T("while the aura is present and nothing while it is absent")
       txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows your texture %s. Kept: position, size, groups, texture, colour, rotation, mirror, desaturate, blend mode, %%p/%%s/%%n texts, the glow (shown only while the texture is, animated like WeakAuras' own). Not drawn: the border (hidden while engine-driven). Not available: conditions and texts that read aura state, show/hide animations and actions on aura gain/loss other than sounds.")
         :format(plan.unit, plan.filterString, when)
@@ -1643,11 +1714,12 @@ function Engine.Explain(data, plan, reasons)
         kept = T("the bar colours and gradient, the border (also while nothing is drawn), and the glow: shown only while the bar is, and animated like WeakAuras' own (a glow on the bar's fill goes around the whole bar)")
       end
       txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It %s. Kept: position, size, groups, %%n/%%i texts, static colour/desaturate/zoom, %s; cooldown numbers count like the buff frame. Not available: conditions and texts that read aura state (stacks, remaining, active), show/hide animations and actions on aura gain/loss other than sounds.")
-        :format(plan.unit, plan.filterString, T(MODE_TEXT[plan.mode]), kept)
+        :format(plan.unit, plan.filterString, T(MODE_TEXT[plan.missingPart and "refresh" or plan.mode]), kept)
     end
-    if plan.parts and Engine.HasGlowPartChoice(data) and (data.foreverEngineGlowPart or "both") ~= "both" then
-      txt = txt .. " " .. (data.foreverEngineGlowPart == "remaining" and T("The glow is drawn only while it runs out.")
-                                                                    or T("The glow is drawn only while the aura is missing."))
+    if (plan.parts or plan.missingPart) and Engine.HasGlowPartChoice(data) and (data.foreverEngineGlowPart or "both") ~= "both" then
+      txt = txt .. " " .. (data.foreverEngineGlowPart == "remaining"
+        and (plan.missingPart and T("The glow is drawn only on the live aura.") or T("The glow is drawn only while it runs out."))
+        or T("The glow is drawn only while the aura is missing."))
     end
     if (plan.gates or 0) > 0 then
       txt = txt .. " " .. T("Your other trigger(s) still decide when the display may show at all; WeakAuras checks them itself, which works in combat for plain data (combat state, target attackable or hostile, talents, items, cooldowns) but not for values Forever keeps secret, such as health or power amounts.")
@@ -1715,6 +1787,15 @@ function Engine.Explain(data, plan, reasons)
         else
           sounds[#sounds + 1] = T("%s sound waits until EverAuras has seen a matching aura once out of combat, on you, your pet, target, focus, group or a nearby enemy: the game plays aura sounds by spell only"):format(label)
         end
+      elseif (src or why == "kit") and plan.missingPart and not (routes and routes[when]) then
+        sounds[#sounds + 1] = plan.stacks
+          and T("%s sound is not played: no aura event marks the moment the stacks reach or leave the count"):format(label)
+          or T("%s sound is not played: with conditions on stacks but no Stack Count, one of the two triggers is always active, so the display never shows or hides in WeakAuras' terms"):format(label)
+      elseif src and routes and plan.missingPart and when == "start" then
+        local st = plan.stacks
+        sounds[#sounds + 1] = (st.ge and not st.le)
+          and T("%s sound plays when the aura is lost (also when it had enough stacks, so the display was already shown)"):format(label)
+          or T("%s sound plays when the aura is lost (also when it had too few stacks, so the display was already shown)"):format(label)
       elseif src and routes then
         sounds[#sounds + 1] = T("%s sound plays when the aura is %s"):format(label,
           routes[when] == "Added" and T("gained") or T("lost"))
@@ -1725,14 +1806,21 @@ function Engine.Explain(data, plan, reasons)
     if #sounds > 0 then
       txt = txt .. " " .. T("|cff33ff99Sounds:|r %s; the game plays them itself, also in combat."):format(table.concat(sounds, "; "))
     end
-    if plan.stacks then
-      local st = plan.stacks
+    if plan.stacks or plan.missingPart then
+      local st, when = plan.stacks, nil
       local function n(k) return k == 1 and T("1 stack") or T("%d stacks"):format(k) end
-      local when = (st.ge and st.le and st.ge == st.le) and T("at exactly %s"):format(n(st.ge))
-                or (st.ge and st.le) and T("at %d to %s"):format(st.ge, n(st.le))
-                or st.ge and T("at %s or more"):format(n(st.ge))
-                or T("at %s or fewer"):format(n(st.le))
-      txt = txt .. " " .. T("|cff33ff99Stack Count:|r shown only %s. The game compares the stacks itself: a frame around the display opens and closes with the engine's own stack bar. Sounds still play when the aura comes or goes."):format(when)
+      if st then
+        when = (st.ge and st.le and st.ge == st.le) and T("at exactly %s"):format(n(st.ge))
+               or (st.ge and st.le) and T("at %d to %s"):format(st.ge, n(st.le))
+               or st.ge and T("at %s or more"):format(n(st.ge))
+               or T("at %s or fewer"):format(n(st.le))
+      end
+      if plan.missingPart then
+        txt = txt .. " " .. T("|cff33ff99Missing or stacks:|r your icon while the aura is absent, and the live aura (countdown, stacks, swipe) %s. The game compares the stacks itself: a frame around the live aura opens and closes with the engine's own stack bar, and the icon for the absent aura lies outside it."):format(
+          when and T("only %s"):format(when) or T("in the looks of your conditions on stacks"))
+      else
+        txt = txt .. " " .. T("|cff33ff99Stack Count:|r shown only %s. The game compares the stacks itself: a frame around the display opens and closes with the engine's own stack bar. Sounds still play when the aura comes or goes."):format(when)
+      end
     end
     if plan.group then
       local g = plan.group
@@ -1773,6 +1861,9 @@ function Engine.Explain(data, plan, reasons)
     end
     if InertConditions(data, plan) then
       txt = txt .. " " .. T("|cffff9933Note:|r a condition reads trigger data other than 'Buffed'; it never fires on this display.")
+    end
+    if InertConditions(data, plan, "show") then
+      txt = txt .. " " .. T("|cffff9933Note:|r a 'Trigger Active' condition on an Aura trigger is always true here (WeakAuras sees the engine-driven trigger as always active), so its changes apply all the time.")
     end
     return txt, true
   end
@@ -2065,7 +2156,22 @@ do
       WA.prettyPrint(("%s: engine stack gate failed: %s"):format(tostring(att.region.id), tostring(button)))
       return nil
     end
-    return { button = button, bar = sb, n = n, filter = plan.filterString, key = plan.key, on = true }
+    local ss = { button = button, bar = sb, n = n, filter = plan.filterString, key = plan.key, on = true }
+    -- the gate is shared with a time gate (Engine.ApplyTimeGate): hung again on this bar when it is used again
+    ss.anchorGate = function()
+      local fill = sb:GetStatusBarTexture()
+      gate:ClearAllPoints()
+      if kind == "ge" then
+        gate:SetPoint("TOPLEFT", sb, "TOPLEFT")
+        gate:SetPoint("BOTTOMRIGHT", fill, "BOTTOMRIGHT")
+      else
+        gate:SetPoint("TOPLEFT", fill, "TOPRIGHT")
+        gate:SetPoint("BOTTOMRIGHT", sb, "BOTTOMRIGHT")
+      end
+    end
+    att.gateOwner = att.gateOwner or {}
+    att.gateOwner[kind] = ss
+    return ss
   end
 
   -- on = the plan's stack range applies (a Found slot); else the gates only stop clipping
@@ -2085,6 +2191,7 @@ do
         if ss.key ~= plan.key then c:SetAuraSlotCandidateFilters(SLOT_KEYS[kind], plan.candidate); ss.key = plan.key end
         if not ss.on then c:SetAuraSlotEnabled(SLOT_KEYS[kind], true); ss.on = true end
         if n and ss.n ~= n and pcall(ss.button.SetApplicationBar, ss.button, ss.bar, Options(kind, n)) then ss.n = n end
+        if n and att.gateOwner and att.gateOwner[kind] ~= ss and pcall(ss.anchorGate) then att.gateOwner[kind] = ss end
       end
       -- a gate clips while the stacks or the time left (Engine.ApplyTimeGate) need it
       att.stackClip = att.stackClip or {}
@@ -2158,7 +2265,21 @@ do
       WA.prettyPrint(("%s: engine time gate failed: %s"):format(tostring(att.region.id), tostring(button)))
       return nil
     end
-    return { button = button, fs = fs, x = x, filter = plan.filterString, key = plan.key, on = true }
+    local ts = { button = button, fs = fs, x = x, filter = plan.filterString, key = plan.key, on = true }
+    -- the gate is shared with a stack gate (Engine.ApplyStacks): hung again on this text when it is used again
+    ts.anchorGate = function()
+      gate:ClearAllPoints()
+      if kind == "le" then
+        gate:SetPoint("TOPLEFT", button, "TOPLEFT", -STACK_MARGIN, STACK_MARGIN)
+        gate:SetPoint("BOTTOMRIGHT", fs, "BOTTOMRIGHT")
+      else
+        gate:SetPoint("BOTTOMLEFT", fs, "BOTTOMRIGHT")
+        gate:SetPoint("TOPRIGHT", button, "TOPRIGHT", STACK_MARGIN, STACK_MARGIN)
+      end
+    end
+    att.gateOwner = att.gateOwner or {}
+    att.gateOwner[kind] = ts
+    return ts
   end
 
   -- on = the plan's look applies (a Found slot); else the gates only stop clipping for the time left
@@ -2181,6 +2302,7 @@ do
           local f = Engine.GateFormatter(x, Engine.TIME_WIDE)
           if f and pcall(ts.button.SetDurationText, ts.button, ts.fs, { textFormatter = f }) then ts.x = x end
         end
+        if x and att.gateOwner and att.gateOwner[kind] ~= ts and pcall(ts.anchorGate) then att.gateOwner[kind] = ts end
       end
       att.timeClip[kind] = (x and ts) and true or false
       if gate then gate:SetClipsChildren(att.timeClip[kind] or att.stackClip[kind] or false) end
@@ -3460,9 +3582,11 @@ local function DisableKind(att, kind)
     if att.copyRoot then att.copyRoot:Hide() end
     return
   end
-  if kind == "slot" and att.slotBuilt then pcall(c.SetAuraSlotEnabled, c, KEY, false) end
+  -- the Found slot: also a composite's Found part (it stayed drawing when a composite lost its Found part)
+  if (kind == "slot" or kind == "composite") and att.slotBuilt then pcall(c.SetAuraSlotEnabled, c, KEY, false) end
   if kind == "slot" then DisablePresentClip(att) end
-  if (kind == "group" or kind == "composite") and att.groupBuilt then
+  -- the Missing clip: also a refresh icon's (a slot plan with a missing part)
+  if (kind == "group" or kind == "composite" or kind == "slot") and att.groupBuilt then
     pcall(c.SetAuraGroupEnabled, c, KEY, false)
     if att.shadows.clip then att.shadows.clip:Hide() end
   end
@@ -3558,7 +3682,15 @@ end
 
 function Engine.HasGlowPartChoice(data)
   local plan = Engine.Classify(data)
-  return plan and plan.parts and plan.parts.missing and #plan.parts.remaining > 0 and GlowSpec(data) ~= nil or false
+  return plan and ((plan.parts and plan.parts.missing and #plan.parts.remaining > 0) or plan.missingPart)
+         and GlowSpec(data) ~= nil or false
+end
+
+-- A refresh icon: which of its two parts glow (the user's Glow choice): the icon for the absent aura,
+-- and the live aura (in the look of its first stack range).
+function Engine.RefreshGlows(data, ldata)
+  local where = GlowSpec(data) and data.foreverEngineGlowPart or "both"   -- as HasGlowPartChoice offers it
+  return (GlowSpec(data) ~= nil and where ~= "remaining"), (GlowSpec(ldata) ~= nil and where ~= "missing")
 end
 
 -- Late clip: an animated glow that appears when X seconds are left (clip geometry proven 2026-09-28,
@@ -3896,7 +4028,7 @@ end
 local function ApplySounds(att, region, data, plan)
   local routes = SoundRoutes(plan)
   local api = C_UnitAuras and C_UnitAuras.AddAuraSound and Enum.UnitAuraSoundTrigger
-  local ids = plan.ids or {}
+  local ids = (plan.missingPart and plan.missingPart.ids) or plan.ids or {}
   local idSig
   if #ids == 0 and plan.nameless then
     local n, fromTables, sum
@@ -3910,20 +4042,24 @@ local function ApplySounds(att, region, data, plan)
     for _, when in ipairs({ "start", "finish" }) do
       local acts = data.actions and data.actions[when]
       local src = SoundSource(acts)
-      if src then
+      if src and routes[when] then
         local channel = (acts.sound_channel and acts.sound_channel ~= "") and acts.sound_channel or "Master"
         want[#want + 1] = { when = when, trigger = routes[when], src = src, channel = channel }
         sig[#sig + 1] = table.concat({ when, routes[when], tostring(src.soundFileName or src.soundFileID), channel }, "/")
       end
     end
   end
+  -- no route for a sound that is set (group triggers; a refresh icon's 'On Hide'): muted, since WeakAuras'
+  -- constant state would play it once at load
   local mute = {}
-  if plan.group then
+  if plan.group or plan.missingPart then
     for _, when in ipairs({ "start", "finish" }) do
       local acts = data.actions and data.actions[when]
-      if type(acts) == "table" and acts.do_sound and acts.sound then mute[when] = true; sig[#sig + 1] = "mute/" .. when end
+      if type(acts) == "table" and acts.do_sound and acts.sound and not (routes and routes[when]) then
+        mute[when] = true; sig[#sig + 1] = "mute/" .. when
+      end
     end
-    want = {}
+    if plan.group then want = {} end
   end
   sig = table.concat(sig, ";")
   if att.soundSig == sig then return end
@@ -4072,7 +4208,7 @@ do
       if p.group then
         return nil, T("'%s' follows a whole group (drawn as a copy per member)"):format(tostring(id))
       end
-      if p.parts or p.mode ~= "active" then
+      if p.parts or p.mode ~= "active" or p.missingPart then
         return nil, T("'%s' is not shown on Aura(s) Found (only those leave a gap to close)"):format(tostring(id))
       end
       for _, sub in ipairs(cd.subRegions or {}) do
@@ -4533,7 +4669,7 @@ do
       if kind == "aurabar" and tostring(cd.orientation or "HORIZONTAL"):find("VERTICAL") then
         return nil, T("'%s' is a vertical bar (a group sorted by the time left draws horizontal bars, so far)"):format(tostring(id))
       end
-      if p.parts or p.group or p.mode ~= "active" or p.stacks or (p.looks and not p.timeLooks) then
+      if p.parts or p.group or p.missingPart or p.mode ~= "active" or p.stacks or (p.looks and not p.timeLooks) then
         return nil, T("'%s' is not a plain 'Aura(s) Found' display (a group sorted by the time left draws those, so far)"):format(tostring(id))
       end
       if p.nameless or p.byDuration then
@@ -4970,7 +5106,9 @@ do
         end
         if v.slotBuilt then
           local ldata = Engine.LookData(data, look)
-          local glowSub = GlowSub(ldata)
+          local fg = true
+          if plan.missingPart then fg = select(2, Engine.RefreshGlows(data, ldata)) end
+          local glowSub = fg and GlowSub(ldata)
           if glowSub then
             local w, h = RegionSize(region)
             v.pclipShown = EnsurePresentClip(v, region, plan, AnimatedGlowMargin(w, h, glowSub))
@@ -4980,7 +5118,7 @@ do
           Engine.ApplyStacks(v, Engine.LookPlan(plan, look), true)
           Engine.ApplyTimeGate(v, Engine.LookPlan(plan, look), true)
           if v.unit ~= plan.unit then v.container:SetUnit(plan.unit); v.unit = plan.unit end
-          ApplySlotLook(v, region, ldata, plan)
+          ApplySlotLook(v, region, ldata, fg and plan or setmetatable({ noGlow = true }, { __index = plan }))
           Levels(v)
           Engine.LookAlpha(v, data, ldata)
           att.mirrored = att.mirrored or {}
@@ -5224,12 +5362,25 @@ local function ApplyUnguarded(region)
       if att.slotKey ~= plan.key then c:SetAuraSlotCandidateFilters(KEY, plan.candidate); att.slotKey = plan.key end
       c:SetAuraSlotEnabled(KEY, true)
     end
-    local glowSub = plan.mode == "active" and GlowSub(ldata)
+    local mGlow, fGlow = true, true
+    if plan.missingPart then mGlow, fGlow = Engine.RefreshGlows(data, ldata) end
+    local glowSub = plan.mode == "active" and fGlow and GlowSub(ldata)
     if glowSub then
       local w, h = RegionSize(region)
       att.pclipShown = EnsurePresentClip(att, region, plan, AnimatedGlowMargin(w, h, glowSub))
     else
       DisablePresentClip(att)
+    end
+    -- a refresh icon: the Missing clip, outside the stack gates (a child of the host)
+    if plan.missingPart then
+      local w, h = RegionSize(region)
+      if not EnsureGroup(att, region, plan.missingPart, ClipMargin(w, h, data, mGlow and GlowSpec(data) or nil)) then
+        TurnOff(att, region, data, "off"); return
+      end
+      att.refreshGlows = { mGlow, fGlow }
+    else
+      DisableKind(att, "group")
+      att.refreshGlows = nil
     end
   elseif kind == "group" then
     local w, h = RegionSize(region)
@@ -5250,8 +5401,11 @@ local function ApplyUnguarded(region)
     if not EnsureComposite(att, region, data, plan) then TurnOff(att, region, data, "off"); return end
   end
   local okSt, errSt = pcall(function()
-    Engine.ApplyStacks(att, Engine.LookPlan(plan, mainLook), kind == "slot")
-    Engine.ApplyTimeGate(att, Engine.LookPlan(plan, mainLook), kind == "slot")
+    -- a composite has no filters of its own: a leftover gate slot follows one of its parts
+    local gp = plan.parts and (plan.parts.found or plan.parts.missing or (plan.parts.remaining[1] and plan.parts.remaining[1].part))
+               or Engine.LookPlan(plan, mainLook)
+    Engine.ApplyStacks(att, gp, kind == "slot")
+    Engine.ApplyTimeGate(att, gp, kind == "slot")
   end)
   if not okSt and not att.stackWarned then
     att.stackWarned = true
@@ -5261,7 +5415,16 @@ local function ApplyUnguarded(region)
   if att.unit ~= plan.unit then c:SetUnit(plan.unit); att.unit = plan.unit end
 
   local okLook, err
-  if kind == "slot" then okLook, err = pcall(ApplySlotLook, att, region, ldata, plan)
+  if kind == "slot" and plan.missingPart then
+    -- the icon for the absent aura first (its MirrorTexts is undone by the live aura's, which keeps the texts)
+    local g = att.refreshGlows or { true, true }
+    okLook, err = pcall(ApplyUnderlayLook, att, region, data, plan.missingPart, not g[1])
+    if okLook then
+      okLook, err = pcall(ApplySlotLook, att, region, ldata, g[2] and plan or setmetatable({ noGlow = true }, { __index = plan }))
+    end
+    -- the live look's MirrorTexts started att.mirrored afresh: WA's own decor of the base look is hidden again
+    if okLook then okLook, err = pcall(HideStaticDecor, att, region, data, att.isPic or att.isMotion or att.isModel) end
+  elseif kind == "slot" then okLook, err = pcall(ApplySlotLook, att, region, ldata, plan)
   elseif kind == "group" then okLook, err = pcall(ApplyUnderlayLook, att, region, data, plan)
   elseif kind == "copies" then okLook = true       -- each copy took its look in Engine.ApplyCopies
   else okLook, err = pcall(ApplyCompositeLook, att, region, data, plan) end
@@ -5307,7 +5470,8 @@ local function ApplyUnguarded(region)
   end
   -- in a Dynamic Group of engine-driven Found displays, the game packs the children (after the look:
   -- the copies the look hung on WA's frames move onto the host)
-  local okD, errD = pcall((kind == "slot" and plan.mode == "active") and Dyn.Place or Dyn.Leave, att, region, data, plan)
+  local okD, errD = pcall((kind == "slot" and plan.mode == "active" and not plan.missingPart) and Dyn.Place or Dyn.Leave,
+                          att, region, data, plan)
   if not okD then
     pcall(Dyn.Release, att, region)
     if not att.dynWarned then
