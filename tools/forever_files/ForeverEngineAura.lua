@@ -1049,7 +1049,7 @@ local function CombinationOK(data, auraIdx, n)
     return false, T("several Aura triggers combined with 'All Triggers' cannot be expressed by the engine")
   elseif how == "any" then
     if nOther == 0 then return true end
-    return false, T("Aura triggers combined with other triggers through 'Any Triggered' cannot be expressed by the engine")
+    return false, T("Aura triggers combined with other triggers through 'Required for Activation: Any Triggers' cannot be expressed by the engine")
   elseif how ~= "custom" then
     return false, T("unknown trigger combination")
   end
@@ -1536,7 +1536,7 @@ function Engine.Classify(data)
 end
 
 -- Conditions on a delegated Aura trigger never see aura data (only 'Buffed' changes).
--- kind "show": instead, a 'Trigger Active' condition, which is always true on a delegated trigger.
+-- kind "show": instead, an 'Active' condition, which is always true on a delegated trigger.
 local function InertConditions(data, plan, kind)
   local aura = plan and plan.auraTriggers or { [1] = true }
   local function bad(check)
@@ -1929,7 +1929,7 @@ function Engine.Explain(data, plan, reasons)
       txt = txt .. " " .. T("|cffff9933Note:|r a condition reads trigger data other than 'Buffed'; it never fires on this display.")
     end
     if InertConditions(data, plan, "show") then
-      txt = txt .. " " .. T("|cffff9933Note:|r a 'Trigger Active' condition on an Aura trigger is always true here (WeakAuras sees the engine-driven trigger as always active), so its changes apply all the time.")
+      txt = txt .. " " .. T("|cffff9933Note:|r an 'Active' condition on an Aura trigger is always true here (WeakAuras sees the engine-driven trigger as always active), so its changes apply all the time.")
     end
     return txt, true
   end
