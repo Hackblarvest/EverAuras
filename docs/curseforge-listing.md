@@ -51,6 +51,7 @@ Forever runs on the modern engine with its "secret values" system: the moment yo
 - **Resource bars** (mana, rage, energy) with **hide when full** and **colour below a threshold**.
 - A **Five Second Rule** timer for mana users.
 - **Spell ranks**: auras set up by name follow your ranks as you level.
+- **Up to date with M33kAuras**: Talent, Game Mode (PvE, PvP, RP, Hardcore), PvP Flagged and On Taxi loads, Talent Known, Character Stats and Health triggers, an encounter browser for Forever's dungeons and raids, and a list of the auras and cooldowns Blizzard keeps readable in combat.
 - **Imports**: WeakAuras and M33kAuras export strings import as usual; texture paths from WeakAuras and its forks are pointed at EverAuras' own copy, and custom code that uses old API names (GetItemInfo, GetSpellInfo ...) works on Forever too.
 
 Custom-code auras that compare values Blizzard keeps secret (for example your current mana) cannot work in combat on Forever; EverAuras tells you which ones, instead of flooding BugSack.
@@ -67,4 +68,4 @@ EverAuras is free and stays free. If you would like to say thanks, you can [buy 
 
 ## Release type
 
-CurseForge distinguishes Release, Beta and Alpha files. The CurseForge app installs Release files by default, and Alpha files only for users who opted in. Recommendation: upload as **Beta** while the version carries `-alpha`, or as **Release** if it should reach everyone by default.
+CurseForge distinguishes Release, Beta and Alpha files. The CurseForge app installs Release files by default, and Beta or Alpha files only for users who opted in. EverAuras uploads every version as **Release**, also while the version carries `-alpha` or `-beta`, so everyone gets the update.

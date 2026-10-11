@@ -11,8 +11,10 @@ anywhere: questing, dungeons or raids. Ported-as-is, WeakAuras is blind exactly 
 EverAuras is not blind. It never reads the secret data; it hands the display to the game engine
 and lets the client draw it.
 
-> **Status:** alpha, developed against the Forever *beta* client (interface 16001). Things break
-> when Blizzard patches. Expect rough edges.
+> **Status:** beta (0.9.0), built on M33kAuras `fd03b21` (release 5.20.7-rg4-m99) and developed against
+> the Forever *beta* client (interface 16001). Blizzard patches can still break things; please report
+> what you find on [Discord](https://discord.gg/HdRNYvKbY) or in the
+> [issues](https://github.com/Hackblarvest/EverAuras/issues).
 
 ## What works in combat
 
@@ -46,6 +48,7 @@ and lets the client draw it.
 | **Countdown numbers on aura icons** match Blizzard's buff frame | The Cooldown swipe's own numbers round up; aura icons get a countdown formatter that rounds down like the buff frame (minutes over 90 s). Spell cooldown icons keep the action-bar style. |
 | **Imports** from WeakAuras and M33kAuras, also auras whose custom code calls old API names (`GetItemInfo`, `GetSpellInfo`, `GetSpellCooldown`, `GetCurrencyInfo` ...) | The Forever client ships no deprecated-API fallbacks. Inside aura code only, a missing old name falls back to its modern `C_Item` / `C_Spell` / `C_CurrencyInfo` home with the old return values; a real global always wins. Auras exported from current M33kAuras (internal version 90) import too. |
 | Spell usable (incl. reactive abilities such as Overpower or Mongoose Bite), in range, item cooldowns, casts, swing timers | Plain readable data. |
+| Everything **M33kAuras** brings to Forever: Talent, Game Mode (PvE, PvP, RP, Hardcore), PvP Flagged and On Taxi loads; Talent Known, Character Stats, Health, Totem and Threat triggers; an encounter browser for Forever's dungeons and raids; a list of the auras, cooldowns and casts Blizzard keeps readable in combat (*Browse never-secret auras*) | Upstream's own Forever support. EverAuras is rebuilt on top of it (`tools/UPSTREAM`), and its patches only add what upstream does not do. |
 
 Together these are the building blocks of a rotation display: a row of icons, each showing when
 its spell should be cast, in combat, correctly. See the [design notes](#how-it-works) for what is

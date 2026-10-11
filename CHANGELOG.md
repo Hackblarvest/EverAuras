@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.9.0-beta (2026-10-11)
+
+- **Beta.** EverAuras now builds on the newest M33kAuras (`fd03b21`, release 5.20.7-rg4-m99: 73 changes
+  since 0.8.17, most of them for Forever), and it meets the bar set for a beta: every display type works
+  in combat, conditions on the stacks and on the time left work, icons and bars sort by the time left, no
+  bug from Discord is open, and the tests pass. Thanks to Solos for the party test.
+- **New from M33kAuras on Forever.** Load options for Talent, Game Mode (PvE, PvP, RP, Hardcore), PvP
+  Flagged and On Taxi; Raid Role now works. Triggers: Talent Known, Character Stats, Health, Totem (also
+  while totem info is secret) and Threat with partly secret data. An encounter browser for Forever's
+  dungeons and raids, boss1-10 units, focus auras that follow a new focus, and better spell-ready and
+  global-cooldown detection for Cooldown and Spell Usable triggers. Faster import and export with the
+  game's own compression (export strings keep the same format), and a faster aura list in the options with
+  the game's own right-click menus. EverAuras is listed in the minimap's addon compartment.
+- **The options know every spell** with a classic spell id: names autocomplete and show their icon, and
+  *Browse never-secret auras* (Aura trigger) lists what Blizzard keeps readable in combat. The list is
+  built in the background the first time you open the options after an update or a game patch; leave
+  `/ea` open for a minute, out of combat. Your own spells come from your spellbook, also the new ones you
+  learn. (Forever's own spell ids are left out: asking the game about one of them closes the client with a
+  fatal error.)
+- **What may look different.** `%p` and `%t` on cooldowns, casts and totems read in combat as they do out
+  of combat ("1:54", "2.9"). *Instance Difficulty* and *Instance Type* are no longer offered or checked on
+  Forever (upstream): auras that used them now load everywhere; *Instance Size Type* tells Forever's raids
+  apart (10, 20, 25 or 40 players). Triggers upstream removed on Forever (PvP Talent Selected, Class/Spec,
+  Loot Specialization) become empty Condition triggers. *Spell Usable* checks the exact spell (its rank),
+  and *Target Required* now means "has a valid target".
+- **Kept as before.** New auras and *Add Trigger* start with an Aura trigger, the kind the game's aura
+  engine draws (upstream now starts with *Condition*). The engine's status line replaces upstream's
+  "This trigger cannot track secret auras" note on displays the engine draws. The footer of the options
+  keeps the EverAuras Discord button; *About EverAuras* opens this project's page.
+- An *Aura(s) Missing* display that EverAuras hides in combat (because it cannot know whether the aura is
+  there) now shows again as soon as combat ends, and one shown before combat is hidden as combat starts;
+  a Missing trigger with spell names is never answered while auras are secret.
+- An old *Hardcore* load check (from Classic imports, ignored on Forever until now) becomes the *Game Mode*
+  option once, and those auras are named in chat.
+- Auras written in M33kAuras whose custom code calls `M33kAuras.` work in EverAuras too.
+- A Progress Texture whose first trigger is not the Aura trigger (a Power, Health or cooldown trigger with
+  secret progress) no longer shows WeakAuras' own fill on top of the engine's in combat.
+- A broken or cut-off import string gives "Error decompressing" instead of a Lua error.
+
 ## 0.8.17-alpha (2026-10-11)
 
 - **Refresh icons: missing, or too few stacks.** One *Aura(s) Missing* trigger and one *Aura(s) Found*
