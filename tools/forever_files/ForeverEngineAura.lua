@@ -122,11 +122,8 @@ end
 
 local function Trim(s) return (tostring(s or ""):gsub("^%s+", ""):gsub("%s+$", "")) end
 
----------------------------------------------------------------------------- secret duration text
--- %p on a secret remaining time: upstream falls back to string.format("%.1f") on the secret number,
--- which renders as "114.5" in combat. The engine can format the duration object itself ("1m 54s",
--- "2.5s"). Prototypes.lua's dynamic_texts.p.func asks here for a SecondsFormatter matching the WA
--- progress precision: 0 = whole seconds, 1-3 = always decimals, 4-6 = decimals under 3 s.
+---------------------------------------------------------------------------- countdown numbers
+-- (%p on a secret remaining time is upstream's since 7584179: it formats the duration object itself.)
 -- Cooldown countdown numbers round UP (36.4 s left -> "37") while Blizzard's buff frame rounds DOWN
 -- ("36 s"), so an aura icon and the buff it mirrors disagree by one for most of every second. Aura icons
 -- get a countdown formatter that counts like the buff frame: whole seconds rounded down, minutes and
@@ -161,27 +158,6 @@ local function IsAuraOnlyDisplay(data)
     n = n + 1
   end
   return n > 0
-end
-
-local secretFormatters = {}
-function Private.SecretDurationFormatter(precision)
-  precision = tonumber(precision) or 1
-  local threshold = 0
-  if precision >= 4 then threshold = 3
-  elseif precision >= 1 then threshold = 1e9 end
-  local fmt = secretFormatters[threshold]
-  if fmt then return fmt end
-  if not (C_StringUtil and C_StringUtil.CreateSecondsFormatter) then return nil end
-  local ok, f = pcall(C_StringUtil.CreateSecondsFormatter)
-  if not ok or not f then return nil end
-  local E = Enum or {}
-  pcall(f.SetDefaultAbbreviation, f, E.SecondsFormatterAbbreviation and E.SecondsFormatterAbbreviation.OneLetter or 2)
-  pcall(f.SetDesiredUnitCount, f, 2)
-  pcall(f.SetRounding, f, E.SecondsFormatterRounding and E.SecondsFormatterRounding.Truncate or 1)
-  pcall(f.SetStripIntervalWhitespace, f, E.SecondsFormatterIntervalWhitespace and E.SecondsFormatterIntervalWhitespace.Strip or 1)
-  pcall(f.SetMillisecondsThreshold, f, threshold)
-  secretFormatters[threshold] = f
-  return fmt or f
 end
 
 ---------------------------------------------------------------------------- spellbook (rank-aware names)
@@ -3034,6 +3010,10 @@ local function SetTexVisuals(region, shown)
   for _, spin in ipairs(region.extraSpinners or {}) do
     for _, tex in ipairs(spin.textures or {}) do tex:SetAlpha(a) end
   end
+  -- upstream's own secret-progress drawing (f23a183): when a gate trigger before the Aura trigger has
+  -- secret progress (Power, Health, a cooldown in combat), WA would draw its fill there too
+  local stf = region.secretTextureFrame
+  if type(stf) == "table" and stf.SetAlpha then stf:SetAlpha(a) end
 end
 
 -- the swipe runs the right way round: WA's arc shrinks towards its start when it drains clockwise

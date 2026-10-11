@@ -24,17 +24,31 @@ VERSION = "0.8.17-alpha"
 # mentions upstream (Discord invite, CurseForge page, GitHub credits) must keep pointing
 # upstream - a dead link is worse than an upstream link.
 PROJECT_URL = "https://github.com/Hackblarvest/EverAuras"
+UPSTREAM_REPO = "https://github.com/m33shoq/" + OLD
+# Order matters: the longer, more specific URL first.
 URL_REWRITES = [
     ("https://discord.gg/" + OLD, "https://discord.gg/HdRNYvKbY"),   # the EverAuras Discord
-    ("https://github.com/m33shoq/" + OLD + "/issues/new?template=bug_report.yml", PROJECT_URL + "/issues"),
-    ("https://github.com/m33shoq/" + OLD + "/wiki", PROJECT_URL),
+    (UPSTREAM_REPO + "/issues/new?template=bug_report.yml", PROJECT_URL + "/issues"),
+    # the footer's "About" button: our README says what EverAuras does and cannot do
+    (UPSTREAM_REPO + "/wiki/About-" + OLD, PROJECT_URL + "#readme"),
+    # the footer's "Documentation" button (the bare, quoted wiki URL). Help links into wiki SUB-pages
+    # (Custom-Triggers, Protected-Frames ...) keep pointing at upstream's wiki, where those pages exist.
+    ('"' + UPSTREAM_REPO + '/wiki"', '"' + PROJECT_URL + '"'),
     ("https://www.patreon.com/" + OLD, PROJECT_URL),   # Thanks button, until we have a donation link
     ("## X-Website: https://www.curseforge.com/wow/addons/" + OLD, "## X-Website: " + PROJECT_URL),
+    ("please report this to m33shoq.", "please report it on the EverAuras GitHub."),
+    ("M33KAURAS_", "EVERAURAS_"),   # upper-case globals and menu tags; they would collide with M33kAuras' own
 ]
 URL_GUARDS = [
     ("https://discord.gg/" + OLD, "\x00DISCORD\x00"),
     ("https://www.curseforge.com/wow/addons/" + OLD, "\x00CURSE\x00"),
-    ("https://github.com/m33shoq/" + OLD, "\x00GITHUB\x00"),
+    (UPSTREAM_REPO, "\x00GITHUB\x00"),
+]
+# Names that keep upstream's spelling: upstream 9956a92 marks aura data and export strings as M33kAuras-format
+# (internalVersion in M33kAuras numbering), which EverAuras data is. Never raise internalVersion on our own.
+NAME_GUARDS = [
+    ("internalVersion" + OLD, "\x00KEEP1\x00"),
+    ("is" + OLD + " = true", "\x00KEEP2\x00"),
 ]
 
 TEXT_EXT = {".lua", ".xml", ".toc", ".md", ".txt", ".json"}
@@ -43,10 +57,11 @@ TEXT_EXT = {".lua", ".xml", ".toc", ".md", ".txt", ".json"}
 def rewrite(text):
     for real, ours in URL_REWRITES:
         text = text.replace(real, ours)
-    for real, token in URL_GUARDS:
+    guards = URL_GUARDS + NAME_GUARDS
+    for real, token in guards:
         text = text.replace(real, token)
     text = text.replace(OLD, NEW)
-    for real, token in URL_GUARDS:
+    for real, token in guards:
         text = text.replace(token, real)
     return text
 

@@ -15,6 +15,7 @@
 #
 # Usage (Git Bash):   bash tools/rebuild_everauras.sh
 #   EVERAURAS_ADDONS=<path to Interface/AddOns>   overrides the install location
+#   EVERAURAS_WORKDIR=<dir>                        build directory (default: m33k-build; wiped on every run)
 #   EVERAURAS_UPSTREAM=<commit|tag|branch>         pins the upstream source (default: latest main).
 #                                                  A file tools/UPSTREAM with the same content does the
 #                                                  same without the variable - commit it to freeze a
@@ -28,7 +29,7 @@ REPO="m33shoq/M33kAuras"
 VERSION="0.8.17-alpha"
 TOOLS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$TOOLS/.." && pwd)"
-W="$ROOT/m33k-build"
+W="${EVERAURAS_WORKDIR:-$ROOT/m33k-build}"
 ADDONS="${EVERAURAS_ADDONS:-/d/World of Warcraft/World of Warcraft/_classic_beta_/Interface/AddOns}"
 UPSTREAM_DIRS="M33Auras M33kAuras M33kAurasArchive M33kAurasModelPaths M33kAurasOptions M33kAurasTemplates WeakAuras"
 
@@ -97,6 +98,9 @@ python "$TOOLS/rename_to_everauras.py" release "$upstream"
 
 echo "== drop the settings-migration stubs (nothing to migrate from on Forever; the names belong to other addons)"
 rm -rf release/M33Auras release/WeakAuras
+
+echo "== drop upstream's repository files from the addon folders (its changelog would read as ours)"
+rm -f release/*/CHANGELOG.md release/*/cspell.json release/*/stylua.toml
 
 echo "== install"
 # our own settings-migration stubs from 0.2-0.4 builds; other addons use the same folder names,

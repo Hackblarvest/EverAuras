@@ -74,42 +74,19 @@ BUFFTRIGGER2_HUNKS = [
      "  local unitExists = UnitExistsFixed(unit)\n  if unitExists or unitExistScanFunc[unit] then -- Forever: also kick unit-existence triggers on loss\n\n    if unitExistScanFunc[unit] then"),
 ]
 
-# Prototypes.lua: %p on a SECRET remaining time. Upstream falls back to string.format("%.1f") on the
-# secret number, which renders as e.g. "114.5" in combat. The engine can format the duration object
-# itself; Private.SecretDurationFormatter lives in ForeverEngineAura.lua. Brand-free anchor.
+# Prototypes.lua: the Spell Known helper. Upstream now covers the rest on Forever itself (queued spells
+# 034d0c5, Spell Usable in combat bf5f5b3, %p on secret durations 7584179).
 PROTOTYPES_HUNKS = [
     # Spell Known helper: IsSpellKnown moved to C_SpellBook on Forever
     ("local function IsSpellKnownOrOverridesAndBaseIsKnown(spell, pet)\n  if spell == 0 then return false end\n  if IsSpellKnown(spell, pet) then\n",
      "local function IsSpellKnownOrOverridesAndBaseIsKnown(spell, pet)\n  if spell == 0 then return false end\n  if Private.ExecEnv.IsSpellKnown(spell, pet) then\n"),
     ("      return IsSpellKnown(baseSpell, pet)\n",
      "      return Private.ExecEnv.IsSpellKnown(baseSpell, pet)\n"),
-    # Queued Action trigger: IsCurrentSpell global is gone on Forever
-    ("        test = \"spellname and IsCurrentSpell(spellname)\";\n",
-     "        test = \"spellname and Private.ExecEnv.IsCurrentSpell(spellname)\";\n"),
-    # Spell Usable trigger: secret-safe in combat (see Cooldown Progress upstream for the same idea)
-    ("        local charges, maxCharges, spellCount, chargeGainTime, chargeLostTime = M33kAuras.GetSpellCharges(effectiveSpellId, nil)\n        local stacks = maxCharges and maxCharges > 1 and charges\n                       or spellCount and spellCount > 0 and spellCount\n                       or nil\n        if (charges == nil) then\n          charges = (duration == 0 or gcdCooldown) and 1 or 0;\n        end\n        local ready = (startTime == 0 and not paused) or charges > 0\n        local active = Private.ExecEnv.IsUsableSpell(spellName or \"\") and ready\n",
-     "        local charges, maxCharges, spellCount, chargeGainTime, chargeLostTime = M33kAuras.GetSpellCharges(effectiveSpellId, nil)\n        -- Forever: cooldown, charges and cast count are secret in combat (SecretWhenCooldownsRestricted);\n        -- a comparison would throw. Ready-ness is exact (IsSpellReady reads NeverSecret fields) and\n        -- usability is plain data, so the trigger keeps working; stacks follow the cooldown trigger.\n        local isSecret = issecretvalue(startTime) or issecretvalue(duration) or issecretvalue(charges)\n                      or issecretvalue(maxCharges) or issecretvalue(spellCount)\n        local stacks, ready\n        if isSecret then\n          stacks = maxCharges and maxCharges ~= 1 and charges or (spellCount and C_StringUtil.TruncateWhenZero(spellCount)) or C_Spell.GetSpellDisplayCount(effectiveSpellId)\n          ready = M33kAuras.IsSpellReady(effectiveSpellId)\n        else\n          stacks = maxCharges and maxCharges > 1 and charges\n                   or spellCount and spellCount > 0 and spellCount\n                   or nil\n          if (charges == nil) then\n            charges = (duration == 0 or gcdCooldown) and 1 or 0;\n          end\n          ready = (startTime == 0 and not paused) or charges > 0\n        end\n        local active = Private.ExecEnv.IsUsableSpell(spellName or \"\") and ready\n"),
-    ("      if issecretvalue(remaining) then\n"
-     "        -- todo when secret duration formatting is a thing\n"
-     "        return string.format(\"%.1f\", remaining)\n"
-     "      end\n",
-     "      if issecretvalue(remaining) then\n"
-     "        -- Forever: the engine formats the secret remaining time itself (\"1m 54s\", \"2.5s\")\n"
-     "        if state.durationObject and Private.SecretDurationFormatter then\n"
-     "          local fmt = Private.SecretDurationFormatter(progressPrecision)\n"
-     "          if fmt then\n"
-     "            local ok, text = pcall(state.durationObject.FormatRemainingDuration, state.durationObject, fmt)\n"
-     "            if ok then return text end\n"
-     "          end\n"
-     "        end\n"
-     "        return string.format(\"%.1f\", remaining)\n"
-     "      end\n"),
 ]
 
-# Options addon. (a) Cache.lua: upstream disables the spell-name cache on test builds (Forever's beta
-# IS a test build), so typing a spell name stored an empty string. Seed the cache from the player's
-# spellbook instead - cheap, and it covers the spells rotation auras are about. (b) BuffTrigger2.lua:
-# when the cache has no match, keep the typed name instead of blanking the entry.
+# Options addon. Upstream builds the full spell cache on Forever since a236d29; three Cache.lua hunks make
+# it work there. Options BuffTrigger2.lua: a typed name nothing matches is kept, and a name shows its spell
+# icon. TriggerOptions.lua: 'Add Trigger' adds an Aura trigger again (upstream d2465fd made it 'Condition').
 OPTIONS_HUNKS = {
     # The tree list's tooltip (Model Picker, ...) passed the wrap flag where the client's SetText takes alpha
     # (text, r, g, b, alpha, wrap): "bad argument #5 to 'SetText'" on every hover (BugGrabber, 2026-10-06).
@@ -118,35 +95,94 @@ OPTIONS_HUNKS = {
          '\t\tGameTooltip:SetText(frame.text:GetText() or "", 1, .82, 0, 1, true) -- Forever: alpha before wrap\n'),
     ],
     "M33kAurasOptions/Cache.lua": [
-        ("  if IsTestBuild() then -- disable for 12.0.7\n    return\n  end\n",
-         "  if IsTestBuild() then -- disable for 12.0.7\n"
-         "    -- Forever (a test build): the full id scan stays off, but the cache is seeded from the\n"
-         "    -- spellbook so typed names resolve and the autocomplete list works for your own spells.\n"
-         "    if M33kAuras.IsForever and M33kAuras.IsForever() then\n"
-         "      wipe(cache)\n"
-         "      pcall(function()\n"
-         "        local bank = (Enum.SpellBookSpellBank and Enum.SpellBookSpellBank.Player) or 0\n"
-         "        for i = 1, (C_SpellBook.GetNumSpellBookSkillLines() or 0) do\n"
-         "          local line = C_SpellBook.GetSpellBookSkillLineInfo(i)\n"
-         "          if line then\n"
-         "            for j = line.itemIndexOffset + 1, line.itemIndexOffset + (line.numSpellBookItems or 0) do\n"
-         "              local info = C_SpellBook.GetSpellBookItemInfo(j, bank)\n"
-         "              if info and info.spellID and info.name and info.name ~= \"\" and not info.isPassive then\n"
-         "                spellCache.AddIcon(info.name, info.spellID, info.iconID or 134400)\n"
-         "              end\n"
+        # (1) GetIcon asks IsSpellKnown for every name with more than one spell id (classic ranks). Only
+        #     C_SpellBook.IsSpellKnown is documented on 1.60.1, and GetIcon is reached unprotected from
+        #     Icon/Bar thumbnails.
+        ("local IsSpellKnown = IsSpellKnown\n",
+         "-- Forever: only C_SpellBook.IsSpellKnown is documented on this client. GetIcon below asks it for every\n"
+         "-- name with more than one spell id, which the full spell cache (built on Forever) has for most names.\n"
+         "local IsSpellKnown = IsSpellKnown or function(spellID)\n"
+         "  return C_SpellBook.IsSpellKnown(spellID)\n"
+         "end\n"),
+        # (2) The scan stays where upstream stops it on Forever (the miss limit ends it at ~554742). Forever's own
+        #     spell ids (1213144 to 1323420 on 1.60.1) must not be scanned: asking the client about one of them
+        #     killed it (fatal ERROR #110, "Aura '1251678' used in Client PlayerCondition '144600' is not known
+        #     on the client", 2026-10-11, while the scan ran past 1213000). The player's own spells, many of
+        #     which live there, come from the spellbook instead: after a build and whenever the options open.
+        ("function spellCache.Get()\n",
+         "-- Forever: the player's own spells from the spellbook (Forever's own spell ids are never scanned, see\n"
+         "-- Build); each id once, so it can run whenever the options open.\n"
+         "function spellCache.ForeverSeedSpellbook()\n"
+         "  if not (cache and M33kAuras.IsForever() and C_SpellBook and C_SpellBook.GetNumSpellBookSkillLines) then return end\n"
+         "  pcall(function()\n"
+         "    local bank = (Enum.SpellBookSpellBank and Enum.SpellBookSpellBank.Player) or 0\n"
+         "    for i = 1, (C_SpellBook.GetNumSpellBookSkillLines() or 0) do\n"
+         "      local line = C_SpellBook.GetSpellBookSkillLineInfo(i)\n"
+         "      if line then\n"
+         "        for j = line.itemIndexOffset + 1, line.itemIndexOffset + (line.numSpellBookItems or 0) do\n"
+         "          local info = C_SpellBook.GetSpellBookItemInfo(j, bank)\n"
+         "          local id, name = info and info.spellID, info and info.name\n"
+         "          if id and name and name ~= \"\" and not info.isPassive then\n"
+         "            local spells = cache[name] and cache[name].spells or \"\"\n"
+         "            if not (\",\" .. spells):find(\",\" .. id .. \"=\", 1, true) then\n"
+         "              spellCache.AddIcon(name, id, info.iconID or 134400)\n"
+         "              bestIcon[name] = nil\n"
          "            end\n"
          "          end\n"
          "        end\n"
-         "      end)\n"
-         "      metaData.needsRebuild = true   -- re-seed whenever the options open: new spells, new ranks\n"
+         "      end\n"
          "    end\n"
-         "    return\n  end\n"),
+         "  end)\n"
+         "end\n"
+         "\n"
+         "function spellCache.Get()\n"),
+        ("    metaData.needsRebuild = false\n"
+         "    metaData.rebuilding = false\n"
+         "  end)\n"
+         "  OptionsPrivate.Private.Threads:Add(\"spellCache\", co, 'background')\n",
+         "    spellCache.ForeverSeedSpellbook() -- Forever: the player's own spells (see the function)\n"
+         "    metaData.needsRebuild = false\n"
+         "    metaData.rebuilding = false\n"
+         "  end)\n"
+         "  OptionsPrivate.Private.Threads:Add(\"spellCache\", co, 'background')\n"),
+        ("    metaData.neverSecretSpells = { aura = {}, cooldown = {}, cast = {} }\n"
+         "    wipe(cache)\n"
+         "  end\n"
+         "end\n",
+         "    metaData.neverSecretSpells = { aura = {}, cooldown = {}, cast = {} }\n"
+         "    wipe(cache)\n"
+         "  end\n"
+         "  if not metaData.needsRebuild then\n"
+         "    spellCache.ForeverSeedSpellbook() -- Forever: spells learned since the last build\n"
+         "  end\n"
+         "end\n"),
+        # (3) Load() forces a rebuild below 39000 cached names. Forever's SpellName has 17306 distinct names
+        #     in all, so the cache would be wiped and rescanned (~745000 ids) every session the options open.
+        #     A half-built cache is still caught by upstream's own `interrupted` flag.
+        ("  local num = 0;\n"
+         "  for _ in pairs(cache) do\n"
+         "    num = num + 1;\n"
+         "    if num >= 39000 then break end\n"
+         "  end\n"
+         "\n"
+         "  if(num < 39000 or ",
+         "  -- Forever: its whole spell table has ~17000 distinct names, never 39000; a lower floor keeps a\n"
+         "  -- finished cache instead of rebuilding it every session.\n"
+         "  local minNames = M33kAuras.IsForever() and 5000 or 39000\n"
+         "  local num = 0;\n"
+         "  for _ in pairs(cache) do\n"
+         "    num = num + 1;\n"
+         "    if num >= minNames then break end\n"
+         "  end\n"
+         "\n"
+         "  if(num < minNames or "),
     ],
     "M33kAurasOptions/BuffTrigger2.lua": [
         ("            else\n              trigger[optionKey][i] = spellCache.BestKeyMatch(v)\n            end\n",
          "            else\n"
          "              local best = spellCache.BestKeyMatch(v)\n"
-         "              -- Forever: without the full cache a name may have no match; keep what was typed\n"
+         "              -- Forever: while the spell cache builds, or for a name it lacks, there may be no match;\n"
+         "              -- keep what was typed\n"
          "              trigger[optionKey][i] = (best and best ~= \"\") and best or strtrim(v)\n"
          "            end\n"),
         ("        elseif input and input ~= \"\" then\n"
@@ -154,7 +190,7 @@ OPTIONS_HUNKS = {
          "        end\n"
          "        return icon and tostring(icon) or \"\", 18, 18\n",
          "        elseif input and input ~= \"\" then\n"
-         "          -- Forever: a name shows the spell's own icon (the cache is seeded from the spellbook);\n"
+         "          -- Forever: a name shows the spell's own icon (spell cache, then the game by name);\n"
          "          -- the generic info glyph only when nothing matches. Tooltip and click are unchanged.\n"
          "          if M33kAuras.IsForever and M33kAuras.IsForever() then\n"
          "            local ok, tex = pcall(spellCache.GetIcon, input)\n"
@@ -167,10 +203,23 @@ OPTIONS_HUNKS = {
          "        end\n"
          "        return icon and tostring(icon) or \"\", 18, 18\n"),
     ],
+    # 'Add Trigger' (pairs with the Types.lua data_stub hunk in CORE_HUNKS)
+    "M33kAurasOptions/TriggerOptions.lua": [
+        ("            trigger =\n"
+         "            {\n"
+         "              type = \"unit\",\n"
+         "              event = \"Conditions\",\n"
+         "              use_alwaystrue = true,\n"
+         "            },\n",
+         "            trigger =\n"
+         "            {\n"
+         "              type = \"aura2\", -- Forever: Aura triggers are the ones the game's aura engine draws\n"
+         "            },\n"),
+    ],
 }
 
-# Core (M33kAuras.lua): the load scanner's argument list is generated from the load prototype so
-# it can never drift from the parameter list on Forever (Player Class, Mounted, Zone ... loads).
+# Core addon. (Upstream's own Forever load-argument list, 4005346, replaced our BuildLoadArgs; the devtest
+# test_load_args.py checks it against the load prototype.)
 CORE_HUNKS = {
     "M33kAuras/Init.lua": [
         ("-- Forever: a native install with data has nothing to migrate from M33Auras/WeakAuras.\nif M33kAurasSaved.displays and next(M33kAurasSaved.displays) and not M33kAurasSaved.m33kMigrated then\n  M33kAurasSaved.m33kMigrated = true\nend\n",
@@ -178,9 +227,7 @@ CORE_HUNKS = {
     ],
     "M33kAuras/Compatibility.lua": [
         ("if IsUsableSpell then\n  Private.ExecEnv.IsUsableSpell = IsUsableSpell\nelse\n  Private.ExecEnv.IsUsableSpell = C_Spell.IsSpellUsable\nend\n",
-         "if IsUsableSpell then\n  Private.ExecEnv.IsUsableSpell = IsUsableSpell\nelse\n  Private.ExecEnv.IsUsableSpell = C_Spell.IsSpellUsable\nend\n\n-- Forever: the IsCurrentSpell global is gone (mainline engine); the Queued Action trigger\n-- and the queued-spell watcher called it directly and errored.\nif IsCurrentSpell then\n  Private.ExecEnv.IsCurrentSpell = IsCurrentSpell\nelse\n  Private.ExecEnv.IsCurrentSpell = C_Spell.IsCurrentSpell\nend\n"),
-        ("if IsCurrentSpell then\n  Private.ExecEnv.IsCurrentSpell = IsCurrentSpell\nelse\n  Private.ExecEnv.IsCurrentSpell = C_Spell.IsCurrentSpell\nend\n",
-         "if IsCurrentSpell then\n  Private.ExecEnv.IsCurrentSpell = IsCurrentSpell\nelse\n  Private.ExecEnv.IsCurrentSpell = C_Spell.IsCurrentSpell\nend\n\n-- Forever: IsSpellKnown(spellID, isPet) now lives in C_SpellBook with a spell-bank enum\nif IsSpellKnown then\n  Private.ExecEnv.IsSpellKnown = IsSpellKnown\nelse\n  Private.ExecEnv.IsSpellKnown = function(spellID, isPet)\n    local banks = Enum.SpellBookSpellBank\n    return C_SpellBook.IsSpellKnown(spellID, banks and (isPet and banks.Pet or banks.Player) or nil)\n  end\nend\n"),
+         "if IsUsableSpell then\n  Private.ExecEnv.IsUsableSpell = IsUsableSpell\nelse\n  Private.ExecEnv.IsUsableSpell = C_Spell.IsSpellUsable\nend\n\n-- Forever: IsSpellKnown(spellID, isPet) now lives in C_SpellBook with a spell-bank enum\nif IsSpellKnown then\n  Private.ExecEnv.IsSpellKnown = IsSpellKnown\nelse\n  Private.ExecEnv.IsSpellKnown = function(spellID, isPet)\n    local banks = Enum.SpellBookSpellBank\n    return C_SpellBook.IsSpellKnown(spellID, banks and (isPet and banks.Pet or banks.Player) or nil)\n  end\nend\n"),
         # Weapon Enchant trigger: Shaman imbues are an enchant type only C_Item.GetWeaponEnchantInfo reports
         ("    return C_SpellBook.IsSpellKnown(spellID, banks and (isPet and banks.Pet or banks.Player) or nil)\n  end\nend\n",
          '    return C_SpellBook.IsSpellKnown(spellID, banks and (isPet and banks.Pet or banks.Player) or nil)\n  end\nend\n\n-- Forever: Shaman imbues (Rockbiter, Windfury ...) are their own enchant type\n-- (Enum.ItemEnchantType.Imbue), which only C_Item.GetWeaponEnchantInfo reports. The legacy\n-- GetWeaponEnchantInfo() and C_PaperDollInfo see temporary enchants (stones, oils, poisons) only\n-- (measured 2026-09-27: Rockbiter = type 3, a Sharpening Stone = type 2). Same return shape as the\n-- legacy call: has, ms left, charges, enchant id for main hand, off hand and ranged.\nif C_Item and C_Item.GetWeaponEnchantInfo then\n  local types = Enum.ItemEnchantType or {}\n  local TEMPORARY, IMBUE = types.Temporary or 2, types.Imbue or 3\n  local function plain(v, default)\n    if issecretvalue(v) then return default end\n    return v\n  end\n  local function slotInfo(weaponSlot)\n    local ok, list = pcall(C_Item.GetWeaponEnchantInfo, weaponSlot)\n    if ok and type(list) == "table" then\n      for _, e in ipairs(list) do\n        local kind = plain(e.enchantType, nil)\n        if plain(e.hasEnchant, false) and (kind == TEMPORARY or kind == IMBUE) then\n          return true, plain(e.timeLeft, 1000), plain(e.charges, 0), plain(e.enchantID, 0)\n        end\n      end\n    end\n    return false, nil, nil, nil\n  end\n  local slots = Enum.WeaponSlot or {}\n  Private.ExecEnv.GetWeaponEnchantInfo = function()\n    local a1, a2, a3, a4 = slotInfo(slots.MainHand or 0)\n    local b1, b2, b3, b4 = slotInfo(slots.OffHand or 1)\n    local c1, c2, c3, c4 = slotInfo(slots.Ranged or 2)\n    return a1, a2, a3, a4, b1, b2, b3, b4, c1, c2, c3, c4\n  end\nelse\n  Private.ExecEnv.GetWeaponEnchantInfo = GetWeaponEnchantInfo\nend\n'),
@@ -191,6 +238,10 @@ CORE_HUNKS = {
     "M33kAuras/AuraEnvironment.lua": [
         ("  M33kAuras = FakeM33kAuras,\n  WeakAuras = FakeM33kAuras,\n}\n",
          "  M33kAuras = FakeM33kAuras,\n  WeakAuras = FakeM33kAuras,\n}\n" + """
+-- Forever: auras written in m33shoq's fork call the addon by its own name. Inside aura code that name
+-- means this addon, as WeakAuras already does. Spelled in two parts so the rename step keeps the key.
+overridden["M33k" .. "Auras"] = overridden["M33k" .. "Auras"] or FakeM33kAuras
+
 -- Forever: the client ships no deprecated-API fallbacks, so custom code written for other clients
 -- stops at the first old global name (seen 2026-10-05: GetItemInfo in a currency tracker from wago).
 -- Inside aura code only, a missing old name falls back to its modern home, with the old return
@@ -258,31 +309,71 @@ end
     "M33kAuras/GenericTrigger.lua": [
         ('        _, mh_rem, mh_charges, mh_EnchantID, _, oh_rem, oh_charges, oh_EnchantID, _, rw_rem, rw_charges, rw_EnchantID = GetWeaponEnchantInfo();\n',
          '        -- Forever: through the shim in Compatibility.lua, which also sees Shaman imbues\n        _, mh_rem, mh_charges, mh_EnchantID, _, oh_rem, oh_charges, oh_EnchantID, _, rw_rem, rw_charges, rw_EnchantID = Private.ExecEnv.GetWeaponEnchantInfo();\n'),
-        ("            if IsCurrentSpell(maxRank) then\n",
-         "            if maxRank and Private.ExecEnv.IsCurrentSpell(maxRank) then\n"),
         ("    if M33kAuras.IsTWW() then\n      return C_Spell.GetSpellLossOfControlCooldown(identifier)\n    else\n      return GetSpellLossOfControlCooldown(identifier)\n    end\n",
          "    -- Forever has neither API: answer 'no loss of control' instead of erroring\n    local getLoC = (C_Spell and C_Spell.GetSpellLossOfControlCooldown) or GetSpellLossOfControlCooldown\n    if getLoC then\n      return getLoC(identifier)\n    end\n"),
     ],
     "M33kAuras/M33kAuras.lua": [
-        # Import of auras made in current M33kAuras: version 90 there only turns its Hardcore load into a
-        # 'ruleset' load. This build's load options keep Hardcore and ignore 'ruleset', so their data is
-        # safe to take. Refused as 'made with a newer version' before (Metz on Discord, 2026-10-05).
-        # When rebasing onto an upstream with that step: auras saved here at 90 skip it (keep use_hardcore).
-        ("local internalVersion = 89\n",
-         "-- Forever: 90 is M33kAuras' Hardcore -> ruleset load option; nothing to convert in this build (its\n"
-         "-- load options keep Hardcore and ignore 'ruleset'), but auras exported from M33kAuras carry 90 and\n"
-         "-- were refused on import as made with a newer version.\n"
-         "local internalVersion = 90\n"),
-        ("local function scanForLoadsImpl(toCheck, event, arg1, ...)\n",
-         "-- Forever: the load function's parameter list is built from Private.load_prototype (only the\n-- args whose init is \"arg\" for THIS flavour), but upstream keeps one retail-shaped call below.\n-- Forever is neither retail (BuildInfo 16001) nor classic, so the two lists differ and every value\n-- after 'encounter' lands in the wrong parameter: Player Class, Mounted, Zone ... all broken.\n-- Build the argument list from the prototype instead, so they can never disagree.\nlocal function BuildLoadArgs(values)\n  local args, n = {}, 0\n  for _, arg in ipairs(Private.load_prototype.args) do\n    if arg.init == \"arg\" then\n      n = n + 1\n      args[n] = values[arg.name]\n    end\n  end\n  args.n = n\n  return args\nend\n\nlocal function scanForLoadsImpl(toCheck, event, arg1, ...)\n"),
-        ("      shouldBeLoaded = loadFunc and loadFunc(\"ScanForLoads_Auras\", inCombat, alive, inEncounter, warmodeActive, inPetBattle, vehicle, vehicleUi, dragonriding, mounted, addonRestrictionsActive, specId, player, realm, guild, race, faction, playerLevel, effectiveLevel, role, position, group, groupSize, raidMemberType, zone, zoneId, zonegroupId, instanceId, minimapText, encounter_id, size, difficulty, difficultyIndex, affixes)\n      couldBeLoaded =  loadOpt and loadOpt(\"ScanForLoads_Auras\",   inCombat, alive, inEncounter, warmodeActive, inPetBattle, vehicle, vehicleUi, dragonriding, mounted, addonRestrictionsActive, specId, player, realm, guild, race, faction, playerLevel, effectiveLevel, role, position, group, groupSize, raidMemberType, zone, zoneId, zonegroupId, instanceId, minimapText, encounter_id, size, difficulty, difficultyIndex, affixes)\n",
-         "      -- Forever: arguments in prototype order (see BuildLoadArgs above); names are the prototype's\n      local loadArgs = BuildLoadArgs({\n        combat = inCombat, alive = alive, encounter = inEncounter, warmode = warmodeActive, pvpmode = pvp,\n        petbattle = inPetBattle, vehicle = vehicle, vehicleUi = vehicleUi, dragonriding = dragonriding,\n        mounted = mounted, addonRestrictionsActive = addonRestrictionsActive, hardcore = hardcore,\n        engraving = runeEngraving, class = class, class_and_spec = specId, player = player, realm = realm,\n        guild = guild, race = race, faction = faction, level = playerLevel, effectiveLevel = effectiveLevel,\n        role = role, spec_position = position, raid_role = raidRole, ingroup = group, groupSize = groupSize,\n        group_leader = raidMemberType, zone = zone, zoneId = zoneId, zonegroupId = zonegroupId,\n        instanceId = instanceId, minimapZoneText = minimapText, encounterid = encounter_id, size = size,\n        difficulty = difficulty, instance_type = difficultyIndex, affixes = affixes,\n      })\n      shouldBeLoaded = loadFunc and loadFunc(\"ScanForLoads_Auras\", unpack(loadArgs, 1, loadArgs.n))\n      couldBeLoaded =  loadOpt and loadOpt(\"ScanForLoads_Auras\", unpack(loadArgs, 1, loadArgs.n))\n"),
         ("  local currentErrorHandlerContext\n  local function waErrorHandler(errorMessage)\n",
          "  local currentErrorHandlerContext\n  local foreverSecretForwarded = {}   -- Forever: uid..context -> true once sent to BugSack\n  local function waErrorHandler(errorMessage)\n"),
         ("    if data then\n      Private.AuraWarnings.UpdateWarning(data.uid, \"LuaError\", \"error\",\n        L[\"This aura has caused a Lua error.\"] .. \"\\n\" .. L[\"Install the addons BugSack and BugGrabber for detailed error logs.\"], true)\n      table.insert(juicedMessage, L[\"Lua error in Aura '%s': %s\"]:format(data.id, currentErrorHandlerContext or L[\"unknown location\"]))\n",
          "    -- Forever: custom code that reads a value the client keeps secret in combat is the aura's own\n    -- limit, not an addon bug. Say so once per aura, and send it to BugSack once per aura and place.\n    local secretCustom = data and Private.ForeverSecretCustomError\n      and Private.ForeverSecretCustomError(data, currentErrorHandlerContext, errorMessage)\n    if data then\n      if secretCustom then\n        Private.AuraWarnings.UpdateWarning(data.uid, \"ForeverSecretCode\", \"warning\", secretCustom, true)\n      else\n        Private.AuraWarnings.UpdateWarning(data.uid, \"LuaError\", \"error\",\n          L[\"This aura has caused a Lua error.\"] .. \"\\n\" .. L[\"Install the addons BugSack and BugGrabber for detailed error logs.\"], true)\n      end\n      table.insert(juicedMessage, L[\"Lua error in Aura '%s': %s\"]:format(data.id, currentErrorHandlerContext or L[\"unknown location\"]))\n      if secretCustom then table.insert(juicedMessage, secretCustom) end\n"),
         ("      GREMINDER:OnError(err,debugstack(2),currentErrorHandlerContext)\n    end\n    geterrorhandler()(err)\n",
          "      GREMINDER:OnError(err,debugstack(2),currentErrorHandlerContext)\n    end\n    if secretCustom then\n      local key = data.uid .. \"\\n\" .. tostring(currentErrorHandlerContext)\n      if foreverSecretForwarded[key] then return end\n      foreverSecretForwarded[key] = true\n    end\n    geterrorhandler()(err)\n"),
+    ],
+    # Upstream d2465fd made 'Condition - Always active' the trigger of a new aura. The engine draws Aura triggers,
+    # so EverAuras keeps the Aura trigger as the default (exactly f170ed7's stub; TriggerOptions.lua has the
+    # 'Add Trigger' half). The stub is also validated into every aura on load: unchanged from 0.8.x.
+    "M33kAuras/Types.lua": [
+        ('      trigger = {\n        type = "unit",\n        event = "Conditions",\n        use_alwaystrue = true,\n      },\n      untrigger = {},\n',
+         '      trigger = {\n'
+         '        -- Forever: EverAuras draws Aura triggers through the game\'s aura engine; a new aura starts as one\n'
+         '        type = "aura2",\n'
+         '        names = {},\n'
+         '        event = "Health",\n'
+         '        subeventPrefix = "SPELL",\n'
+         '        subeventSuffix = "_CAST_START",\n'
+         '        spellIds = {},\n'
+         '        unit = "player",\n'
+         '        debuffType = "HELPFUL",\n'
+         '      },\n'
+         '      untrigger = {},\n'),
+    ],
+    # Saved data: EverAuras 0.8.10-0.8.17 took internalVersion 90 early (so M33kAuras exports would import) without
+    # upstream's step 90 (5b8d9f7: the old Hardcore load check -> the Game Mode 'ruleset' load). Run that step once
+    # more for auras at 90 that never went through it, told apart by the marker every Modernize sets since 9956a92.
+    # Each converted aura is named in chat (ForeverImport.lua).
+    "M33kAuras/Modernize.lua": [
+        ("  if data.internalVersion < 90 and data.load then\n"
+         "    local load = data.load\n"
+         "    if load.use_hardcore ~= nil and load.use_ruleset == nil and load.ruleset == nil then\n",
+         "  -- Forever: auras saved by EverAuras before it moved onto this upstream already carry internalVersion\n"
+         "  -- 90 (taken early, so that exports from upstream would import), but that build never ran the step below,\n"
+         "  -- so their load data can still hold the old Hardcore check (from Classic Era imports; the option was\n"
+         "  -- hidden and ignored on Forever). They are the auras at 90 without internalVersionM33kAuras, which\n"
+         "  -- every Modernize sets since 9956a92: run the step once for them too. Changes nothing on data that\n"
+         "  -- went through it already.\n"
+         "  local foreverMissed90 = data.internalVersion == 90 and data.internalVersionM33kAuras == nil\n"
+         "  if (data.internalVersion < 90 or foreverMissed90) and data.load then\n"
+         "    local load = data.load\n"
+         "    if load.use_hardcore ~= nil and load.use_ruleset == nil and load.ruleset == nil then\n"
+         "      if foreverMissed90 and Private.ForeverNoteRulesetMigration then\n"
+         "        Private.ForeverNoteRulesetMigration(data.id, load.use_hardcore)\n"
+         "      end\n"),
+    ],
+    # Import/export through the client's own Deflate (upstream a575cd0): never encode an error message as an
+    # export string, and a decompress that answers nothing (documented MayReturnNothing) gives the message.
+    "M33kAuras/Transmission.lua": [
+        ("    ok, compressed = pcall(C_EncodingUtil.CompressString, serialized, Enum.CompressionMethod.Deflate)\n    if ok then\n",
+         "    ok, compressed = pcall(C_EncodingUtil.CompressString, serialized, Enum.CompressionMethod.Deflate)\n"
+         "    -- Forever: never encode an error message (or nothing) as an export string; LibDeflate is still loaded\n"
+         "    if not ok or type(compressed) ~= \"string\" then\n"
+         "      ok, compressed = true, LibDeflate:CompressDeflate(serialized, configForDeflate)\n"
+         "    end\n"
+         "    if ok then\n"),
+        ("    ok, decompressed = pcall(C_EncodingUtil.DecompressString, decoded, Enum.CompressionMethod.Deflate)\n    if not(ok) then\n",
+         "    ok, decompressed = pcall(C_EncodingUtil.DecompressString, decoded, Enum.CompressionMethod.Deflate)\n"
+         "    -- Forever: the API is documented as MayReturnNothing; a bad string must give the message, not a Lua error\n"
+         "    if not(ok) or type(decompressed) ~= \"string\" then\n"),
     ],
 }
 
@@ -316,26 +407,41 @@ CHECKS = {
         "elseif triggerInfo.engineDelegated then",
         "return UpdateDelegatedState(time, triggerInfo, triggerStates)",
         "if unitExists or unitExistScanFunc[unit] then",
-    ],
-    "M33kAuras/Prototypes.lua": ["Private.SecretDurationFormatter(progressPrecision)",
-                                 "spellname and Private.ExecEnv.IsCurrentSpell(spellname)",
-                                 "return Private.ExecEnv.IsSpellKnown(baseSpell, pet)",
-                                 "ready = M33kAuras.IsSpellReady(effectiveSpellId)"],
+        "local function SafeForEachAura(unit, filter, maxCount, func, usePackedAura)\n  if not C_Secrets.ShouldAurasBeSecret() then",
+        "missingCountFuncs[info.matchCountFunc]"],
+    "M33kAuras/Prototypes.lua": ["if Private.ExecEnv.IsSpellKnown(spell, pet) then",
+        "return Private.ExecEnv.IsSpellKnown(baseSpell, pet)",
+        'test = "spellname and C_Spell.IsCurrentSpell(spellname)";',
+        "local ready = M33kAuras.IsSpellReady(effectiveSpellId) == true",
+        'return M33kAuras.GetDurationObjectValue(remaining, "remaining", formatter)'],
     "M33kAuras/Init.lua": ["M33kAurasSaved.migrationDisabled = true"],
-    "M33kAuras/M33kAuras.lua": ["local internalVersion = 90\n", "unpack(loadArgs, 1, loadArgs.n)", "Private.ForeverSecretCustomError(data, currentErrorHandlerContext, errorMessage)",
-                                "if foreverSecretForwarded[key] then return end"],
-    "M33kAuras/Compatibility.lua": ["Private.ExecEnv.IsCurrentSpell = C_Spell.IsCurrentSpell",
-                                    "Private.ExecEnv.IsSpellKnown = function(spellID, isPet)",
-                                    "Private.ExecEnv.GetWeaponEnchantInfo = function()"],
+    "M33kAuras/M33kAuras.lua": ["local internalVersion = 90\n",
+        '      if M33kAuras.IsForever() then\n        shouldBeLoaded = loadFunc and loadFunc("ScanForLoads_Auras",',
+        "Private.ForeverSecretCustomError(data, currentErrorHandlerContext, errorMessage)",
+        "if foreverSecretForwarded[key] then return end"],
+    "M33kAuras/Compatibility.lua": ["Private.ExecEnv.IsSpellKnown = function(spellID, isPet)",
+        "Private.ExecEnv.GetWeaponEnchantInfo = function()"],
     "M33kAuras/AuraEnvironment.lua": ["compat.GetSpellInfo = function(spell)",
-                                      "if fn and _G[name] == nil and overridden[name] == nil then overridden[name] = fn end"],
-    "M33kAuras/GenericTrigger.lua": ["if maxRank and Private.ExecEnv.IsCurrentSpell(maxRank) then",
-                                     "local getLoC = (C_Spell and C_Spell.GetSpellLossOfControlCooldown)",
-                                     "= Private.ExecEnv.GetWeaponEnchantInfo();"],
-    "M33kAurasOptions/Cache.lua": ["spellCache.AddIcon(info.name, info.spellID"],
+        "if fn and _G[name] == nil and overridden[name] == nil then overridden[name] = fn end",
+        'overridden["M33k" .. "Auras"] = overridden["M33k" .. "Auras"] or FakeM33kAuras'],
+    "M33kAuras/GenericTrigger.lua": ["local getLoC = (C_Spell and C_Spell.GetSpellLossOfControlCooldown)",
+        "= Private.ExecEnv.GetWeaponEnchantInfo();",
+        "if maxRank and C_Spell.IsCurrentSpell(maxRank) then",
+        'if M33kAuras.IsRetail() or M33kAuras.IsForever() then\n        tenchFrame:RegisterEvent("WEAPON_ENCHANT_CHANGED")'],
+    "M33kAurasOptions/Cache.lua": ["return C_SpellBook.IsSpellKnown(spellID)",
+        "spellCache.ForeverSeedSpellbook() -- Forever: the player's own spells",
+        "spellCache.ForeverSeedSpellbook() -- Forever: spells learned since the last build",
+        "local minNames = M33kAuras.IsForever() and 5000 or 39000",
+        "if IsTestBuild() and not M33kAuras.IsForever() then"],
     "M33kAurasOptions/AceGUI-Widgets/AceGUIContainer-M33kAurasTreeGroup.lua": ["1, .82, 0, 1, true) -- Forever: alpha before wrap"],
     "M33kAurasOptions/BuffTrigger2.lua": ["(best and best ~= \"\") and best or strtrim(v)",
                                           "pcall(spellCache.GetIcon, input)"],
+    "M33kAuras/Types.lua": ["a new aura starts as one\n        type = \"aura2\","],
+    "M33kAuras/Modernize.lua": ["local foreverMissed90 = data.internalVersion == 90 and data.internalVersionM33kAuras == nil"],
+    "M33kAuras/Transmission.lua": ["if not ok or type(compressed) ~= \"string\" then",
+                                   "if not(ok) or type(decompressed) ~= \"string\" then"],
+    "M33kAurasOptions/TriggerOptions.lua": ["type = \"aura2\", -- Forever: Aura triggers are the ones"],
+    "M33kAurasOptions/OptionsFrames/OptionsFrame.lua": ["local discordButton = addFooter(L[\"Discord\"]"],
     "M33kAuras/M33kAuras.toc": ["\nForeverEngineAura.lua\n"],
     "M33kAurasOptions/M33kAurasOptions.toc": ["\nForeverEngineAuraOptions.lua\n"],
     "M33kAuras/ForeverEngineAura.lua": ["Private.ForeverEngine = Engine"],
@@ -345,6 +451,12 @@ CHECKS = {
 }
 
 
-def rename(s, old="M33kAuras", new="EverAuras"):
-    """Map an upstream-named string/path to the installed name."""
-    return s.replace(old, new)
+def rename(s):
+    """Map an upstream-named string/path to the installed name, exactly as the build's rename step does
+    (its guarded names, e.g. internalVersionM33kAuras, keep their spelling)."""
+    import os, sys
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    from rename_to_everauras import rewrite
+    return rewrite(s)

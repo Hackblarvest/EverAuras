@@ -1,6 +1,7 @@
 -- ForeverEngineAuraOptions.lua - WoW: Forever. Options-side companion of ForeverEngineAura.lua.
--- Zero diff to upstream option files: wraps the Icon region options and the Aura trigger options
--- from inside the registerRegions closure, which the options addon runs once it has a Private.
+-- Wraps the region options and the Aura trigger options from inside the registerRegions closure,
+-- which the options addon runs once it has a Private (the few edits to upstream option files are
+-- hunks in tools/engine_hunks.py).
 -- Brand-free: works in the upstream tree and after the rename step.
 local AddonName, OptionsPrivate = ...
 local CoreName = AddonName:gsub("Options$", "")
@@ -245,7 +246,8 @@ table.insert(OptionsPrivate.registerRegions, function()
     end
   end
 
-  -- Aura trigger options: one notice right after upstream's 12.1 restriction warning (order 11.16).
+  -- Aura trigger options: our status line right under upstream's "Secret values" heading (order 11.16).
+  -- Upstream's "This trigger cannot track secret auras" (11.17) is hidden while the engine draws the display.
   local origAura2 = Private.triggerTypesOptions and Private.triggerTypesOptions.aura2
   if origAura2 and not Private.triggerTypesOptions.foreverEngineWrapped then
     Private.triggerTypesOptions.foreverEngineWrapped = true
@@ -254,9 +256,17 @@ table.insert(OptionsPrivate.registerRegions, function()
       local auraOptions = type(options) == "table" and options["trigger." .. triggernum .. ".aura_options"]
       if auraOptions then
         auraOptions.foreverEngineNotice = {
-          type = "description", width = WA.doubleWidth, order = 11.17, fontSize = "medium",
+          type = "description", width = WA.doubleWidth, order = 11.165, fontSize = "medium",
           name = function() return (Engine.Explain(data)) end,
         }
+        local warning = auraOptions.restrictions12_1Warning
+        if type(warning) == "table" and warning.hidden == nil then
+          warning.hidden = function()
+            if data.foreverEngine == false then return false end
+            local ok, plan = pcall(Engine.Classify, data)
+            return (ok and plan) and true or false
+          end
+        end
       end
       return options
     end
