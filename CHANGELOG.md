@@ -1,5 +1,70 @@
 # Changelog
 
+## 0.8.17-alpha (2026-10-11)
+
+- **Refresh icons: missing, or too few stacks.** One *Aura(s) Missing* trigger and one *Aura(s) Found*
+  trigger with a *Stack Count* (or conditions on its stacks), combined with *Required for Activation: Any
+  Triggers*, now work in combat: for example Sunder Armor while it is absent or below 5 stacks, or Demon
+  Armor, which does not stack (0 stacks, as in WeakAuras, so its Found trigger takes *Stack Count* < 1): it
+  glows while it is missing and shows as the live buff while it is up. While the aura is absent you see your
+  icon, texture or animation; while its stacks match, the live aura (on an icon with its countdown, stacks
+  and swipe). With conditions on stacks but no *Stack Count*, the live aura shows at any count, in the look
+  of its stacks. The game compares the stacks itself, as for *Stack Count* alone. Both triggers must track
+  the same aura (the same spells, buff or debuff, and *Own Only* on the Missing trigger needs it on the
+  Found trigger too). *Display tab → Glow* chooses where the glow goes: *Both*, *Only on the live aura (its
+  stacks match)* or *Only while it is missing*. With a *Stack Count*, an *On Show* sound plays each time the
+  aura is lost (also when the display was already showing because its stacks matched); *On Hide* is not
+  played, nor *On Show* when the stacks come into the count, as no aura event marks the moment the stacks
+  reach or leave it. With conditions on stacks alone, neither sound plays. Icons, Textures and Stop Motions
+  so far (the status line says so).
+- **Time and stacks in one text.** A text with the time left and the stacks together, such as '%p (%s)' or
+  'Corr %s - %p', now works in combat, on a Text display (*Show On: Aura(s) Found*) and as a sub-text of
+  engine-driven icons, bars and textures. The game writes one value into each of its texts, so EverAuras
+  draws two of them side by side, one hung on the end of the other, and they stay together as the game
+  rewrites the time. At 0 stacks (a DoT that does not stack) the number is left out and the words stay, as
+  in WeakAuras. A text hung by a left or right point sits exactly (a Text display's *Anchor*, or its
+  *Justify* with *Width: Fixed*; a sub-text's anchor on the icon or bar); one hung by its middle, as a new
+  Text display is (*Anchor: Bottom*), is placed by an estimate of the stacks' width, so it may sit a pixel
+  or two beside WeakAuras' place. On a Text display, *Width: Fixed* only places the text (no word wrap). A
+  display has one time text and one stack text of the game, taken by its texts in the order they are listed:
+  a '%p (%s)' sub-text takes both, so a %p or %s sub-text below it is hidden, and a '%p (%s)' below a lone
+  %p or %s is hidden itself (a new icon starts with a '%s' text and a new bar with a '%p' one: change that
+  text into '%p (%s)', or hide it). The status line names a hidden text. Not drawn, with the reason on the
+  status line: the time on both sides of the stacks, %s twice, a line break, or { } next to the time.
+- **Start and Finish animations, in combat.** WeakAuras plays a display's *Start* animation when it shows
+  and its *Finish* when it hides, but the game shows and hides an engine-driven display, so neither played
+  when the aura came or went. The game now plays them itself, also in combat: *Start* on a *Show On: Aura(s)
+  Found* display when the aura is put on (Corruption on your target slides or grows in), *Finish* on an
+  *Aura(s) Missing* display when the aura is put on and the display goes (a "NO DEMON ARMOR" warning fades
+  out as you buff). Icons, Textures and plain Texts, with a *Preset* or a custom animation: *Fade In* /
+  *Out*, *Slide In* / *Out* (custom slide functions too) and *Zoom In* / *Out*, with its *Ease type*; a fade
+  or zoom of another *Type* than *Normal* (*Pulse*, *Hide*, *Spin*, *Flip* or a *Custom Function*) is drawn
+  as a straight change from its first to its last value.
+- The game redraws its aura buttons when you enter or leave combat and when you loot, which would play the
+  animations again, so each is shown only during the first seconds after the aura was put on (the
+  animation's length plus up to about a second): later redraws do not replay it, but one within those
+  seconds does (pulling right after a re-buff flashes a *Finish* once). For the same reason the game plays
+  none when you switch to a target or meet someone who already has the aura, nor, by design, for an aura
+  without a duration (not yet tried in game). WeakAuras still plays its own *Start* and *Finish* when it
+  shows or hides the display itself, as before (when you pick a target after having none, or clear it).
+  While a *Start* plays, and for those seconds after each refresh of the aura, a copy stands in for the
+  display (an icon's copy shows its swipe and a lone %s stack text, not its other texts or a static glow).
+- Not drawn, with the reason on the status line: *Finish* on Found displays and *Start* on Missing displays
+  (the game gives addons no moment when an aura goes), animations on Progress Bars, Progress Textures, Stop
+  Motions, Models and texts with the aura's time, stacks or name, on refresh icons and on displays shown
+  from 2 stacks or more, *Start* on displays with a time-left part and in groups sorted by the time left,
+  *Rotate In* / *Out* and *Color*, and *Time in: Relative* (% of progress, which addons cannot read). *Main*
+  animations stay WeakAuras' own and play on engine-driven displays as usual (Pulse on an icon, for
+  example); so do all animations on *Show On: Always* displays.
+- A display with a *Missing* part (such as a missing-DoT icon on your target) or a Found icon with an
+  animated glow that WeakAuras showed anew in combat, for example as you picked a target, could stop with
+  "calling 'SetFrameLevel' on bad self (Attempt to access forbidden object ...)" in BugSack and leave
+  WeakAuras' own texts showing next to the engine's. Blizzard closes the frames hung on its aura containers
+  to addons while an aura is shown in combat; EverAuras now sets their levels only where the game allows it.
+- The status line no longer says that an *Active* condition on an Aura trigger never fires: WeakAuras sees
+  an engine-driven trigger as always active, so the condition is always true and its changes apply all the
+  time, and the status line now says so.
+
 ## 0.8.16-alpha (2026-10-10)
 
 - **Auras on party and raid members.** An Aura trigger on a *Specific Unit* from party1 to party4 or raid1
