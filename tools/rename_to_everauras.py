@@ -41,6 +41,7 @@ URL_REWRITES = [
     ("## X-Website: https://www.curseforge.com/wow/addons/" + OLD, "## X-Website: " + PROJECT_URL),
     ("please report this to m33shoq.", "please report it on the EverAuras GitHub."),
     ("M33KAURAS_", "EVERAURAS_"),   # upper-case globals and menu tags; they would collide with M33kAuras' own
+    ("|cff666666[WA]|r|h", "|cff666666[EA]|r|h"),   # the chat tag before print() lines from an aura's custom code
 ]
 URL_GUARDS = [
     ("https://discord.gg/" + OLD, "\x00DISCORD\x00"),
