@@ -18,6 +18,9 @@ import sys
 
 OLD, NEW = "M33kAuras", "EverAuras"
 AUTHOR = "Hackblarvest"
+# Our project ids on the addon sites, so their apps (Wago app, CurseForge app, WowUp) match an install
+# to EverAuras. Main TOC only.
+SITE_IDS = "## X-Wago-ID: qGYBgENg\n## X-Curse-Project-ID: 1710578"
 VERSION = "0.9.0-beta"
 
 # Links. The footer buttons and the TOC website point at OUR project; anything else that
@@ -66,10 +69,13 @@ def rewrite(text):
     return text
 
 
-def stamp_toc(text, upstream):
-    """Give each TOC our identity. Title/Author/Version only; everything else is upstream's."""
+def stamp_toc(text, upstream, main=False):
+    """Give each TOC our identity. Title/Author/Version (and on the main TOC our site ids) only; everything
+    else is upstream's."""
     text = re.sub(r"^## Author:.*$", f"## Author: {AUTHOR}", text, flags=re.M)
     text = re.sub(r"^## Version:.*$", f"## Version: {VERSION}+{upstream}", text, flags=re.M)
+    if main and "## X-Wago-ID:" not in text:
+        text = re.sub(r"^(## Version:.*)$", lambda m: m.group(1) + "\n" + SITE_IDS, text, count=1, flags=re.M)
     if "## X-Upstream:" not in text:
         text = re.sub(
             r"^(## Version:.*)$",
@@ -95,7 +101,7 @@ def main(root, upstream="unknown"):
                 continue
             n = rewrite(s)
             if f.lower().endswith(".toc"):
-                n = stamp_toc(n, upstream)
+                n = stamp_toc(n, upstream, main=(f == OLD + ".toc"))
             if n != s:
                 open(p, "w", encoding="utf-8", errors="surrogateescape", newline="").write(n)
                 touched += 1

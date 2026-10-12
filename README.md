@@ -55,7 +55,8 @@ and lets the client draw it.
 ## Install
 
 1. Have a working Forever install and the Battle.net app running.
-2. Download the latest `EverAuras-<version>.zip` from
+2. Install **EverAuras** with the [CurseForge](https://www.curseforge.com/wow/addons/everauras) or
+   [Wago](https://addons.wago.io/addons/everauras) app (game version *WoW Forever*), or download the latest `EverAuras-<version>.zip` from
    [Releases](https://github.com/Hackblarvest/EverAuras/releases) and unzip it into
    `_classic_beta_\Interface\AddOns`. It holds `EverAuras`, `EverAurasOptions`, `EverAurasArchive` and
    `EverAurasModelPaths` (an `EverAurasTemplates` folder from 0.8.0 or earlier never loaded and can be
