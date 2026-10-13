@@ -50,9 +50,7 @@ and lets the client draw it.
 | Spell usable (incl. reactive abilities such as Overpower or Mongoose Bite), in range, item cooldowns, casts, swing timers | Plain readable data. |
 | Everything **M33kAuras** brings to Forever: Talent, Game Mode (PvE, PvP, RP, Hardcore), PvP Flagged and On Taxi loads; Talent Known, Character Stats, Health, Totem and Threat triggers; an encounter browser for Forever's dungeons and raids; a list of the auras, cooldowns and casts Blizzard keeps readable in combat (*Browse never-secret auras*) | Upstream's own Forever support. EverAuras is rebuilt on top of it (`tools/UPSTREAM`), and its patches only add what upstream does not do. |
 
-Together these are the building blocks of a rotation display: a row of icons, each showing when
-its spell should be cast, in combat, correctly. See the [design notes](#how-it-works) for what is
-*not* possible and why.
+
 
 ## Install
 
