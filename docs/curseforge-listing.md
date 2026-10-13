@@ -37,6 +37,7 @@ Forever runs on the modern engine with its "secret values" system: the moment yo
 - **Conditions on the time left**: turn an icon, bar, ring or text red and glowing when its DoT or buff has less than X seconds left, in combat too.
 - **Textures for procs**: show a texture while your proc or buff is up, or while it is missing.
 - **Stop Motion animations and Models** for procs and missing buffs, animating in combat too.
+- **Absorb shields**: the official *EverAuras Shield* aura (on wago.io) shows how much Power Word: Shield, Sacrifice, Ice Barrier or a ward still takes, as a curve of segments or a ring, in combat too.
 - **Texts**: "NO DEMON SKIN!" while a buff is missing, "Corruption: 12 s" while a DoT runs, time and stacks in one text ("%p (%s)", also on icons and bars), in combat too.
 - **Stack Count**: show an aura only at 3+ stacks (or at most, or exactly, N), **refresh icons** that show while a debuff is missing or has fewer than N stacks (Sunder Armor), and **conditions on stacks**: change its colour, glow, text or alpha by the stack count, in combat too.
 - **Dynamic Groups** that close up in combat: a DoT row without holes, growing left, right, up, down or from the centre, or **sorted by the time left** (icons or timer bars), with **conditions on the time left** per icon (e.g. red and glowing below 4 s).

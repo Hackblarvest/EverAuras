@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.9.1-beta (2026-10-13)
+
+- **The first official EverAuras aura: EverAuras Shield** on wago.io, as a
+  [curve](https://wago.io/_0najWd4T) or a [ring](https://wago.io/G4WYlUMi5) (option *Style* switches
+  between them). It shows how much your absorb shields still take (Power Word: Shield, Sacrifice, Ice
+  Barrier, Fire, Frost and Shadow Ward, Templar's Bulwark, protection potions, trinkets ...): a curved
+  column of segments with the number below, or a ring with the number inside, in combat too. Mana Shield
+  does not show: the game leaves it out of the absorb amount addons can read. The curve's design is
+  inspired by nan Shield (Hamersteen) and nanShield - Forever (Billie Jeanne).
+- **Absorb rings and bars without code.** A Health trigger with *Fetch Absorb*, and *Progress Source:
+  Trigger 1 - Absorb* on a Progress Texture or a Bar, draws your absorb against your max health, in combat
+  too (M33kAuras' feature, now checked on Forever).
+- **On Wago Addons.** EverAuras is on [Wago Addons](https://addons.wago.io/addons/everauras), and the Wago
+  app (like the CurseForge app) recognises an installed EverAuras and keeps it up to date.
+- Lines an aura's own code prints to chat are tagged `[EA]` instead of `[WA]`.
+
 ## 0.9.0-beta (2026-10-11)
 
 - **Beta.** EverAuras now builds on the newest M33kAuras (`fd03b21`, release 5.20.7-rg4-m99: 73 changes

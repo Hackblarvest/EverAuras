@@ -11,7 +11,7 @@ anywhere: questing, dungeons or raids. Ported-as-is, WeakAuras is blind exactly 
 EverAuras is not blind. It never reads the secret data; it hands the display to the game engine
 and lets the client draw it.
 
-> **Status:** beta (0.9.0), built on M33kAuras `fd03b21` (release 5.20.7-rg4-m99) and developed against
+> **Status:** beta (0.9.1), built on M33kAuras `fd03b21` (release 5.20.7-rg4-m99) and developed against
 > the Forever *beta* client (interface 16001). Blizzard patches can still break things; please report
 > what you find on [Discord](https://discord.gg/HdRNYvKbY) or in the
 > [issues](https://github.com/Hackblarvest/EverAuras/issues).
@@ -51,6 +51,15 @@ and lets the client draw it.
 | Everything **M33kAuras** brings to Forever: Talent, Game Mode (PvE, PvP, RP, Hardcore), PvP Flagged and On Taxi loads; Talent Known, Character Stats, Health, Totem and Threat triggers; an encounter browser for Forever's dungeons and raids; a list of the auras, cooldowns and casts Blizzard keeps readable in combat (*Browse never-secret auras*) | Upstream's own Forever support. EverAuras is rebuilt on top of it (`tools/UPSTREAM`), and its patches only add what upstream does not do. |
 
 
+
+## Official auras
+
+- [EverAuras Shield](https://wago.io/_0najWd4T) (curve) and [EverAuras Shield Ring](https://wago.io/G4WYlUMi5):
+  how much your absorb shields still take (Power Word: Shield, Sacrifice, Ice Barrier, Fire, Frost and
+  Shadow Ward, Templar's Bulwark, protection potions, trinkets ...), as a curved column of segments with
+  the number below or as a ring with the number inside, in combat too. Mana Shield does not show: the
+  game leaves it out of the absorb amount addons can read. The curve's design is inspired by nan Shield
+  (Hamersteen) and nanShield - Forever (Billie Jeanne).
 
 ## Install
 
