@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.9.2-beta (2026-10-14)
+
+- **Aura strings from ForeverAuras import.** They carry a data version of their own (91, one above
+  WeakAuras and M33kAuras), so EverAuras refused them as "made with a newer version". Now they import, and
+  the parts that differ are translated to EverAuras' own:
+  - their in-combat aura trigger becomes the Aura trigger, which the engine draws in combat (DoTs, buffs,
+    procs, any rank of a spell), with its conditions on the time left and on found / missing;
+  - their flow groups become Dynamic Groups, and their class load (*Class and Specialization* with
+    Forever's specs) becomes *Class*;
+  - "hide at 20% mana and above" and similar conditions on a resource become the power gate (below).
+
+  One chat line per import says what was brought over and what EverAuras does not have (their Blizzard
+  Cooldown Manager and Ammo triggers, pandemic conditions, highlight effects and spec load option). Tested
+  with 130 ForeverAuras strings from wago.io: 488 of the 522 displays that use their aura trigger are drawn
+  by the engine in combat. Only the aura data is translated. Thanks to Jax for asking.
+- **Hide a display by a resource at a threshold.** *Display tab, Power*: besides *hide while full*, hide a
+  display at or above X% (a "LOW MANA" text hidden from 20% up) or below X% of your mana, rage, energy or
+  focus (or your target's, focus' or pet's), now also on Texts, Textures and Progress Textures. The amounts
+  are secret on Forever, even your mana out of combat; the game compares them for EverAuras.
+
 ## 0.9.1-beta (2026-10-13)
 
 - **The first official EverAuras aura: EverAuras Shield** on wago.io, as a

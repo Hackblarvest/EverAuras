@@ -49,11 +49,11 @@ Forever runs on the modern engine with its "secret values" system: the moment yo
 - **Sounds that play when the aura comes or goes**, in combat too, from the first time (EverAuras ships the game's own spell lists per dispel type).
 - **Range check**: only show an aura while your spell can reach the target (for example Serpent Sting's 8–35 yards).
 - **Cooldowns** with swipe and timer text, and **spell usable** triggers, including reactive abilities such as Overpower or Mongoose Bite.
-- **Resource bars** (mana, rage, energy) with **hide when full** and **colour below a threshold**.
+- **Resource bars** (mana, rage, energy) with **hide when full** and **colour below a threshold**, and a **"LOW MANA" text** that shows only below X%.
 - A **Five Second Rule** timer for mana users.
 - **Spell ranks**: auras set up by name follow your ranks as you level.
 - **Up to date with M33kAuras**: Talent, Game Mode (PvE, PvP, RP, Hardcore), PvP Flagged and On Taxi loads, Talent Known, Character Stats and Health triggers, an encounter browser for Forever's dungeons and raids, and a list of the auras and cooldowns Blizzard keeps readable in combat.
-- **Imports**: WeakAuras and M33kAuras export strings import as usual; texture paths from WeakAuras and its forks are pointed at EverAuras' own copy, and custom code that uses old API names (GetItemInfo, GetSpellInfo ...) works on Forever too.
+- **Imports**: WeakAuras and M33kAuras export strings import as usual, and **ForeverAuras strings import too** (their aura trigger, groups and class loads are translated to EverAuras' own); texture paths from WeakAuras and its forks are pointed at EverAuras' own copy, and custom code that uses old API names (GetItemInfo, GetSpellInfo ...) works on Forever too.
 
 Custom-code auras that compare values Blizzard keeps secret (for example your current mana) cannot work in combat on Forever; EverAuras tells you which ones, instead of flooding BugSack.
 
