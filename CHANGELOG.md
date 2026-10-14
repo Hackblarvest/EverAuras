@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.3-beta (2026-10-14)
+
+- **No more gaps in mixed rows.** A centred Dynamic Group that holds both your buffs and your target's
+  DoTs (like the "Effects" rows of the ForeverAuras class packs) now closes up in combat too: the icons
+  sit side by side, centred, and the row closes again when you change or lose your target. Children with
+  conditions on the time left or the stacks pack too, and so do rows of Progress Bars.
+- **"Red below 3 s" on a countdown.** A condition on the time left that only colours the `%p` text is now
+  drawn by the countdown itself (the game turns its colour at that time, in combat too, with one aura slot
+  instead of four). A `%p` text with a colour of its own now shows that colour instead of white.
+
 ## 0.9.2-beta (2026-10-14)
 
 - **Aura strings from ForeverAuras import.** They carry a data version of their own (91, one above
