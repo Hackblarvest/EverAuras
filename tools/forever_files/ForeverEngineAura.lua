@@ -480,6 +480,40 @@ do
     looks.key = ("%s|%s|%s"):format(tostring(x), looks.below.key, looks.above.key)
     return looks, used, notes
   end
+
+  -- Time looks (Engine.TimeLooks) whose only change is the colour of the display's lone %p text: drawn by
+  -- the countdown's own colour curve over the time left (the game evaluates it), no looks needed. Returns
+  -- { sub, x, edge, below, above, key } or nil. edge: where the curve turns to the 'above' colour; the
+  -- threshold itself belongs to the side of the first condition's operator ('<=' / '>': below).
+  function Engine.DurationColorLooks(data, tl, used)
+    local roles = Engine.SubTextRoles(data)
+    local n
+    local colour = {}
+    for _, side in ipairs({ "below", "above" }) do
+      for _, chg in ipairs(tl[side].changes) do
+        local p = chg.path
+        if not (#p == 2 and p[2] == "text_color" and roles[p[1]] == "p" and type(chg.value) == "table") then
+          return nil
+        end
+        if n and n ~= p[1] then return nil end
+        n = p[1]
+        colour[side] = chg.value
+      end
+    end
+    if not n then return nil end
+    local base = (data.subRegions[n] and data.subRegions[n].text_color) or { 1, 1, 1, 1 }
+    local function C(c) return { c[1] or 1, c[2] or 1, c[3] or 1, c[4] or 1 } end
+    local below, above = C(colour.below or base), C(colour.above or base)
+    local firstOp
+    for ci in pairs(used or {}) do
+      local ch = data.conditions[ci] and data.conditions[ci].check
+      if ch and (not firstOp or ci < firstOp[1]) then firstOp = { ci, ch.op } end
+    end
+    local op = firstOp and firstOp[2]
+    local edge = (op == "<=" or op == ">") and tl.x + 0.001 or tl.x
+    return { sub = n, x = tl.x, edge = edge, below = below, above = above,
+             key = ("%d|%s|%s|%s"):format(n, tostring(edge), table.concat(below, ","), table.concat(above, ",")) }
+  end
 end
 
 -- One aura2 trigger -> its part of the plan. Reasons it cannot be drawn go through no().
@@ -1394,8 +1428,9 @@ function Engine.Classify(data)
     if #r > 0 then return nil, r end
     local looks, lookConds, lookNotes
     if inf.mode == "active" then looks, lookConds, lookNotes = Engine.StackLooks(data, ti, rt, inf.stacks) end
-    -- conditions on the time left: two looks (from X up, below X), each behind a time gate (as for stacks)
-    local timeLooks
+    -- conditions on the time left: two looks (from X up, below X), each behind a time gate (as for stacks);
+    -- when all they change is the colour of the %p text, the countdown's colour curve instead (durColor)
+    local timeLooks, durColor
     if inf.group then
       local tl = Engine.TimeLooks(data, ti, rt)
       if looks or tl then
@@ -1413,9 +1448,14 @@ function Engine.Classify(data)
         lookNotes = lookNotes or {}
         lookNotes[#lookNotes + 1] = T("'Remaining Duration' conditions are not drawn together with 'Stack Count' or conditions on stacks")
       elseif tl then
-        looks = { { time = { side = "above", x = tl.x }, changes = tl.above.changes, key = tl.above.key },
-                  { time = { side = "below", x = tl.x }, changes = tl.below.changes, key = tl.below.key } }
-        lookConds, timeLooks = tconds, tl.x
+        durColor = Engine.DurationColorLooks(data, tl, tconds)
+        if durColor then
+          lookConds = tconds             -- drawn by the countdown's own colour curve: no looks, one slot
+        else
+          looks = { { time = { side = "above", x = tl.x }, changes = tl.above.changes, key = tl.above.key },
+                    { time = { side = "below", x = tl.x }, changes = tl.below.changes, key = tl.below.key } }
+          lookConds, timeLooks = tconds, tl.x
+        end
       end
     end
     local looksKey
@@ -1426,6 +1466,8 @@ function Engine.Classify(data)
           l.time and (l.time.side .. l.time.x) or "", l.key)
       end
       looksKey = table.concat(parts, "|")
+    elseif durColor then
+      looksKey = "dur:" .. durColor.key
     end
     local key = table.concat({ unit, inf.mode, inf.key, inf.group and inf.group.key or "",
                                refreshM and ("M:" .. refreshM.key) or "" }, ";")
@@ -1438,7 +1480,7 @@ function Engine.Classify(data)
              unseen = Engine.JoinLists(inf.unseen, refreshM and refreshM.unseen),
              auraTriggers = auraTriggers, gates = gates, stacks = inf.stacks,
              looks = looks, looksKey = looksKey, lookConds = lookConds, lookNotes = lookNotes, timeLooks = timeLooks,
-             group = inf.group }
+             durColor = durColor, group = inf.group }
   end
 
   if rt ~= "icon" then
@@ -1890,6 +1932,8 @@ function Engine.Explain(data, plan, reasons)
     end
     if plan.timeLooks then
       txt = txt .. " " .. T("|cff33ff99Conditions on the time left:|r drawn as two looks, from %s s up and below %s s, each by an aura slot of its own behind a time gate (the game formats the time and the gate hangs on the text), so the game shows the one that matches, in combat too."):format(tostring(plan.timeLooks), tostring(plan.timeLooks))
+    elseif plan.durColor then
+      txt = txt .. " " .. T("|cff33ff99Conditions on the time left:|r the countdown changes its colour at %s s by a colour curve over the time left, which the game evaluates, in combat too."):format(tostring(plan.durColor.x))
     elseif plan.looks then
       local parts = {}
       for _, l in ipairs(plan.looks) do
@@ -2702,7 +2746,7 @@ local function MirrorTexts(att, region, data, useShadows, plan)
   local s = att.shadows
   att.mirrored = {}
   local roles, plans = Engine.SubTextRoles(data)
-  local haveP, haveS, haveN, pair
+  local haveP, haveS, haveN, pair, loneP
   local ri = 0
   for i, sub in ipairs(data.subRegions or {}) do
     if Private.subRegionTypes[sub.type] then
@@ -2712,7 +2756,10 @@ local function MirrorTexts(att, region, data, useShadows, plan)
       if role and live then att.mirrored[live] = true end
       if role == "p" then
         haveP = true
-        if useShadows then StyleShadowText(region, s.duration, sub, false, att); s.duration:Show() end
+        if useShadows then
+          StyleShadowText(region, s.duration, sub, false, att); s.duration:Show()
+          loneP = { sub = sub, spec = plan and plan.durColor and plan.durColor.sub == i and plan.durColor or nil }
+        end
       elseif role == "s" then
         haveS = true
         if useShadows then StyleShadowText(region, s.count, sub, true, att); s.count:SetAlpha(1) end
@@ -2731,6 +2778,8 @@ local function MirrorTexts(att, region, data, useShadows, plan)
     if not haveP then s.duration:Hide() end     -- Shown is not a secret aspect of the duration text
     if not haveS then s.count:SetAlpha(0) end   -- Shown IS secret on the count text; Alpha is ours
     if s.name and not haveN then s.name:SetAlpha(0) end
+    -- a lone %p first (it takes the duration text over from a pair's binding), then the pair let go
+    if loneP and att.button then Engine.BindLoneDuration(att, loneP.sub, loneP.spec) end
     if not pair then Engine.UnbindPair(att) end
   end
 end
@@ -3671,11 +3720,41 @@ do
   function Engine.UnbindPair(att)
     if not (att.button and (att.durBind or att.countBind)) then return end
     local s = att.shadows
-    if att.durBind then
+    local lone = type(att.durBind) == "string" and att.durBind:find("^lone|") ~= nil
+    if att.durBind and not lone then
       pcall(att.button.SetDurationText, att.button, s.duration, DurationOptions(nil, true, nil, { 1, 1, 1, 1 }))
     end
     if att.countBind then pcall(att.button.SetApplicationCount, att.button, s.count, nil) end
-    att.durBind, att.countBind, att.pairWords = nil, nil, nil
+    if not lone then att.durBind = nil end
+    att.countBind, att.pairWords = nil, nil
+  end
+
+  -- A lone %p in its sub-text's colour (BuildSlot's plain binding draws it white), or with the colour curve
+  -- of its conditions on the time left (spec: plan.durColor), which the game evaluates on the time left.
+  -- Bound once per colour (att.durBind "lone|...").
+  function Engine.BindLoneDuration(att, sub, spec)
+    if not (att.button and C_CurveUtil and CreateColor) then return end
+    local c = sub.text_color or { 1, 1, 1, 1 }
+    local key = "lone|" .. tostring(att.button) .. "|"
+      .. (spec and spec.key or table.concat({ c[1] or 1, c[2] or 1, c[3] or 1, c[4] or 1 }, ","))
+    if att.durBind == key then return end
+    -- white on BuildSlot's plain binding is white already
+    local white = (c[1] or 1) == 1 and (c[2] or 1) == 1 and (c[3] or 1) == 1 and (c[4] or 1) == 1
+    if not spec and white and att.durBind == nil then return end
+    local opts
+    if spec then
+      local P = (Enum and Enum.DurationTextBindingProperty) or {}
+      local cc = C_CurveUtil.CreateColorCurve()
+      cc:SetType(Enum.LuaCurveType.Step)        -- a point rules from its own x on
+      local b, a = spec.below, spec.above
+      cc:AddPoint(0, CreateColor(b[1], b[2], b[3], b[4]))
+      cc:AddPoint(spec.edge, CreateColor(a[1], a[2], a[3], a[4]))
+      opts = { textColor = { curve = cc, property = P.RemainingDuration or 0 } }
+    else
+      opts = DurationOptions(nil, true, nil, c)
+    end
+    local ok = pcall(att.button.SetDurationText, att.button, att.shadows.duration, opts)
+    att.durBind = ok and key or nil
   end
 
   -- Where a Text display with time and stacks hangs its two texts: the point of the button that stays put
@@ -5165,7 +5244,7 @@ do
       for i = #ids, 1, -1 do rev[#rev + 1] = ids[i] end
       ids = rev
     end
-    local unit
+    local units, unitAt, unitIx = {}, {}, {}
     local sizes = {}
     for _, id in ipairs(ids) do
       local cd = WA.GetData(id)
@@ -5176,9 +5255,8 @@ do
       if p.stacks then
         return nil, T("'%s' uses 'Stack Count' (its place would stay empty while the count does not match)"):format(tostring(id))
       end
-      if p.looks then
-        return nil, T("'%s' has conditions on its stacks or time left (drawn as looks of their own)"):format(tostring(id))
-      end
+      -- looks (conditions on the stacks or the time left) are fine: they cover the whole range, so the display
+      -- is drawn whenever its aura is up, and all of them sit on the host that moves onto the chain
       if p.group then
         return nil, T("'%s' follows a whole group (drawn as a copy per member)"):format(tostring(id))
       end
@@ -5186,16 +5264,22 @@ do
         return nil, T("'%s' is not shown on Aura(s) Found (only those leave a gap to close)"):format(tostring(id))
       end
       for _, sub in ipairs(cd.subRegions or {}) do
-        if Private.subRegionTypes[sub.type] and not HIDE_ON[sub.type] and sub.type ~= "subbackground" then
+        -- background and foreground only order frame levels (every Progress Bar has a foreground)
+        if Private.subRegionTypes[sub.type] and not HIDE_ON[sub.type] and sub.type ~= "subbackground"
+           and sub.type ~= "subforeground" then
           return nil, T("'%s' has a %s (a packed display keeps only texts, glows and borders)"):format(tostring(id), tostring(sub.type))
         end
       end
       if g.centred then
-        if unit and unit ~= p.unit then return nil, T("its children watch different units (a centred group is measured on one)") end
-        unit = p.unit
+        local u = tostring(p.unit)
+        if not unitIx[u] then units[#units + 1] = p.unit; unitIx[u] = #units end
+        unitAt[id] = unitIx[u]
+        sizes[#sizes] = sizes[#sizes] .. "@" .. u
       end
     end
-    return { axis = g.axis, sign = g.sign, centred = g.centred, ids = ids, space = space, unit = unit,
+    return { axis = g.axis, sign = g.sign, centred = g.centred, ids = ids, space = space,
+             units = g.centred and units or nil, unitAt = g.centred and unitAt or nil,
+             selfPoint = tostring(gdata.selfPoint or "TOP"):upper(),
              sig = table.concat({ grow, ct, tostring(space), tostring(gdata.align), tostring(gdata.selfPoint),
                                   table.concat(ids, "\1"), table.concat(sizes, ",") }, "|") }
   end
@@ -5203,7 +5287,7 @@ do
   local function Retire(st)
     if not st then return end
     for _, link in pairs(st.links) do pcall(link.SetUnit, link, nil); link:Hide() end
-    if st.total then pcall(st.total.SetUnit, st.total, nil); st.total:Hide() end
+    for _, hc in ipairs(st.half or {}) do pcall(hc.SetUnit, hc, nil); hc:Hide() end
     if st.sortc then pcall(st.sortc.SetUnit, st.sortc, nil); st.sortc:Hide() end
     st.root:Hide()
   end
@@ -5217,20 +5301,27 @@ do
     local st = states[gid]
     if st and st.sig == gp.sig and st.gregion == gregion then return st end
     Retire(st)
-    st = { sig = gp.sig, gregion = gregion, gp = gp, links = {}, lg = {}, tg = {} }
+    st = { sig = gp.sig, gregion = gregion, gp = gp, links = {}, lg = {}, half = {}, hg = {}, hunit = {} }
     st.root = CreateFrame("Frame", nil, gregion, "DisableUntrustedLayoutScriptsTemplate")
     st.root:SetSize(1, 1)
     st.root:SetPoint("CENTER", gregion, "CENTER")
     local horiz = gp.axis == "x"
     if gp.centred then
-      local t = NewContainer(st)
-      if horiz then
-        t:SetFlowLayoutPadding(1, 1, 0, 0)
-      else
-        t:SetFlowLayoutAxis(AnchorUtil.FlowLayoutAxis.Vertical)
-        t:SetFlowLayoutPadding(0, 0, 1, 1)
+      for j = 1, #gp.units do
+        local hc = NewContainer(st)
+        if horiz then
+          hc:SetFlowLayoutPadding(1, 0, 0, 0)
+        else
+          hc:SetFlowLayoutAxis(AnchorUtil.FlowLayoutAxis.Vertical)
+          hc:SetFlowLayoutPadding(0, 0, 1, 0)
+        end
+        local prev = st.half[j - 1]
+        if prev then
+          if horiz then hc:SetPoint("TOPRIGHT", prev, "TOPLEFT", 1, 0)
+          else hc:SetPoint("TOPLEFT", prev, "BOTTOMLEFT", 0, 1) end
+        end
+        st.half[j] = hc
       end
-      st.total = t
     end
     for k, id in ipairs(gp.ids) do
       local link = NewContainer(st)
@@ -5252,6 +5343,39 @@ do
   -- from (WA leaves out children that are not loaded; their links stay 1 px, their aura being nowhere).
   -- That is the first child, unless WA sorts the group: then it shuffles its children, but its row still
   -- starts at the same place. A centred one hangs by the middle of WA's row.
+  -- WA lays the row out from one point of the group region (its 'Anchor' self point), which stays put
+  -- whichever children it shows: a row starts there, a centred row is centred on it. So the chain hangs on
+  -- that point, at the offset measured now, and does not follow a child that moves when others hide (a
+  -- target's displays go when the target does, the player's stay). Across the row it sits on the point too
+  -- (st.refCross), and every host keeps its own offset from it. A group without a rect: on the child.
+  local function AnchorGroupPoint(st, gp, first, lo, hi)
+    local gl, gb, gw, gh = Rect(st.gregion)
+    local fr = FRAC[gp.selfPoint or ""]
+    if not (gl and fr) then return false end
+    local fl, fb, fw, fh = Rect(first)
+    local fe, ge = first:GetEffectiveScale(), st.gregion:GetEffectiveScale()
+    -- the group's point in the children's units (the chain measures in those)
+    local gx, gy = (gl + fr[1] * gw) * ge / fe, (gb + fr[2] * gh) * ge / fe
+    local function At(f, point, x, y) f:SetPoint(point, st.gregion, gp.selfPoint, x - gx, y - gy) end
+    local link = st.links[gp.ids[1]]
+    if gp.centred then
+      local h1, hn = st.half[1], st.half[#st.half]
+      h1:ClearAllPoints()
+      if gp.axis == "x" then
+        At(h1, "TOPRIGHT", (lo + hi) / 2, gy)
+        link:SetPoint("TOPLEFT", hn, "TOPLEFT", gp.space / 2, 0)
+      else
+        At(h1, "TOPLEFT", gx, (lo + hi) / 2)
+        link:SetPoint("BOTTOMLEFT", hn, "BOTTOMLEFT", 0, gp.space / 2)
+      end
+    elseif gp.axis == "x" and gp.sign > 0 then At(link, "TOPLEFT", fl - 1, gy)
+    elseif gp.axis == "x" then At(link, "TOPRIGHT", fl + fw + 1, gy)
+    elseif gp.sign > 0 then At(link, "BOTTOMLEFT", gx, fb - 1)
+    else At(link, "TOPLEFT", gx, fb + fh + 1) end
+    st.refCross = gp.axis == "x" and gy or gx
+    return true
+  end
+
   local function AnchorStart(st)
     local gp = st.gp
     local x = gp.axis == "x"
@@ -5279,15 +5403,17 @@ do
     local k = 1
     local link = st.links[gp.ids[1]]
     link:ClearAllPoints()
+    if AnchorGroupPoint(st, gp, first, lo, hi) then return true end
+    st.refCross = nil
     if gp.centred then
-      local t = st.total
-      t:ClearAllPoints()
+      local h1, hn = st.half[1], st.half[#st.half]
+      h1:ClearAllPoints()
       if gp.axis == "x" then
-        t:SetPoint("TOP", first, "TOPLEFT", (hi - fl) / 2 * k, 0)
-        link:SetPoint("TOPLEFT", t, "TOPLEFT", 0, 0)
+        h1:SetPoint("TOPRIGHT", first, "TOPLEFT", (hi - fl) / 2 * k, 0)
+        link:SetPoint("TOPLEFT", hn, "TOPLEFT", gp.space / 2 * k, 0)
       else
-        t:SetPoint("LEFT", first, "BOTTOMLEFT", 0, (hi - fb) / 2 * k)
-        link:SetPoint("BOTTOMLEFT", t, "BOTTOMLEFT", 0, 0)
+        h1:SetPoint("TOPLEFT", first, "BOTTOMLEFT", 0, (hi - fb) / 2 * k)
+        link:SetPoint("BOTTOMLEFT", hn, "BOTTOMLEFT", 0, gp.space / 2 * k)
       end
     elseif gp.axis == "x" and gp.sign > 0 then link:SetPoint("TOPLEFT", first, "TOPLEFT", -1, 0)
     elseif gp.axis == "x" then link:SetPoint("TOPRIGHT", first, "TOPRIGHT", 1, 0)
@@ -5339,18 +5465,22 @@ do
     end
     if rec.unit ~= plan.unit then link:SetUnit(plan.unit); rec.unit = plan.unit end
     pcall(link.UpdateAllAuras, link)
-    if st.total then
-      local key, extra = "t" .. k, { groupSpacing = gp.space }
-      local trec = st.tg[id]
-      if not trec then
-        local ok, err = MeasureGroup(st.total, key, plan, w, h, extra)
+    if gp.centred then
+      local j = gp.unitAt[id]
+      local hc = st.half[j]
+      if gp.units[j] ~= plan.unit then return false end        -- re-planned next time (Dyn.Refresh)
+      local key = "h" .. k
+      local hw, hh = horiz and (w + gp.space) / 2 or w, horiz and h or (h + gp.space) / 2
+      local hrec = st.hg[id]
+      if not hrec then
+        local ok, err = MeasureGroup(hc, key, plan, hw, hh)
         if not ok then return false, err end
-        st.tg[id] = { filter = plan.filterString, pkey = plan.key, ew = w, eh = h }
+        st.hg[id] = { filter = plan.filterString, pkey = plan.key, ew = hw, eh = hh }
       else
-        SyncMeasure(st.total, key, trec, plan, w, h, extra)
+        SyncMeasure(hc, key, hrec, plan, hw, hh)
       end
-      if st.totalUnit ~= gp.unit then st.total:SetUnit(gp.unit); st.totalUnit = gp.unit end
-      pcall(st.total.UpdateAllAuras, st.total)
+      if st.hunit[j] ~= plan.unit then hc:SetUnit(plan.unit); st.hunit[j] = plan.unit end
+      pcall(hc.UpdateAllAuras, hc)
     end
     return true
   end
@@ -5362,9 +5492,12 @@ do
     local rl, rb, _, rh = Rect(region)
     local fl, fb, _, fh = Rect(st.ref)
     -- across the chain: WA's own offset from the chain's start (its alignment); kept from last time
-    -- while the display or the start is not shown (no target)
+    -- while the display or the start is not shown (no target). On the group's point: from that point.
     local cross
-    if rl and fl and region:IsShown() and st.ref:IsShown() then
+    if rl and region:IsShown() and st.refCross then
+      cross = gp.axis == "x" and ((rb + rh) - st.refCross) or (rl - st.refCross)
+      att.dynCross = cross
+    elseif rl and fl and region:IsShown() and st.ref:IsShown() and not st.refCross then
       cross = gp.axis == "x" and ((rb + rh) - (fb + fh)) or (rl - fl)
       att.dynCross = cross
     else
@@ -5400,10 +5533,12 @@ do
     return type(rel) == "table" and rel ~= att.host and Under(rel, region) and not Under(rel, att.host)
   end
 
-  local function Rebase(att, region, obj, pts)
+  -- owner: whose anchors these are (a look's variant keeps its own; default the display's). Returns false
+  -- when the object stays on WA's frames for now (not laid out yet, never placed before): try again.
+  local function Rebase(att, region, obj, pts, owner)
     local any = false
     for _, p in ipairs(pts) do if OnWA(att, region, p[2]) then any = true end end
-    if not any then return end
+    if not any then return true end
     att.rebasedPts = att.rebasedPts or setmetatable({}, { __mode = "k" })
     local gl, gb = Rect(region)
     local out = {}
@@ -5422,18 +5557,20 @@ do
       end
     end
     out = out or att.rebasedPts[obj]
-    if not out then return end
+    if not out then return false end
     att.rebasedPts[obj] = out
     obj:ClearAllPoints()
     for _, p in ipairs(out) do obj:SetPoint(p[1], p[2], p[3], p[4] or 0, p[5] or 0) end
     att.rebased = att.rebased or {}
-    att.rebased[obj] = true
+    att.rebased[obj] = owner or att
+    return true
   end
 
   -- back on WA's frames, as last set (a fresh look may have set them again since)
   local function Unbase(att)
-    for obj in pairs(att.rebased or {}) do
-      local pts = att.anchors and att.anchors[obj]
+    for obj, owner in pairs(att.rebased or {}) do
+      if type(owner) ~= "table" then owner = att end
+      local pts = owner.anchors and owner.anchors[obj]
       if pts then
         obj:ClearAllPoints()
         for _, p in ipairs(pts) do obj:SetPoint(p[1], p[2], p[3], p[4] or 0, p[5] or 0) end
@@ -5583,6 +5720,9 @@ do
     end
     local tl, _, notes = Engine.TimeLooks(data, 1, kind == "aurabar" and "aurabar" or "icon")
     notes = notes or {}
+    -- only the %p text's colour: every frame's countdown carries the colour curve itself (MirrorTexts)
+    local dp = data.uid and decided[data.uid]
+    if tl and dp and dp.durColor then tl = nil end
     local usedBy = tl and kind ~= "aurabar" and Engine.UsesDurationText(data)
     if tl and kind == "aurabar" then
       notes[#notes + 1] = T("its 'Remaining Duration' conditions are not drawn in a sorted row of bars, so far")
@@ -5696,7 +5836,8 @@ do
              glow = glow, time = time, notes = notes,
              sig = table.concat({ "sorted", tostring(gdata.sort), grow, tostring(space), tostring(limit),
                                   tostring(gdata.selfPoint), table.concat(ids, "\1"), table.concat(unionList, ","),
-                                  tplLook, unit, filterString, otherKey, time and time.key or "" }, "|") }
+                                  tplLook, unit, filterString, otherKey, time and time.key or "",
+                                  first.durColor and first.durColor.key or "" }, "|") }
   end
 
   -- flow per grow: axis, growth (horizontal, vertical) and the corner the first frame takes
@@ -5951,7 +6092,18 @@ do
       return false
     end
     att.dynRetry = nil
-    for obj, pts in pairs(att.anchors or {}) do Rebase(att, region, obj, pts) end
+    local placed = true
+    for obj, pts in pairs(att.anchors or {}) do
+      if not Rebase(att, region, obj, pts) then placed = false end
+    end
+    -- the looks' variants (time or stack conditions) sit on the host already; their copies on WA's frames move too
+    for _, v in pairs(att.variants or {}) do
+      for obj, pts in pairs(v.anchors or {}) do
+        if not Rebase(att, region, obj, pts, v) then placed = false end
+      end
+    end
+    -- a copy that could not be placed yet (the display hidden): again when WA lays the display out
+    if not placed then att.dynRetry = 1 end
     HideWASubs(att, region, data)
     return true
   end
@@ -5974,7 +6126,9 @@ do
       for id, rec in pairs(st.lg) do
         if unit == nil or rec.unit == unit then pcall(st.links[id].UpdateAllAuras, st.links[id]) end
       end
-      if st.total and (unit == nil or st.totalUnit == unit) then pcall(st.total.UpdateAllAuras, st.total) end
+      for j, hc in ipairs(st.half or {}) do
+        if unit == nil or st.hunit[j] == unit then pcall(hc.UpdateAllAuras, hc) end
+      end
       if st.sortc and (unit == nil or st.gp.unit == unit) then pcall(st.sortc.UpdateAllAuras, st.sortc) end
     end
   end
