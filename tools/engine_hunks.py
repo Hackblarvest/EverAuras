@@ -374,6 +374,15 @@ end
          "    ok, decompressed = pcall(C_EncodingUtil.DecompressString, decoded, Enum.CompressionMethod.Deflate)\n"
          "    -- Forever: the API is documented as MayReturnNothing; a bad string must give the message, not a Lua error\n"
          "    if not(ok) or type(decompressed) ~= \"string\" then\n"),
+        # Aura strings from ForeverAuras (data version 91, their own aura trigger) are brought onto this
+        # addon's data in place, before the version check below and before PreAdd (ForeverImport.lua).
+        ("  local highestVersion = data.internalVersion or 0\n",
+         "  -- Forever: aura strings from ForeverAuras are brought onto this addon's data first (ForeverImport.lua)\n"
+         "  if Private.ForeverImport and Private.ForeverImport.AdoptForeign then\n"
+         "    local ok, err = pcall(Private.ForeverImport.AdoptForeign, data, children)\n"
+         "    if not ok then geterrorhandler()(err) end\n"
+         "  end\n"
+         "  local highestVersion = data.internalVersion or 0\n"),
     ],
 }
 
@@ -439,7 +448,8 @@ CHECKS = {
     "M33kAuras/Types.lua": ["a new aura starts as one\n        type = \"aura2\","],
     "M33kAuras/Modernize.lua": ["local foreverMissed90 = data.internalVersion == 90 and data.internalVersionM33kAuras == nil"],
     "M33kAuras/Transmission.lua": ["if not ok or type(compressed) ~= \"string\" then",
-                                   "if not(ok) or type(decompressed) ~= \"string\" then"],
+                                   "if not(ok) or type(decompressed) ~= \"string\" then",
+                                   "pcall(Private.ForeverImport.AdoptForeign, data, children)"],
     "M33kAurasOptions/TriggerOptions.lua": ["type = \"aura2\", -- Forever: Aura triggers are the ones"],
     "M33kAurasOptions/OptionsFrames/OptionsFrame.lua": ["local discordButton = addFooter(L[\"Discord\"]"],
     "M33kAuras/M33kAuras.toc": ["\nForeverEngineAura.lua\n"],
