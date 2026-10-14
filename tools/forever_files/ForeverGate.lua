@@ -8,9 +8,9 @@ One owner for the two widget methods these features shadow, so they can be combi
           answers with the base so animation seeds never see a gated value.
             range  (engine-driven displays) in range -> base, out of range / no unit -> 0. A secret
                    answer goes through C_CurveUtil.EvaluateColorValueFromBoolean.
-            power  "hide while full": UnitPowerPercent evaluated against a curve whose output is
-                   the base alpha below full and 0 at full. The result is secret; only the engine
-                   ever sees the percentage.
+            power  "hide while full" (or at / above, or below, a threshold): UnitPowerPercent
+                   evaluated against a curve whose output is the base alpha where the display shows
+                   and 0 where it hides. The result is secret; only the engine ever sees the percentage.
   colour  the SetVertexColor of the display's own texture (Icon: the icon; Progress Bar: the bar
           foreground). Below the threshold the low colour, else the requested colour, again through
           UnitPowerPercent + curves (one per channel).
@@ -70,7 +70,21 @@ end
 local function PowerAlpha(st, base)
   local p = st.power
   if issecretvalue(base) then return base end         -- cannot bake a secret into a curve; leave it
-  if p.curveBase ~= base then SetEdge(p.curve, base, 0, FULL_EDGE[1], FULL_EDGE[2]); p.curveBase = base end
+  local key = ("%s/%s/%s/%s"):format(base, p.mode, p.at, tostring(p.strict))
+  if p.curveKey ~= key then
+    -- the edge sits just below the threshold, or just above it when the threshold itself belongs to
+    -- the other side (strict: hidden above it / at or below it)
+    local x1, x2 = p.at - EDGE, p.at
+    if p.strict then x1, x2 = p.at, p.at + EDGE end
+    if p.mode == "above" then                           -- hidden at or above the threshold (strict: above)
+      SetEdge(p.curve, base, 0, x1, x2)
+    elseif p.mode == "below" then                       -- hidden below it (strict: at or below)
+      SetEdge(p.curve, 0, base, x1, x2)
+    else                                                -- hidden while full
+      SetEdge(p.curve, base, 0, FULL_EDGE[1], FULL_EDGE[2])
+    end
+    p.curveKey = key
+  end
   local v = Percent(p.unit, p.ptype, p.curve)
   if v == nil then return base end
   return v
@@ -140,8 +154,10 @@ end
 local watched = {}   -- unit -> true while any gate uses it
 local function Watch(unit) watched[unit] = true end
 
----------------------------------------------------------------------------- power: hide while full
-function G.SetPowerHide(region, unit, ptype)
+---------------------------------------------------------------------------- power: hide while full / at a threshold
+-- mode: "full" (default), "above" (hidden at or above `at`) or "below" (hidden below `at`); at: 0..1;
+-- strict: the threshold itself belongs to the other side (hidden above it / at or below it)
+function G.SetPowerHide(region, unit, ptype, mode, at, strict)
   local st = State(region)
   local p = st.power
   if not p then
@@ -151,6 +167,9 @@ function G.SetPowerHide(region, unit, ptype)
   end
   if not InstallAlpha(st) then return false end
   p.unit, p.ptype = unit, ptype
+  p.mode = (mode == "above" or mode == "below") and mode or "full"
+  p.at = math.min(math.max(tonumber(at) or 0.3, 0.01), 0.99)
+  p.strict = strict == true
   st.power = p
   Watch(unit)
   ApplyAlpha(st)
@@ -255,6 +274,7 @@ end)
 local POWER_DEFAULTS = {
   foreverPowerHide = false, foreverPowerColor = false, foreverPowerUnit = "player", foreverPowerType = 0,
   foreverPowerThreshold = 30, foreverPowerLowColor = { 1, 0.25, 0.25, 1 },
+  foreverPowerHideMode = "full", foreverPowerHideAt = 20,
 }
 
 local function PowerTexture(region, data)
@@ -266,7 +286,12 @@ local function ApplyPowerOptions(region, data)
   if not (region and data) then return end
   local unit = data.foreverPowerUnit or "player"
   local ptype = tonumber(data.foreverPowerType) or 0
-  if data.foreverPowerHide then G.SetPowerHide(region, unit, ptype) else G.ClearPowerHide(region) end
+  if data.foreverPowerHide then
+    G.SetPowerHide(region, unit, ptype, data.foreverPowerHideMode, (tonumber(data.foreverPowerHideAt) or 20) / 100,
+      data.foreverPowerHideStrict)
+  else
+    G.ClearPowerHide(region)
+  end
   local tex, normal = PowerTexture(region, data)
   if data.foreverPowerColor and tex then
     G.SetPowerColor(region, tex, unit, ptype, (tonumber(data.foreverPowerThreshold) or 30) / 100,
@@ -277,7 +302,8 @@ local function ApplyPowerOptions(region, data)
 end
 G.ApplyPowerOptions = ApplyPowerOptions
 
-for _, rt in ipairs({ "icon", "aurabar" }) do
+-- the alpha gate on every display kind with a frame of its own; the colour only on icons and bars
+for _, rt in ipairs({ "icon", "aurabar", "text", "texture", "progresstexture" }) do
   local regionType = Private.regionTypes and Private.regionTypes[rt]
   if regionType and regionType.modify and regionType.default then
     for k, v in pairs(POWER_DEFAULTS) do

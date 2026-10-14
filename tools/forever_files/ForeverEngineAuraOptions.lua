@@ -18,8 +18,9 @@ table.insert(OptionsPrivate.registerRegions, function()
   local Engine = Private and Private.ForeverEngine
   if not Engine then return end
 
-  -- Power gates (ForeverGate.lua): hide while full / colour below a threshold, for Icons and Progress
-  -- Bars, engine-driven or not. The values are secret on Forever; Blizzard evaluates them for us.
+  -- Power gates (ForeverGate.lua): hide while full or at / below a threshold (Icons, Progress Bars,
+  -- Progress Textures, Textures, Texts) and colour below a threshold (Icons and Progress Bars), engine-driven
+  -- or not. The values are secret on Forever; Blizzard evaluates them for us.
   local POWER_UNITS = { player = T("Player"), target = T("Target"), focus = T("Focus"), pet = T("Pet") }
   local POWER_TYPES = { [0] = T("Mana"), [1] = T("Rage"), [3] = T("Energy"), [2] = T("Focus") }
   local function AddPowerOptions(group, data, base)
@@ -35,10 +36,25 @@ table.insert(OptionsPrivate.registerRegions, function()
     }
     group.foreverPowerHide = {
       type = "toggle", order = base + 0.02, width = WA.normalWidth,
-      name = T("Hide while full"),
-      desc = T("Hides the display while the chosen resource is full. Shown again as soon as any is missing."),
+      name = T("Hide by the resource"),
+      desc = T("Hides the display while the chosen resource is full, or at / above a threshold, or below it (choose below). For example a 'LOW MANA' text hidden at or above 20%."),
       get = function() return data.foreverPowerHide == true end,
       set = function(_, v) data.foreverPowerHide = v and true or false; redo() end,
+    }
+    group.foreverPowerHideMode = {
+      type = "select", order = base + 0.021, width = WA.normalWidth,
+      name = T("Hide"),
+      values = { full = T("While full"), above = T("At or above the threshold"), below = T("Below the threshold") },
+      get = function() return data.foreverPowerHideMode or "full" end,
+      set = function(_, v) data.foreverPowerHideMode, data.foreverPowerHideStrict = v, nil; redo() end,
+      hidden = function() return not data.foreverPowerHide end,
+    }
+    group.foreverPowerHideAt = {
+      type = "range", order = base + 0.022, width = WA.normalWidth,
+      name = T("Hide threshold (%)"), min = 1, max = 99, step = 1,
+      get = function() return tonumber(data.foreverPowerHideAt) or 20 end,
+      set = function(_, v) data.foreverPowerHideAt, data.foreverPowerHideStrict = v, nil; WA.Add(data) end,
+      hidden = function() return not data.foreverPowerHide or (data.foreverPowerHideMode or "full") == "full" end,
     }
     group.foreverPowerColor = {
       type = "toggle", order = base + 0.03, width = WA.normalWidth,
@@ -46,6 +62,7 @@ table.insert(OptionsPrivate.registerRegions, function()
       desc = T("Colours the icon or the bar with the low colour while the resource is below the threshold. Applies to the display's own icon or bar texture (not to an engine-drawn aura icon, and not to a gradient bar)."),
       get = function() return data.foreverPowerColor == true end,
       set = function(_, v) data.foreverPowerColor = v and true or false; redo() end,
+      hidden = function() return data.regionType ~= "icon" and data.regionType ~= "aurabar" end,
     }
     group.foreverPowerUnit = {
       type = "select", order = base + 0.04, width = WA.normalWidth,
@@ -221,7 +238,10 @@ table.insert(OptionsPrivate.registerRegions, function()
       texOptions.create = function(id, data)
         local options = origTexCreate(id, data)
         local group = type(options) == "table" and options[rt]
-        if type(group) == "table" then AddEngineOptions(group, data) end
+        if type(group) == "table" then
+          AddEngineOptions(group, data)
+          if rt == "progresstexture" or rt == "texture" or rt == "text" then AddPowerOptions(group, data, 101) end
+        end
         return options
       end
     end
