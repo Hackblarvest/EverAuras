@@ -1199,6 +1199,12 @@ do
   function TextPlan(data, text)
     local parts = ParseText(tostring(text or data.displayText or ""))
     local single, auraIdx = SingleSpell(data)
+    -- the Aura trigger whose aura is drawn: the first that is not shown on Missing (a refresh icon's
+    -- Found trigger), else the first one
+    for i, tr in ipairs(type(data.triggers) == "table" and data.triggers or {}) do
+      local t = tr and tr.trigger
+      if t and t.type == "aura2" and t.matchesShowOn ~= "showOnMissing" then auraIdx = i; break end
+    end
     local kinds, nsyms, lits = {}, 0, false
     for _, part in ipairs(parts) do
       if part.sym then
@@ -2688,10 +2694,11 @@ function Engine.MirrorPair(att, region, sub, tp, plan)
   local c = sub.text_color or { 1, 1, 1, 1 }
   local sp = tp.single
   local key = table.concat({ Trim(sub.text_text), table.concat(c, ","), tostring(sp and (sp.name or sp.id) or ""),
-                             tostring(plan and plan.firstId or "") }, "|")
+                             tostring(plan and plan.firstId or ""), Engine.TimeFormatKey(sub, "text_text_format_") }, "|")
   local prefix, suffix = att.pairWords and att.pairWords[1], att.pairWords and att.pairWords[2]
   if att.durBind ~= key or att.countBind ~= key or not prefix then
-    prefix, suffix = Engine.BindPair(att, s.duration, s.count, tp, plan, c)
+    prefix, suffix = Engine.BindPair(att, s.duration, s.count, tp, plan, c,
+      function(sym) return Engine.TimeFormatter(sub, "text_text_format_", sym) end)
     att.durBind, att.countBind, att.pairWords = key, key, { prefix, suffix }
   end
   if base then
@@ -2709,6 +2716,15 @@ function Engine.PairSubPlan(data, txt)
   return tp and tp.kind == "pair" and tp or nil
 end
 
+-- A sub-text with the time only, other than a bare "%p": the trigger's form ("%1.p"), the total ("%t") or
+-- words around it ("Left: %p"), as TextPlan reads it (kind "dur"), or nil. Drawn on the duration text with
+-- the game's format string, as a Text display's.
+function Engine.DurSubPlan(data, txt)
+  if txt == "%p" or txt == "%s" or txt == "%n" then return nil end
+  local tp = TextPlan(data, txt)
+  return tp and tp.kind == "dur" and tp or nil
+end
+
 -- Which sub-texts take the button's duration text and stack count, first come, first served (each button
 -- has one of each), by index in data.subRegions: "p" / "s" a lone %p / %s, "pair" time and stacks in one
 -- text (plans[i]: its TextPlan), "time" / "stacks" a text whose time / stacks an earlier text already took
@@ -2716,6 +2732,7 @@ end
 -- and Engine.UsesDurationText.
 function Engine.SubTextRoles(data)
   local roles, plans, haveP, haveS = {}, {}, nil, nil
+  local durTexts = {}       -- the time alone in another form: only when no bare %p or pair takes the time
   for i, sub in ipairs(data.subRegions or {}) do
     if sub.type == "subtext" and sub.text_visible ~= false then
       local txt = Trim(sub.text_text)
@@ -2725,13 +2742,22 @@ function Engine.SubTextRoles(data)
         if not haveS then roles[i], haveS = "s", "lone" elseif haveS == "pair" then roles[i] = "stacks" end
       else
         local tp = Engine.PairSubPlan(data, txt)
+        local dtp = not tp and Engine.DurSubPlan(data, txt)
         if tp and not (haveP or haveS) then
           roles[i], plans[i], haveP, haveS = "pair", tp, "pair", "pair"
         elseif tp then
           roles[i] = haveP and "time" or "stacks"
+        elseif dtp then
+          durTexts[#durTexts + 1] = { i = i, tp = dtp }
         end
       end
     end
+  end
+  -- like a bare %p, on the duration text (plans[i]: how it reads), when nothing else took it; after a pair
+  -- it is hidden like a later %p
+  for k, d in ipairs(durTexts) do
+    if not haveP and k == 1 then roles[d.i], plans[d.i] = "p", d.tp
+    elseif haveP == "pair" then roles[d.i] = "time" end
   end
   return roles, plans
 end
@@ -2758,7 +2784,7 @@ local function MirrorTexts(att, region, data, useShadows, plan)
         haveP = true
         if useShadows then
           StyleShadowText(region, s.duration, sub, false, att); s.duration:Show()
-          loneP = { sub = sub, spec = plan and plan.durColor and plan.durColor.sub == i and plan.durColor or nil }
+          loneP = { sub = sub, tp = plans[i], spec = plan and plan.durColor and plan.durColor.sub == i and plan.durColor or nil }
         end
       elseif role == "s" then
         haveS = true
@@ -2779,7 +2805,7 @@ local function MirrorTexts(att, region, data, useShadows, plan)
     if not haveS then s.count:SetAlpha(0) end   -- Shown IS secret on the count text; Alpha is ours
     if s.name and not haveN then s.name:SetAlpha(0) end
     -- a lone %p first (it takes the duration text over from a pair's binding), then the pair let go
-    if loneP and att.button then Engine.BindLoneDuration(att, loneP.sub, loneP.spec) end
+    if loneP and att.button then Engine.BindLoneDuration(att, loneP.sub, loneP.spec, loneP.tp, plan) end
     if not pair then Engine.UnbindPair(att) end
   end
 end
@@ -3574,10 +3600,66 @@ do
       elseif part.key == "n" or part.key == "i" then
         out[#out + 1] = StaticSymbol(part.key, tp, plan)
       else
-        out[#out + 1] = dyn(part.key)
+        out[#out + 1] = dyn(part.key, part)
       end
     end
     return table.concat(out)
+  end
+
+  -- WA's own time format of a text's %p / %t (its 'Format: Time Format' options: Built-In, Old or Modern
+  -- Blizzard, more digits below a threshold) as a number formatter the game applies to the time it writes,
+  -- in combat too; nil when the text does not ask for one (then the game's own aura format: "4 s").
+  -- opts: the table holding the options; prefix: "text_text_format_" (sub-texts) or "displayText_format_"
+  -- (Text displays); sym: the placeholder as written ("p", "1.p", "t").
+  local timeFormatters = {}
+  function Engine.TimeFormatter(opts, prefix, sym)
+    if type(opts) ~= "table" or not sym then return nil end
+    local base = prefix .. sym
+    if opts[base .. "_format"] ~= "timed" then return nil end
+    if not (C_StringUtil and C_StringUtil.CreateNumericRuleFormatter) then return nil end
+    local kind = tonumber(opts[base .. "_time_format"]) or 0
+    local precision = math.max(1, math.min(3, math.floor(tonumber(opts[base .. "_time_precision"]) or 1)))
+    local threshold = tonumber(opts[base .. "_time_dynamic_threshold"]) or 60
+    if threshold >= 60 then threshold = 59.999 elseif threshold < 0 then threshold = 0 end
+    local key = ("%d|%d|%s"):format(kind, precision, tostring(threshold))
+    if timeFormatters[key] ~= nil then return timeFormatters[key] or nil end
+    timeFormatters[key] = false
+    local f
+    if (kind == 1 or kind == 2) and Private.GetTimeFormatter then
+      local ok, g = pcall(Private.GetTimeFormatter, kind, precision, threshold)   -- upstream's, as WA draws it
+      if ok then f = g end
+    else
+      -- Built-In: whole seconds rounded up (as WA counts), m:ss past a minute, more digits below the threshold
+      local R = (Enum and Enum.NumericRuleFormatRounding) or {}
+      local tiny = 2 ^ -1074
+      local bps = { { threshold = 0, format = "" } }
+      if threshold > 0 then
+        bps[#bps + 1] = { threshold = tiny, format = "%." .. precision .. "f" }
+        bps[#bps + 1] = { threshold = threshold, step = 1, rounding = R.Up or 1, format = "%d" }
+      else
+        bps[#bps + 1] = { threshold = tiny, step = 1, rounding = R.Up or 1, format = "%d" }
+      end
+      bps[#bps + 1] = { threshold = 60.001, step = 1, rounding = R.Up or 1, format = "%d:%02d",
+                        components = { { div = 60, step = 1, rounding = R.Down or 2 },
+                                       { mod = 60, step = 1, rounding = R.Down or 2 } } }
+      local ok, g = pcall(C_StringUtil.CreateNumericRuleFormatter)
+      if ok and g and pcall(g.SetBreakpoints, g, bps) then f = g end
+    end
+    timeFormatters[key] = f or false
+    return f
+  end
+
+  -- The time format options of a text, as a key (a binding is renewed when they change)
+  function Engine.TimeFormatKey(opts, prefix)
+    local t = {}
+    for k, v in pairs(type(opts) == "table" and opts or {}) do
+      if type(k) == "string" and k:sub(1, #prefix) == prefix
+         and (k:find("_time_", 1, true) or k:sub(-7) == "_format") then
+        t[#t + 1] = k .. "=" .. tostring(v)
+      end
+    end
+    table.sort(t)
+    return table.concat(t, ";")
   end
 
   local function HasSymbols(tp)
@@ -3684,29 +3766,39 @@ do
 
   -- The duration text's options for parts of a text (dtp: { parts, single }); bare: the time alone, in the
   -- game's own format. Its colour is the engine's: a constant colour curve carries WA's.
-  local function DurationOptions(dtp, bare, plan, c)
+  -- fmtOf(sym): WA's time format of that placeholder (Engine.TimeFormatter) or nil for the game's own;
+  -- bareSym: the placeholder of a bare time ("p", "1.p"), which then takes its format too.
+  local function DurationOptions(dtp, bare, plan, c, fmtOf, bareSym)
     local P = (Enum and Enum.DurationTextBindingProperty) or {}
     local opts = {}
     if C_CurveUtil and CreateColor then
       opts.textColor = { curve = ConstantColorCurve(c), property = P.RemainingDuration or 0 }
     end
     if not bare then
-      local fmt, comps = AuraDurationFormatter(), {}
-      local formatString = TextWith(dtp, plan, function(key)
-        comps[#comps + 1] = { property = key == "t" and (P.TotalDuration or 4) or (P.RemainingDuration or 0), formatter = fmt }
+      local fmt, comps, all = AuraDurationFormatter(), {}, true
+      local formatString = TextWith(dtp, plan, function(key, part)
+        local f = (fmtOf and fmtOf(part and part.sym or key)) or fmt
+        if not f then all = false end
+        comps[#comps + 1] = { property = key == "t" and (P.TotalDuration or 4) or (P.RemainingDuration or 0), formatter = f }
         return "{}"
       end)
-      if fmt then opts.textFormat = { formatString = formatString, components = comps } end
+      if all then opts.textFormat = { formatString = formatString, components = comps } end
+    elseif fmtOf and bareSym then
+      local f = fmtOf(bareSym)
+      if f then
+        opts.textFormat = { formatString = "{}", components = { { property = P.RemainingDuration or 0, formatter = f } } }
+      end
     end
     return opts
   end
 
   -- Time and stacks in one text (TextPlan kind "pair"): the duration text gets the time and the words on its
   -- side, the stack count the rest, in colour c. Returns the stacks' words before and after the number.
-  function Engine.BindPair(att, dur, count, tp, plan, c)
+  function Engine.BindPair(att, dur, count, tp, plan, c, fmtOf)
     local durParts = tp.durParts
     local bare = #durParts == 1 and durParts[1].key == "p"
-    pcall(att.button.SetDurationText, att.button, dur, DurationOptions({ parts = durParts, single = tp.single }, bare, plan, c))
+    pcall(att.button.SetDurationText, att.button, dur,
+      DurationOptions({ parts = durParts, single = tp.single }, bare, plan, c, fmtOf, bare and durParts[1].sym or nil))
     local prefix, suffix = Engine.PairWords(tp, plan)
     local f = Engine.PairStackFormatter(prefix, suffix)
     pcall(att.button.SetApplicationCount, att.button, count, f and { formatter = f } or nil)
@@ -3731,17 +3823,24 @@ do
 
   -- A lone %p in its sub-text's colour (BuildSlot's plain binding draws it white), or with the colour curve
   -- of its conditions on the time left (spec: plan.durColor), which the game evaluates on the time left.
-  -- Bound once per colour (att.durBind "lone|...").
-  function Engine.BindLoneDuration(att, sub, spec)
+  -- tp: the sub-text's TextPlan when it is not a bare %p ("%1.p", "%t", "Left: %p"): the game's format
+  -- string with its words. Bound once per colour and text (att.durBind "lone|...").
+  function Engine.BindLoneDuration(att, sub, spec, tp, plan)
     if not (att.button and C_CurveUtil and CreateColor) then return end
     local c = sub.text_color or { 1, 1, 1, 1 }
+    local bare = not tp or (tp.pure and tp.parts[1] and tp.parts[1].key == "p")
+    local bareSym = bare and (tp and tp.parts[1].sym or "p") or nil
+    local function fmtOf(sym) return Engine.TimeFormatter(sub, "text_text_format_", sym) end
+    local custom = bare and fmtOf(bareSym) ~= nil
     local key = "lone|" .. tostring(att.button) .. "|"
       .. (spec and spec.key or table.concat({ c[1] or 1, c[2] or 1, c[3] or 1, c[4] or 1 }, ","))
+      .. "|" .. tostring(sub.text_text) .. "|" .. tostring(plan and plan.firstId or "")
+      .. "|" .. Engine.TimeFormatKey(sub, "text_text_format_")
     if att.durBind == key then return end
-    -- white on BuildSlot's plain binding is white already
+    -- white on BuildSlot's plain binding (the game's own format) is that already
     local white = (c[1] or 1) == 1 and (c[2] or 1) == 1 and (c[3] or 1) == 1 and (c[4] or 1) == 1
-    if not spec and white and att.durBind == nil then return end
-    local opts
+    if not spec and white and bare and not custom and att.durBind == nil then return end
+    local opts = DurationOptions(not bare and tp or nil, bare, plan, c, fmtOf, bareSym)
     if spec then
       local P = (Enum and Enum.DurationTextBindingProperty) or {}
       local cc = C_CurveUtil.CreateColorCurve()
@@ -3749,9 +3848,7 @@ do
       local b, a = spec.below, spec.above
       cc:AddPoint(0, CreateColor(b[1], b[2], b[3], b[4]))
       cc:AddPoint(spec.edge, CreateColor(a[1], a[2], a[3], a[4]))
-      opts = { textColor = { curve = cc, property = P.RemainingDuration or 0 } }
-    else
-      opts = DurationOptions(nil, true, nil, c)
+      opts.textColor = { curve = cc, property = P.RemainingDuration or 0 }
     end
     local ok = pcall(att.button.SetDurationText, att.button, att.shadows.duration, opts)
     att.durBind = ok and key or nil
@@ -3782,13 +3879,16 @@ do
     elseif kind == "pair" then
       -- time and stacks: two texts in WA's look, the second hung on the end of the first
       StyleTextLike(s.count, region, data, att.button, true)
-      local prefix, suffix = Engine.BindPair(att, s.duration, s.count, tp, plan, c)
+      local prefix, suffix = Engine.BindPair(att, s.duration, s.count, tp, plan, c,
+        function(sym) return Engine.TimeFormatter(data, "displayText_format_", sym) end)
       local pt = Engine.TextChainPoint(data)
       local font, size, flags = TextFont(region)
       Engine.PlaceChain(att, region, s.duration, s.count, tp.order == "dc", { pt, att.button, pt, 0, 0 },
                         font, size, flags, prefix, suffix)
     elseif kind == "dur" then
-      pcall(att.button.SetDurationText, att.button, s.duration, DurationOptions(tp, tp.pure and tp.parts[1].key == "p", plan, c))
+      local bare = tp.pure and tp.parts[1].key == "p"
+      pcall(att.button.SetDurationText, att.button, s.duration, DurationOptions(tp, bare, plan, c,
+        function(sym) return Engine.TimeFormatter(data, "displayText_format_", sym) end, bare and tp.parts[1].sym or nil))
     elseif kind == "count" then
       local f
       if not tp.pure then
@@ -4692,7 +4792,7 @@ end
 function Engine.UsesDurationText(data)
   local roles = Engine.SubTextRoles(data)
   for i, sub in ipairs(data.subRegions or {}) do
-    if roles[i] == "p" or roles[i] == "pair" then return Trim(sub.text_text) end
+    if roles[i] == "p" or roles[i] == "pair" then return Trim(sub.text_text), roles[i] end
   end
 end
 
@@ -5723,12 +5823,14 @@ do
     -- only the %p text's colour: every frame's countdown carries the colour curve itself (MirrorTexts)
     local dp = data.uid and decided[data.uid]
     if tl and dp and dp.durColor then tl = nil end
-    local usedBy = tl and kind ~= "aurabar" and Engine.UsesDurationText(data)
+    local usedBy, usedRole
+    if tl and kind ~= "aurabar" then usedBy, usedRole = Engine.UsesDurationText(data) end
     if tl and kind == "aurabar" then
       notes[#notes + 1] = T("its 'Remaining Duration' conditions are not drawn in a sorted row of bars, so far")
       tl = nil
-    elseif usedBy == "%p" then
-      notes[#notes + 1] = T("its 'Remaining Duration' conditions need the frames' duration text, which its %p text uses (hide the %p text: the countdown numbers show the time)")
+    elseif usedRole == "p" then
+      notes[#notes + 1] = T("its 'Remaining Duration' conditions need the frames' duration text, which its '%s' text uses (hide that text: the countdown numbers show the time)")
+        :format((usedBy:gsub("|", "||")))
       tl = nil
     elseif usedBy then
       notes[#notes + 1] = T("its 'Remaining Duration' conditions need the frames' duration text, which its '%s' text uses (the time and the stacks in one text; a lone '%%s' text leaves it free, the countdown numbers show the time)")
@@ -5813,6 +5915,20 @@ do
       end
     end
     table.sort(unionList)
+    -- every frame is styled from the first child: a time text that names its spell (%n) or shows its icon
+    -- (%i) would read the first child's on every frame
+    if #unionList > 1 then
+      local fd0 = WA.GetData(ids[1])
+      local roles = fd0 and Engine.SubTextRoles(fd0) or {}
+      for i, sub in ipairs(fd0 and fd0.subRegions or {}) do
+        if roles[i] == "p" or roles[i] == "pair" then
+          local keys = Engine.TextKeys(sub.text_text)
+          if keys.n or keys.i then
+            return nil, T("'%s' shows the spell's name or icon with the time (%%n / %%i), which a group sorted by the time left would draw as the first child's on every frame"):format(tostring(ids[1]))
+          end
+        end
+      end
+    end
     local limit = #ids
     if gdata.useLimit then limit = math.max(1, math.min(#ids, math.floor(tonumber(gdata.limit) or #ids))) end
     local candidate = {}
@@ -6752,6 +6868,7 @@ local function ComputeSig(region, data, plan)
       parts[#parts + 1] = tostring(data[k])
     end
     parts[#parts + 1] = table.concat(data.shadowColor or {}, ",")
+    parts[#parts + 1] = Engine.TimeFormatKey(data, "displayText_format_")
     local kind = TextKind(data)
     if region.text and kind == "plain" then parts[#parts + 1] = PlainText(region, data) end
     if kind == "pair" then parts[#parts + 1] = Engine.TextChainPoint(data) end   -- selfPoint, the group's
@@ -6761,7 +6878,7 @@ local function ComputeSig(region, data, plan)
       parts[#parts + 1] = table.concat({ tostring(sub.text_text), tostring(sub.text_visible), tostring(sub.text_font),
         tostring(sub.text_fontSize), tostring(sub.text_fontType), tostring(sub.anchor_point), tostring(sub.text_selfPoint),
         tostring(sub.text_anchorXOffset), tostring(sub.text_anchorYOffset), tostring(sub.text_justify),
-        sub.text_color and table.concat(sub.text_color, ",") or "" }, "/")
+        sub.text_color and table.concat(sub.text_color, ",") or "", Engine.TimeFormatKey(sub, "text_text_format_") }, "/")
     elseif sub.type == "subglow" then
       parts[#parts + 1] = table.concat({ "glow", tostring(sub.glow), tostring(sub.useGlowColor),
         sub.glowColor and table.concat(sub.glowColor, ",") or "", tostring(sub.glowScale),
