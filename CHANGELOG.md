@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.4-beta (2026-10-16)
+
+- **WeakAuras' time format on `%p`.** The *Format: Time Format* options of a `%p` or `%t` text
+  (WeakAuras' Built-In, Old or Modern Blizzard, more digits below a threshold) are now drawn by the game
+  too, in combat: "4" without the "s", "2.4" below your threshold, "1:05" past a minute. Without a chosen
+  time format the game's own format stays ("4 s").
+- **The time in other forms on sub-texts.** Sub-texts with the time of a numbered trigger (`%1.p`), the
+  total time (`%t`) or the time inside other words ("Left: %p") are now drawn on engine-driven icons and
+  bars, in combat too, when no bare `%p` text or text with time and stacks takes the countdown.
+- A group sorted by the time left whose time text shows the spell's name or icon (`%n`, `%i`) is no longer
+  sorted: every icon of the row would show the first child's.
+
 ## 0.9.3-beta (2026-10-14)
 
 - **No more gaps in mixed rows.** A centred Dynamic Group that holds both your buffs and your target's

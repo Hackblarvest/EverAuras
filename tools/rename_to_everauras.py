@@ -21,7 +21,7 @@ AUTHOR = "Hackblarvest"
 # Our project ids on the addon sites, so their apps (Wago app, CurseForge app, WowUp) match an install
 # to EverAuras. Main TOC only.
 SITE_IDS = "## X-Wago-ID: qGYBgENg\n## X-Curse-Project-ID: 1710578"
-VERSION = "0.9.3-beta"
+VERSION = "0.9.4-beta"
 
 # Links. The footer buttons and the TOC website point at OUR project; anything else that
 # mentions upstream (Discord invite, CurseForge page, GitHub credits) must keep pointing
