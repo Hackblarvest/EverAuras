@@ -5330,15 +5330,27 @@ do
     return gp
   end
 
+  -- The children WeakAuras can load: one it never loads as things stand (Load tab 'Never', another class,
+  -- a level or zone not met: WA.IsAuraLoaded nil) has no place in the group (no link in a packed chain,
+  -- its spells left out of a sorted row). One on standby (false: 'In Combat', an encounter ...) stays: it
+  -- loads in combat, when the game's containers cannot be rebuilt. Re-planned after load scans
+  -- (Dyn.FlushLoads). Without the API (the tests' mocks) every child counts.
+  function Dyn.Members(gdata)
+    local ids, isLoaded = {}, WA.IsAuraLoaded
+    for _, id in ipairs(gdata.controlledChildren or {}) do
+      if not isLoaded or isLoaded(id) ~= nil then ids[#ids + 1] = id end
+    end
+    return ids
+  end
+
   function Dyn.PackPlan(gdata, g, grow)
     if gdata.useLimit then return nil, T("it limits how many children it shows") end
     local ct = gdata.centerType or "LR"
     if g.centred and ct ~= "LR" and ct ~= "RL" then return nil, T("it fills from the centre outwards") end
     local space = tonumber(gdata.space) or 0
     if g.centred and space < 0 then return nil, T("its spacing is negative") end
-    local ids = {}
-    for _, id in ipairs(gdata.controlledChildren or {}) do ids[#ids + 1] = id end
-    if #ids == 0 then return nil, T("it has no children") end
+    local ids = Dyn.Members(gdata)
+    if #ids == 0 then return nil, T("it has no loaded children") end
     if g.centred and ct == "RL" then
       local rev = {}
       for i = #ids, 1, -1 do rev[#rev + 1] = ids[i] end
@@ -5730,6 +5742,49 @@ do
     return gp, why
   end
 
+  -- WeakAuras' load scan (login, the Load tab, zone, level ...) can change a group's members
+  -- (Dyn.Members): the group re-plans and its children re-apply (their status lines, Group by Frame
+  -- places). A frame later, so a scan at combat start (PLAYER_REGEN_DISABLED, before the lockdown) waits
+  -- until the auras are not secret (Engine.Flush), like every re-apply: a chain retired then would stay
+  -- empty for the whole fight.
+  function Dyn.FlushLoads()
+    if Dyn.loadsQueued then return end
+    Dyn.loadsQueued = true
+    C_Timer.After(0, function()
+      Dyn.loadsQueued = nil
+      if not Engine.IsSafe() then Dyn.loadsDirty = true; return end
+      Dyn.loadsDirty = nil
+      Dyn.members = Dyn.members or {}
+      local seen, changed = {}, false
+      for region in pairs(attachments) do
+        local data = region.id and WA.GetData(region.id)
+        local gdata = data and data.parent and WA.GetData(data.parent)
+        if gdata and gdata.regionType == "dynamicgroup" and not seen[gdata.id] then
+          seen[gdata.id] = true
+          local m = table.concat(Dyn.Members(gdata), "\1")
+          if Dyn.members[gdata.id] ~= m then
+            Dyn.members[gdata.id], changed = m, true
+            pcall(Dyn.Refresh, gdata)
+            Requeue(gdata)
+          end
+        end
+      end
+      if not changed then return end
+      for _, att in pairs(attachments) do
+        if att.active and att.fcopies and next(att.fcopies) then pcall(Engine.PlaceCopies, att) end
+      end
+    end)
+  end
+  if Private.callbacks and Private.callbacks.RegisterCallback then
+    Private.callbacks:RegisterCallback("ScanForLoads", function()
+      -- copies show and hide with their display's load at once (plain SetShown, also in combat)
+      for _, att in pairs(attachments) do
+        if att.active and att.copies then pcall(Engine.GateCopies, att) end
+      end
+      Dyn.FlushLoads()
+    end)
+  end
+
   local function ParentOf(data)
     local gdata = data and data.parent and WA.GetData(data.parent)
     return gdata and gdata.regionType == "dynamicgroup" and gdata or nil
@@ -5742,6 +5797,9 @@ do
     -- a group trigger's copies are placed by the engine itself (its Group / Auto-clone line says where)
     local own = data.uid and decided[data.uid]
     if own and own.group then return nil end
+    if WA.IsAuraLoaded and WA.IsAuraLoaded(data.id) == nil then
+      return T("|cffff9933Dynamic Group:|r this display is not loaded (Load tab), so it has no place in the group and the group is drawn without it.")
+    end
     local gp, why = Dyn.Plan(gdata)
     if gp and gp.sorted then
       local s = T("|cff33ff99Dynamic Group:|r sorted by the time left by the game (%s first), in combat too: the group is drawn as one row of its auras in the look of '%s' (the border and texts other than %s are hidden). This display itself is not drawn while it is in the row."):format(
@@ -5870,9 +5928,8 @@ do
   function Dyn.SortPlan(gdata, g, grow)
     local space = tonumber(gdata.space) or 0
     if space < 0 then return nil, T("its spacing is negative") end
-    local ids = {}
-    for _, id in ipairs(gdata.controlledChildren or {}) do ids[#ids + 1] = id end
-    if #ids == 0 then return nil, T("it has no children") end
+    local ids = Dyn.Members(gdata)
+    if #ids == 0 then return nil, T("it has no loaded children") end
     local tplLook, unit, filterString, otherKey, w, h, first, kind
     local union, unionList = {}, {}
     for _, id in ipairs(ids) do
@@ -6232,7 +6289,7 @@ do
     if gdata then Dyn.Refresh(gdata) end
   end
 
-  Engine.DynPlan, Engine.DynNote = Dyn.Plan, Dyn.Note   -- for the tests
+  Engine.DynPlan, Engine.DynNote, Engine.DynFlushLoads = Dyn.Plan, Dyn.Note, Dyn.FlushLoads   -- for the tests
 
   -- A container does not refresh itself when its unit token points at another unit (a new target):
   -- the links and totals of every chain on that unit are told, like the display slots. Missed, a link
@@ -6440,7 +6497,7 @@ do
     local w, h = RegionSize(att.region)
     if layout == "frame" then
       local k = 0
-      for i, id in ipairs(gdata.controlledChildren or {}) do if id == data.id then k = i - 1 end end
+      for i, id in ipairs(Dyn.Members(gdata)) do if id == data.id then k = i - 1 end end
       local d = GROW_DIR[gdata.grow or "RIGHT"] or GROW_DIR.RIGHT
       local space = tonumber(gdata.space) or 0
       local dx = d[1] * k * (w + space) + (tonumber(gdata.xOffset) or 0)
@@ -6542,9 +6599,11 @@ do
   function Engine.GateCopies(att)
     local g = att.want and att.want.group
     if not g then return end
+    -- WeakAuras collapses a display it does not load, but the copies do not all hang on its region
+    local loaded = not (WA.IsAuraLoaded and att.region) or WA.IsAuraLoaded(att.region.id) == true
     for _, set in ipairs({ "copies", "fcopies" }) do
       for u, cp in pairs(att[set] or {}) do
-        local on = cp.ok and UnitExists(u) and true or false
+        local on = loaded and cp.ok and UnitExists(u) and true or false
         if on and set == "fcopies" and not cp.frame then on = false end
         if on and g.ignoreDead and UnitIsDeadOrGhost(u) then on = false end
         if on and g.ignoreDisconnected and UnitIsConnected and not UnitIsConnected(u) then on = false end
@@ -6809,6 +6868,7 @@ end
 
 function Engine.Flush()
   if not Engine.IsSafe() then return end
+  if Dyn.loadsDirty then Dyn.FlushLoads() end      -- load changes seen while auras were secret
   for region in pairs(pending) do pending[region] = nil; Apply(region) end
   FlushReadds()
 end
