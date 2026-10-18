@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.5-beta (2026-10-18)
+
+- **A countdown and "red and glowing" together in a sorted row.** In a Dynamic Group sorted by the time
+  left, the first child can now have a `%p` text (in WeakAuras' time format, e.g. "2.1") AND a
+  *Remaining Duration* condition that turns the icon red and makes it glow. Before, the condition was
+  dropped as soon as the icon had a `%p` text. The numbers stay readable on top of the red.
+- **Children that are not loaded leave the row.** A child set to *Load: Never*, or for another class, no
+  longer shows in a sorted row or leaves a gap in a packed one. Its status line says it is not loaded.
+  A child on standby (*In Combat*) stays in the row, as it loads in combat. Auto-clone copies of a display
+  that is not loaded are hidden too.
+
 ## 0.9.4-beta (2026-10-16)
 
 - **WeakAuras' time format on `%p`.** The *Format: Time Format* options of a `%p` or `%t` text
