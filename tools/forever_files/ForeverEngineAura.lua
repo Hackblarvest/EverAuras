@@ -485,19 +485,22 @@ do
   -- the countdown's own colour curve over the time left (the game evaluates it), no looks needed. Returns
   -- { sub, x, edge, below, above, key } or nil. edge: where the curve turns to the 'above' colour; the
   -- threshold itself belongs to the side of the first condition's operator ('<=' / '>': below).
-  function Engine.DurationColorLooks(data, tl, used)
+  -- partial: the %p text's colour out of looks that change other things too (a sorted row's text twin
+  -- draws it, the row's gates the rest).
+  function Engine.DurationColorLooks(data, tl, used, partial)
     local roles = Engine.SubTextRoles(data)
     local n
     local colour = {}
     for _, side in ipairs({ "below", "above" }) do
       for _, chg in ipairs(tl[side].changes) do
         local p = chg.path
-        if not (#p == 2 and p[2] == "text_color" and roles[p[1]] == "p" and type(chg.value) == "table") then
+        if #p == 2 and p[2] == "text_color" and roles[p[1]] == "p" and type(chg.value) == "table" then
+          if n and n ~= p[1] then return nil end
+          n = p[1]
+          colour[side] = chg.value
+        elseif not partial then
           return nil
         end
-        if n and n ~= p[1] then return nil end
-        n = p[1]
-        colour[side] = chg.value
       end
     end
     if not n then return nil end
@@ -2768,11 +2771,14 @@ end
 -- A text with time and stacks takes both the duration text and the stack count (each button has one of
 -- each), so first come, first served (Engine.SubTextRoles): a later text that needs one of them is hidden
 -- and named on the status line (Engine.SubTextNotes). plan: the display's, for %i / %n in such a text.
+-- plan.twinNoP: a sorted row's frame whose duration text is the time gate leaves a lone %p to the row's
+-- text twin; plan.twinOnlyP: a twin's frame (no count, no name) draws only that %p (Dyn.SortedLooks).
 local function MirrorTexts(att, region, data, useShadows, plan)
   local s = att.shadows
   att.mirrored = {}
   local roles, plans = Engine.SubTextRoles(data)
   local haveP, haveS, haveN, pair, loneP
+  local noP, onlyP = plan and plan.twinNoP, plan and plan.twinOnlyP
   local ri = 0
   for i, sub in ipairs(data.subRegions or {}) do
     if Private.subRegionTypes[sub.type] then
@@ -2780,7 +2786,11 @@ local function MirrorTexts(att, region, data, useShadows, plan)
       local live = region.subRegions and region.subRegions[ri]
       local role = roles[i]
       if role and live then att.mirrored[live] = true end
-      if role == "p" then
+      if onlyP and role ~= "p" then
+        -- the row's own frames draw it
+      elseif role == "p" and noP then
+        -- the twin draws it
+      elseif role == "p" then
         haveP = true
         if useShadows then
           StyleShadowText(region, s.duration, sub, false, att); s.duration:Show()
@@ -2802,7 +2812,7 @@ local function MirrorTexts(att, region, data, useShadows, plan)
   end
   if useShadows then
     if not haveP then s.duration:Hide() end     -- Shown is not a secret aspect of the duration text
-    if not haveS then s.count:SetAlpha(0) end   -- Shown IS secret on the count text; Alpha is ours
+    if s.count and not haveS then s.count:SetAlpha(0) end   -- Shown IS secret on the count text; Alpha is ours
     if s.name and not haveN then s.name:SetAlpha(0) end
     -- a lone %p first (it takes the duration text over from a pair's binding), then the pair let go
     if loneP and att.button then Engine.BindLoneDuration(att, loneP.sub, loneP.spec, loneP.tp, plan) end
@@ -5401,6 +5411,7 @@ do
     for _, link in pairs(st.links) do pcall(link.SetUnit, link, nil); link:Hide() end
     for _, hc in ipairs(st.half or {}) do pcall(hc.SetUnit, hc, nil); hc:Hide() end
     if st.sortc then pcall(st.sortc.SetUnit, st.sortc, nil); st.sortc:Hide() end
+    if st.twinc then pcall(st.twinc.SetUnit, st.twinc, nil); st.twinc:Hide() end
     st.root:Hide()
   end
 
@@ -5807,6 +5818,9 @@ do
         gp.kind == "aurabar" and "%p/%s/%n" or "%p/%s")
       if gp.time then
         s = s .. " " .. T("Its 'Remaining Duration' conditions are drawn per frame: below %s s and from %s s up, each frame takes its own look (colour and glow), in combat too."):format(tostring(gp.time.x), tostring(gp.time.x))
+        if gp.time.twin then
+          s = s .. " " .. T("Its %p text is drawn on a second row of the same auras, sorted the same way on top of the first, in its own format and colour.")
+        end
       end
       for _, n in ipairs(gp.notes or {}) do s = s .. " " .. T("Not drawn: %s."):format(n) end
       return s
@@ -5876,33 +5890,36 @@ do
       for k, v in pairs(sub) do c[k] = v end
       return c
     end
-    local tl, _, notes = Engine.TimeLooks(data, 1, kind == "aurabar" and "aurabar" or "icon")
+    local tl, used, notes = Engine.TimeLooks(data, 1, kind == "aurabar" and "aurabar" or "icon")
     notes = notes or {}
     -- only the %p text's colour: every frame's countdown carries the colour curve itself (MirrorTexts)
     local dp = data.uid and decided[data.uid]
     if tl and dp and dp.durColor then tl = nil end
-    local usedBy, usedRole
+    local usedBy, usedRole, twin
     if tl and kind ~= "aurabar" then usedBy, usedRole = Engine.UsesDurationText(data) end
     if tl and kind == "aurabar" then
       notes[#notes + 1] = T("its 'Remaining Duration' conditions are not drawn in a sorted row of bars, so far")
       tl = nil
     elseif usedRole == "p" then
-      notes[#notes + 1] = T("its 'Remaining Duration' conditions need the frames' duration text, which its '%s' text uses (hide that text: the countdown numbers show the time)")
-        :format((usedBy:gsub("|", "||")))
-      tl = nil
+      -- the frames' duration texts are the gates: the %p goes on a TEXT TWIN, a second row of the same
+      -- auras sorted the same way on the same spot, on top (probe /fdtwin 2026-10-18: the same aura in the
+      -- same place, in and out of combat), with the colour its conditions give the text
+      twin = { color = Engine.DurationColorLooks(data, tl, used, true) }
     elseif usedBy then
       notes[#notes + 1] = T("its 'Remaining Duration' conditions need the frames' duration text, which its '%s' text uses (the time and the stacks in one text; a lone '%%s' text leaves it free, the countdown numbers show the time)")
         :format((usedBy:gsub("|", "||")))
       tl = nil
     end
     if not tl then return GlowCopy(GlowSub(data)), nil, notes end
-    -- per frame, the colour and the glow vary; anything else stays the first child's
+    -- per frame, the colour and the glow vary (and the twin's text colour); anything else stays the first child's
     local said = {}
+    local roles = twin and Engine.SubTextRoles(data) or {}
     for _, side in ipairs({ tl.below, tl.above }) do
       for _, chg in ipairs(side.changes) do
         local p = chg.path
         local sub = #p == 2 and type(data.subRegions) == "table" and data.subRegions[p[1]]
         local ok = (#p == 1 and p[1] == "color") or (sub and sub.type == "subglow")
+                   or (twin and twin.color and #p == 2 and p[2] == "text_color" and roles[p[1]] == "p")
         local what = table.concat(p, ".")
         if not ok and not said[what] then
           said[what] = true
@@ -5918,7 +5935,7 @@ do
       local white = c[1] >= 0.999 and c[2] >= 0.999 and c[3] >= 0.999
       return { glow = GlowCopy(GlowSub(d)), overlay = (differ and not white) and c or nil }
     end
-    local time = { x = tl.x, key = tl.key, overlay = differ, below = Side(below, cb), above = Side(above, ca) }
+    local time = { x = tl.x, key = tl.key, overlay = differ, below = Side(below, cb), above = Side(above, ca), twin = twin }
     time.m = math.max(AnimatedGlowMargin(w, h, time.below.glow), AnimatedGlowMargin(w, h, time.above.glow))
     -- wide enough to reach from GATE_SHIFT left of the frame past its right edge (a W is 8+ px)
     time.wide = string.rep("W", math.ceil((Dyn.GATE_SHIFT + 2 * time.m + w + 30) / 8))
@@ -6175,6 +6192,42 @@ do
     })
     if not ok then st.err = tostring(err); return st end
     pcall(c.SetUnit, c, gp.unit)
+    -- the text twin (Dyn.SortedLooks): the same auras sorted the same way on the same spot, above the row's
+    -- colours and glows; each frame holds only the %p text (its duration text) and an icon never seen
+    if gp.time and gp.time.twin then
+      local t = CreateFrame("AuraContainer", nil, st.root, "CustomAuraContainerTemplate")
+      st.twinc, st.tframes = t, {}
+      if f[1] == "y" and A then t:SetFlowLayoutAxis(A.Vertical) end
+      if D then t:SetFlowLayoutGrowthDirection(D[f[2]], D[f[3]]) end
+      t:SetFlowLayoutAnchorPoint(f[4])
+      t:SetPoint(gp.selfPoint, gregion, gp.selfPoint)
+      -- just above the row's highest piece: the row's buttons at +3, their glow holders at +6, the glows at +7
+      t:SetFrameLevel(gregion:GetFrameLevel() + 7)
+      local okT, errT = pcall(t.AddAuraGroup, t, KEY .. "T", gp.filterString, {
+        candidateFilters = gp.candidate,
+        maxFrameCount = gp.limit,
+        sortMethod = M and M.ExpirationOnly,
+        sortDirection = Dir and (gp.dir == "descending" and Dir.Reverse or Dir.Normal),
+        layout = { elementWidth = gp.w, elementHeight = gp.h, elementSpacing = gp.space },
+        initializeFrame = function(button)
+          button:SetSize(gp.w, gp.h)
+          pcall(button.SetMouseClickEnabled, button, false)
+          pcall(button.EnableMouseMotion, button, false)
+          local ts = {}
+          ts.icon = button:CreateTexture(nil, "ARTWORK")
+          ts.icon:SetSize(1, 1)
+          ts.icon:SetPoint("CENTER")
+          ts.icon:SetAlpha(0)
+          ts.duration = button:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+          ts.duration:SetPoint("CENTER")
+          button:SetIcon(ts.icon)
+          button:SetDurationText(ts.duration, nil)
+          st.tframes[#st.tframes + 1] = { button = button, shadows = ts }
+        end,
+      })
+      if not okT then Retire(st); st.err = tostring(errT); return st end   -- the row without its twin: neither
+      pcall(t.SetUnit, t, gp.unit)
+    end
     return st
   end
 
@@ -6187,16 +6240,23 @@ do
     if not (tplData and tplRegion and tplPlan) then return false end
     local gl, gb = Rect(tplRegion)
     if not gl then return false end
+    local twin = gp.time and gp.time.twin
+    local twinPlan = twin and setmetatable({ twinOnlyP = true, durColor = twin.color }, { __index = tplPlan })
     -- glows are the frames' own animated ones (SortedExtras), not the static texture
     if FG() and (gp.glow or gp.time) then tplPlan = setmetatable({ noGlow = true }, { __index = tplPlan }) end
+    if twin then tplPlan = setmetatable({ twinNoP = true }, { __index = tplPlan }) end
     local again = false
-    for _, fr in ipairs(st.frames) do
+    local all = {}
+    for _, fr in ipairs(st.frames) do all[#all + 1] = fr end
+    for _, fr in ipairs(st.tframes or {}) do all[#all + 1] = fr; fr.twin = true end
+    for _, fr in ipairs(all) do
       fr.anchors = setmetatable({}, { __mode = "k" })
       fr.chainRetry = nil
-      ApplySlotLook(fr, tplRegion, tplData, tplPlan)
+      if fr.twin then MirrorTexts(fr, tplRegion, tplData, true, twinPlan)
+      else ApplySlotLook(fr, tplRegion, tplData, tplPlan) end
       again = again or fr.chainRetry or false
       -- colours that change with the time left are multiplied over a white icon
-      if gp.time and gp.time.overlay then fr.shadows.icon:SetVertexColor(1, 1, 1, 1) end
+      if gp.time and gp.time.overlay and not fr.twin then fr.shadows.icon:SetVertexColor(1, 1, 1, 1) end
       for obj, pts in pairs(fr.anchors) do
         local out = {}
         for i, p in ipairs(pts) do
@@ -6303,6 +6363,7 @@ do
         if unit == nil or st.hunit[j] == unit then pcall(hc.UpdateAllAuras, hc) end
       end
       if st.sortc and (unit == nil or st.gp.unit == unit) then pcall(st.sortc.UpdateAllAuras, st.sortc) end
+      if st.twinc and (unit == nil or st.gp.unit == unit) then pcall(st.twinc.UpdateAllAuras, st.twinc) end
     end
   end
   Engine.DynUpdateUnit = Dyn.UpdateUnit                 -- for the tests
