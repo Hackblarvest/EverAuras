@@ -52,7 +52,9 @@ function Mana.Init()
   Mana.initialized = true
   local f = CreateFrame("Frame")
   Private.frames["Forever Five Second Rule"] = f
-  f:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
+  local reg = Private.ForeverEngine and Private.ForeverEngine.RegisterEvents
+  if reg then reg(f, { "UNIT_SPELLCAST_SUCCEEDED" }, "player")
+  else pcall(f.RegisterUnitEvent, f, "UNIT_SPELLCAST_SUCCEEDED", "player") end
   f:SetScript("OnEvent", function(_, _, _, _, spellID)
     if CostsMana(spellID) then StartFiveSecondRule(spellID) end
   end)

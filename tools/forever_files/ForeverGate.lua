@@ -255,12 +255,20 @@ local UNIT_OF = { PLAYER_TARGET_CHANGED = "target", PLAYER_FOCUS_CHANGED = "focu
 local ev = CreateFrame("Frame")
 Private.frames = Private.frames or {}
 Private.frames["Forever Gates"] = ev
-ev:RegisterUnitEvent("UNIT_POWER_FREQUENT", "player", "target", "focus", "pet")
-ev:RegisterUnitEvent("UNIT_MAXPOWER", "player", "target", "focus", "pet")
-ev:RegisterUnitEvent("UNIT_DISPLAYPOWER", "player", "target", "focus", "pet")
-ev:RegisterEvent("PLAYER_TARGET_CHANGED")
-ev:RegisterEvent("PLAYER_FOCUS_CHANGED")
-ev:RegisterUnitEvent("UNIT_PET", "player")
+-- each on its own (the engine's helper notes the ones a game build does not know)
+local reg = Private.ForeverEngine and Private.ForeverEngine.RegisterEvents
+if reg then
+  reg(ev, { "UNIT_POWER_FREQUENT", "UNIT_MAXPOWER", "UNIT_DISPLAYPOWER" }, "player", "target", "focus", "pet")
+  reg(ev, { "PLAYER_TARGET_CHANGED", "PLAYER_FOCUS_CHANGED" })
+  reg(ev, { "UNIT_PET" }, "player")
+else
+  for _, e in ipairs({ "UNIT_POWER_FREQUENT", "UNIT_MAXPOWER", "UNIT_DISPLAYPOWER" }) do
+    pcall(ev.RegisterUnitEvent, ev, e, "player", "target", "focus", "pet")
+  end
+  pcall(ev.RegisterEvent, ev, "PLAYER_TARGET_CHANGED")
+  pcall(ev.RegisterEvent, ev, "PLAYER_FOCUS_CHANGED")
+  pcall(ev.RegisterUnitEvent, ev, "UNIT_PET", "player")
+end
 ev:SetScript("OnEvent", function(_, event, unit)
   unit = UNIT_OF[event] or unit
   if not watched[unit] then return end

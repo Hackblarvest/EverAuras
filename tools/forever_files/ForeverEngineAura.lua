@@ -120,6 +120,36 @@ function Engine.IsAvailable()
   return available
 end
 
+---------------------------------------------------------------------------- kill switch
+-- First in the file, so it is there even when a new game build stops the rest of the file part way.
+-- '/ea engine on|off' says the same.
+SLASH_FOREVERENGINE1 = "/faengine"
+SlashCmdList["FOREVERENGINE"] = function(msg)
+  local sv = SV()
+  if not sv then return end
+  sv.foreverEngine = sv.foreverEngine or {}
+  msg = (msg or ""):lower():gsub("%s", "")
+  if msg == "off" then sv.foreverEngine.disabled = true elseif msg == "on" then sv.foreverEngine.disabled = nil end
+  local n, g = 0, 0
+  for _, att in pairs(attachments) do
+    if att.active then n = n + 1; if att.kind == "group" then g = g + 1 end end
+  end
+  WA.prettyPrint(("engine-driven auras: %s, %d active (%d in 'missing' mode). on/off takes effect after /reload")
+    :format(GloballyEnabled() and "on" or "off", n, g))
+end
+
+-- Events by name, each on its own (Engine.badEvents: the ones the game does not know): an event a new build
+-- renames or drops costs what hangs on it, not the rest of the file.
+Engine.badEvents = {}
+function Engine.RegisterEvents(frame, events, ...)
+  for _, e in ipairs(events) do
+    local ok
+    if select("#", ...) > 0 then ok = pcall(frame.RegisterUnitEvent, frame, e, ...)
+    else ok = pcall(frame.RegisterEvent, frame, e) end
+    if not ok then Engine.badEvents[#Engine.badEvents + 1] = e end
+  end
+end
+
 local function Trim(s) return (tostring(s or ""):gsub("^%s+", ""):gsub("%s+$", "")) end
 
 ---------------------------------------------------------------------------- countdown numbers
@@ -7622,13 +7652,8 @@ end
 
 local learnEv = CreateFrame("Frame")
 Private.frames["ForeverEngine Aura Memory"] = learnEv
-learnEv:RegisterEvent("UNIT_AURA")
-learnEv:RegisterEvent("PLAYER_REGEN_ENABLED")
-learnEv:RegisterEvent("PLAYER_TARGET_CHANGED")
-learnEv:RegisterEvent("PLAYER_FOCUS_CHANGED")
-learnEv:RegisterEvent("NAME_PLATE_UNIT_ADDED")
-learnEv:RegisterEvent("GROUP_ROSTER_UPDATE")
-learnEv:RegisterEvent("PLAYER_LOGOUT")
+Engine.RegisterEvents(learnEv, { "UNIT_AURA", "PLAYER_REGEN_ENABLED", "PLAYER_TARGET_CHANGED", "PLAYER_FOCUS_CHANGED",
+                                 "NAME_PLATE_UNIT_ADDED", "GROUP_ROSTER_UPDATE", "PLAYER_LOGOUT" })
 learnEv:SetScript("OnEvent", function(_, event, unit)
   if event == "PLAYER_LOGOUT" then
     -- keep our aura sound ids, so the next session can tell whether the game kept them (CheckStaleSounds)
@@ -7728,20 +7753,11 @@ end
 local REFRESH = { PLAYER_TARGET_CHANGED = "target", PLAYER_FOCUS_CHANGED = "focus", UNIT_PET = "pet" }
 local ev = CreateFrame("Frame")
 Private.frames["ForeverEngine Events"] = ev
-ev:RegisterEvent("PLAYER_TARGET_CHANGED")
-ev:RegisterEvent("PLAYER_FOCUS_CHANGED")
-ev:RegisterUnitEvent("UNIT_PET", "player")
-ev:RegisterEvent("PLAYER_REGEN_ENABLED")
-ev:RegisterEvent("PLAYER_ENTERING_WORLD")
-ev:RegisterEvent("GROUP_ROSTER_UPDATE")
-ev:RegisterEvent("UNIT_FLAGS")
-ev:RegisterEvent("UNIT_CONNECTION")
-ev:RegisterEvent("SPELLS_CHANGED")
-ev:RegisterEvent("LEARNED_SPELL_IN_SKILL_LINE")
-ev:RegisterEvent("PLAYER_LEVEL_UP")
-ev:RegisterUnitEvent("UNIT_AURA", "player", "target", "focus", "pet")
-pcall(ev.RegisterEvent, ev, "UI_SCALE_CHANGED")
-pcall(ev.RegisterEvent, ev, "DISPLAY_SIZE_CHANGED")
+Engine.RegisterEvents(ev, { "PLAYER_TARGET_CHANGED", "PLAYER_FOCUS_CHANGED", "PLAYER_REGEN_ENABLED", "PLAYER_ENTERING_WORLD",
+                            "GROUP_ROSTER_UPDATE", "UNIT_FLAGS", "UNIT_CONNECTION", "SPELLS_CHANGED",
+                            "LEARNED_SPELL_IN_SKILL_LINE", "PLAYER_LEVEL_UP", "UI_SCALE_CHANGED", "DISPLAY_SIZE_CHANGED" })
+Engine.RegisterEvents(ev, { "UNIT_PET" }, "player")
+Engine.RegisterEvents(ev, { "UNIT_AURA" }, "player", "target", "focus", "pet")
 ev:SetScript("OnEvent", function(_, event, arg1)
   if event == "UI_SCALE_CHANGED" or event == "DISPLAY_SIZE_CHANGED" then
     -- the engine's borders are sized from the scale at safe time (and the sorted rows styled once)
@@ -7795,18 +7811,6 @@ ev:SetScript("OnEvent", function(_, event, arg1)
   end
 end)
 
----------------------------------------------------------------------------- kill switch
-SLASH_FOREVERENGINE1 = "/faengine"
-SlashCmdList["FOREVERENGINE"] = function(msg)
-  local sv = SV()
-  if not sv then return end
-  sv.foreverEngine = sv.foreverEngine or {}
-  msg = (msg or ""):lower():gsub("%s", "")
-  if msg == "off" then sv.foreverEngine.disabled = true elseif msg == "on" then sv.foreverEngine.disabled = nil end
-  local n, g = 0, 0
-  for _, att in pairs(attachments) do
-    if att.active then n = n + 1; if att.kind == "group" then g = g + 1 end end
-  end
-  WA.prettyPrint(("engine-driven auras: %s, %d active (%d in 'missing' mode). on/off takes effect after /reload")
-    :format(GloballyEnabled() and "on" or "off", n, g))
-end
+
+-- the whole file ran (ForeverCheck tells a chunk that stopped half way, e.g. on a game build without an event)
+Engine.loaded = true

@@ -319,6 +319,11 @@ end
          "    -- Forever: custom code that reads a value the client keeps secret in combat is the aura's own\n    -- limit, not an addon bug. Say so once per aura, and send it to BugSack once per aura and place.\n    local secretCustom = data and Private.ForeverSecretCustomError\n      and Private.ForeverSecretCustomError(data, currentErrorHandlerContext, errorMessage)\n    if data then\n      if secretCustom then\n        Private.AuraWarnings.UpdateWarning(data.uid, \"ForeverSecretCode\", \"warning\", secretCustom, true)\n      else\n        Private.AuraWarnings.UpdateWarning(data.uid, \"LuaError\", \"error\",\n          L[\"This aura has caused a Lua error.\"] .. \"\\n\" .. L[\"Install the addons BugSack and BugGrabber for detailed error logs.\"], true)\n      end\n      table.insert(juicedMessage, L[\"Lua error in Aura '%s': %s\"]:format(data.id, currentErrorHandlerContext or L[\"unknown location\"]))\n      if secretCustom then table.insert(juicedMessage, secretCustom) end\n"),
         ("      GREMINDER:OnError(err,debugstack(2),currentErrorHandlerContext)\n    end\n    geterrorhandler()(err)\n",
          "      GREMINDER:OnError(err,debugstack(2),currentErrorHandlerContext)\n    end\n    if secretCustom then\n      local key = data.uid .. \"\\n\" .. tostring(currentErrorHandlerContext)\n      if foreverSecretForwarded[key] then return end\n      foreverSecretForwarded[key] = true\n    end\n    geterrorhandler()(err)\n"),
+        # '/ea check' (ForeverCheck.lua) and '/ea engine on|off' (the engine's /faengine)
+        ('  elseif msg == "repair" then\n    StaticPopup_Show("M33kAuras_CONFIRM_REPAIR", nil, nil, {reason = "user"})\n',
+         '  elseif msg == "check" and Private.ForeverCheck then\n    -- Forever: are the game\'s APIs the engine draws with all there in this build (ForeverCheck.lua)\n    Private.ForeverCheck.Run(args[1])\n  elseif msg == "engine" and SlashCmdList.FOREVERENGINE then\n    -- Forever: the game\'s aura engine on or off (/faengine)\n    SlashCmdList.FOREVERENGINE(args[1] or "")\n  elseif msg == "repair" then\n    StaticPopup_Show("M33kAuras_CONFIRM_REPAIR", nil, nil, {reason = "user"})\n'),
+        ('  print(L["/wa repair - Repair tool"])\n',
+         '  print(L["/wa repair - Repair tool"])\n  print("/ea check - EverAuras on WoW: Forever: are the game\'s aura APIs all there (/ea check full: one line each)")\n  print("/ea engine on|off - EverAuras on WoW: Forever: let the game\'s aura engine draw auras (after /reload)")\n'),
     ],
     # Upstream d2465fd made 'Condition - Always active' the trigger of a new aura. The engine draws Aura triggers,
     # so EverAuras keeps the Aura trigger as the default (exactly f170ed7's stub; TriggerOptions.lua has the
@@ -394,6 +399,7 @@ TOC_HUNKS = [
     ("M33kAuras/M33kAuras.toc", "ForeverGate.lua\n", "ForeverGate.lua\nForeverImport.lua\n"),
     ("M33kAuras/M33kAuras.toc", "ForeverImport.lua\n", "ForeverImport.lua\nForeverGlow.lua\n"),
     ("M33kAuras/M33kAuras.toc", "ForeverGlow.lua\n", "ForeverGlow.lua\nForeverDispelData.lua\n"),
+    ("M33kAuras/M33kAuras.toc", "ForeverDispelData.lua\n", "ForeverDispelData.lua\nForeverCheck.lua\n"),
     ("M33kAurasOptions/M33kAurasOptions.toc", "\nRegionOptions\\ProgressTexture.lua\n",
      "\nRegionOptions\\ProgressTexture.lua\nForeverEngineAuraOptions.lua\n"),
 ]
@@ -406,6 +412,7 @@ NEW_FILES = [
     ("ForeverManaRegen.lua", "M33kAuras/ForeverManaRegen.lua"),
     ("ForeverGlow.lua", "M33kAuras/ForeverGlow.lua"),
     ("ForeverDispelData.lua", "M33kAuras/ForeverDispelData.lua"),
+    ("ForeverCheck.lua", "M33kAuras/ForeverCheck.lua"),
     ("ForeverEngineAuraOptions.lua", "M33kAurasOptions/ForeverEngineAuraOptions.lua"),
 ]
 
@@ -427,7 +434,8 @@ CHECKS = {
     "M33kAuras/M33kAuras.lua": ["local internalVersion = 90\n",
         '      if M33kAuras.IsForever() then\n        shouldBeLoaded = loadFunc and loadFunc("ScanForLoads_Auras",',
         "Private.ForeverSecretCustomError(data, currentErrorHandlerContext, errorMessage)",
-        "if foreverSecretForwarded[key] then return end"],
+        "if foreverSecretForwarded[key] then return end",
+        "Private.ForeverCheck.Run(args[1])"],
     "M33kAuras/Compatibility.lua": ["Private.ExecEnv.IsSpellKnown = function(spellID, isPet)",
         "Private.ExecEnv.GetWeaponEnchantInfo = function()"],
     "M33kAuras/AuraEnvironment.lua": ["compat.GetSpellInfo = function(spell)",
@@ -457,6 +465,7 @@ CHECKS = {
     "M33kAuras/ForeverEngineAura.lua": ["Private.ForeverEngine = Engine"],
     "M33kAuras/ForeverGlow.lua": ["Private.ForeverGlow = G"],
     "M33kAuras/ForeverDispelData.lua": ["Private.ForeverDispelData = {"],
+    "M33kAuras/ForeverCheck.lua": ["Private.ForeverCheck = C"],
     "M33kAurasOptions/ForeverEngineAuraOptions.lua": ["foreverEngineNotice"],
 }
 
