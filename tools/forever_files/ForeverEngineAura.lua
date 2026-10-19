@@ -305,6 +305,7 @@ do
     glowFrequency = true, glowLength = true, glowThickness = true, glowScale = true, glowBorder = true,
     glowXOffset = true, glowYOffset = true }
   local TEXT_KEYS = { text_color = true, text_visible = true, text_fontSize = true }
+  local BORDER_KEYS = { border_color = true, border_visible = true, border_alpha = true }   -- the engine's border
   local PROPS = {
     icon = { color = true, desaturate = true, inverse = true, cooldownSwipe = true, cooldownEdge = true,
              cooldownTextDisabled = true },
@@ -320,12 +321,13 @@ do
   }
 
   -- property -> path into the data ({ key } or { sub index, key }), or nil
-  local function Path(data, rt, property)
+  local function Path(data, rt, property, noBorder)
     if type(property) ~= "string" then return nil end
     local n, key = property:match("^sub%.(%d+)%.(.+)$")
     if n then
       local sub = type(data.subRegions) == "table" and data.subRegions[tonumber(n)]
-      if sub and ((sub.type == "subglow" and GLOW_KEYS[key]) or (sub.type == "subtext" and TEXT_KEYS[key])) then
+      if sub and ((sub.type == "subglow" and GLOW_KEYS[key]) or (sub.type == "subtext" and TEXT_KEYS[key])
+                  or (sub.type == "subborder" and BORDER_KEYS[key] and rt == "icon" and not noBorder)) then
         return { tonumber(n), key }
       end
       return nil
@@ -342,7 +344,8 @@ do
     return tostring(v)
   end
 
-  function Engine.StackLooks(data, ti, rt, filter)
+  -- noBorder: the display keeps WA's own border, so its looks leave the border alone
+  function Engine.StackLooks(data, ti, rt, filter, noBorder)
     local conds = type(data.conditions) == "table" and data.conditions or {}
     local entries, used, notes = {}, {}, {}
     local cuts = { [0] = true }
@@ -362,7 +365,7 @@ do
             e.range = r or { always = true }
             if r then cut(r.ge); cut(r.le and r.le + 1) end
             for _, chg in ipairs(c.changes or {}) do
-              local p = type(chg) == "table" and Path(data, rt, chg.property)
+              local p = type(chg) == "table" and Path(data, rt, chg.property, noBorder)
               if p then
                 e.changes[#e.changes + 1] = { path = p, value = chg.value }
               elseif type(chg) == "table" and chg.property then
@@ -428,7 +431,7 @@ do
   -- side (WA's order and Else If chains, as for stacks). Returns { x, below, above, key } (below/above =
   -- { changes, key }) or nil, the condition indices used, and notes for the status line.
   local TIME_SIDE = { ["<"] = "below", ["<="] = "below", [">"] = "above", [">="] = "above" }
-  function Engine.TimeLooks(data, ti, rt)
+  function Engine.TimeLooks(data, ti, rt, noBorder)
     local conds = type(data.conditions) == "table" and data.conditions or {}
     local entries, used, notes = {}, {}, {}
     local x
@@ -447,7 +450,7 @@ do
           x = v
           e.side = TIME_SIDE[ch.op]
           for _, chg in ipairs(c.changes or {}) do
-            local p = type(chg) == "table" and Path(data, rt, chg.property)
+            local p = type(chg) == "table" and Path(data, rt, chg.property, noBorder)
             if p then
               e.changes[#e.changes + 1] = { path = p, value = chg.value }
             elseif type(chg) == "table" and chg.property then
@@ -1391,7 +1394,7 @@ function Engine.Classify(data)
   -- Missing OR Found with a Stack Count (a refresh icon: absent, or too few stacks): drawn as the Found plan
   -- behind its stack gates, plus the Missing clip outside them (plan.missingPart)
   local refreshM, refreshF, refreshTi = Engine.RefreshPair(infos, auraIdx)
-  if refreshF and not (refreshF.stacks or Engine.StackLooks(data, refreshTi, rt, refreshF.stacks)) then
+  if refreshF and not (refreshF.stacks or Engine.StackLooks(data, refreshTi, rt, refreshF.stacks, true)) then
     refreshM, refreshF = nil, nil
   end
   if refreshF then
@@ -1435,37 +1438,45 @@ function Engine.Classify(data)
       end
     end
     if #r > 0 then return nil, r end
-    local looks, lookConds, lookNotes
-    if inf.mode == "active" then looks, lookConds, lookNotes = Engine.StackLooks(data, ti, rt, inf.stacks) end
-    -- conditions on the time left: two looks (from X up, below X), each behind a time gate (as for stacks);
-    -- when all they change is the colour of the %p text, the countdown's colour curve instead (durColor)
-    local timeLooks, durColor
-    if inf.group then
-      local tl = Engine.TimeLooks(data, ti, rt)
-      if looks or tl then
-        lookNotes = lookNotes or {}
-        lookNotes[#lookNotes + 1] = T("conditions on stacks or the time left are not drawn for a group trigger")
-        looks, lookConds = nil, nil
-      end
-    elseif inf.mode == "active" then
-      local tl, tconds, tnotes = Engine.TimeLooks(data, ti, rt)
-      if tnotes and #tnotes > 0 then
-        lookNotes = lookNotes or {}
-        for _, n in ipairs(tnotes) do lookNotes[#lookNotes + 1] = n end
-      end
-      if tl and (looks or inf.stacks) then
-        lookNotes = lookNotes or {}
-        lookNotes[#lookNotes + 1] = T("'Remaining Duration' conditions are not drawn together with 'Stack Count' or conditions on stacks")
-      elseif tl then
-        durColor = Engine.DurationColorLooks(data, tl, tconds)
-        if durColor then
-          lookConds = tconds             -- drawn by the countdown's own colour curve: no looks, one slot
-        else
-          looks = { { time = { side = "above", x = tl.x }, changes = tl.above.changes, key = tl.above.key },
-                    { time = { side = "below", x = tl.x }, changes = tl.below.changes, key = tl.below.key } }
-          lookConds, timeLooks = tconds, tl.x
+    -- the looks leave the border alone where only WA's own draws it: a refresh icon, or one whose border a
+    -- condition WA applies itself changes (then the looks are cut again without the border)
+    local looks, lookConds, lookNotes, timeLooks, durColor
+    local noBorder = refreshM ~= nil
+    for _ = 1, 2 do
+      looks, lookConds, lookNotes, timeLooks, durColor = nil, nil, nil, nil, nil
+      if inf.mode == "active" then looks, lookConds, lookNotes = Engine.StackLooks(data, ti, rt, inf.stacks, noBorder) end
+      -- conditions on the time left: two looks (from X up, below X), each behind a time gate (as for stacks);
+      -- when all they change is the colour of the %p text, the countdown's colour curve instead (durColor)
+      if inf.group then
+        local tl = Engine.TimeLooks(data, ti, rt, noBorder)
+        if looks or tl then
+          lookNotes = lookNotes or {}
+          lookNotes[#lookNotes + 1] = T("conditions on stacks or the time left are not drawn for a group trigger")
+          looks, lookConds = nil, nil
+        end
+      elseif inf.mode == "active" then
+        local tl, tconds, tnotes = Engine.TimeLooks(data, ti, rt, noBorder)
+        if tnotes and #tnotes > 0 then
+          lookNotes = lookNotes or {}
+          for _, n in ipairs(tnotes) do lookNotes[#lookNotes + 1] = n end
+        end
+        if tl and (looks or inf.stacks) then
+          lookNotes = lookNotes or {}
+          lookNotes[#lookNotes + 1] = T("'Remaining Duration' conditions are not drawn together with 'Stack Count' or conditions on stacks")
+        elseif tl then
+          durColor = Engine.DurationColorLooks(data, tl, tconds)
+          if durColor then
+            lookConds = tconds             -- drawn by the countdown's own colour curve: no looks, one slot
+          else
+            looks = { { time = { side = "above", x = tl.x }, changes = tl.above.changes, key = tl.above.key },
+                      { time = { side = "below", x = tl.x }, changes = tl.below.changes, key = tl.below.key } }
+            lookConds, timeLooks = tconds, tl.x
+          end
         end
       end
+      if noBorder or not (looks and Engine.LooksBorder(data, looks)
+                          and Engine.BorderLive(data, { lookConds = lookConds, auraTriggers = auraTriggers })) then break end
+      noBorder = true
     end
     local looksKey
     if looks then
@@ -1727,8 +1738,11 @@ function Engine.Explain(data, plan, reasons)
         and T("animated (the aura's total duration is known: %s s), also while it runs out"):format(tostring(plan.parts.lateTotal))
         or T("WeakAuras' own animated glow while the aura is missing, a static glow while it runs out (animated once the aura's total duration is known: seen out of combat, or read from the spell's description)")
       if plan.parts.found then
-        txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows the live aura while it is present and adds the glow %s. The game checks the time left itself, so it never has to be read. Kept: position, size, groups, %%p/%%s texts (also in one, '%%p (%%s)'), static colour/desaturate/zoom, cooldown swipe; glow %s. Not available: the border (hidden while engine-driven), conditions and texts that read aura state, and actions on aura gain/loss other than sounds.")
-          :format(plan.unit, plan.parts.found.filterString, table.concat(when, T(" or ")), glowTxt)
+        local own = Engine.OwnBorder(data, { mode = "active" })
+        txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows the live aura while it is present and adds the glow %s. The game checks the time left itself, so it never has to be read. Kept: position, size, groups, %%p/%%s texts (also in one, '%%p (%%s)'), static colour/desaturate/zoom, cooldown swipe%s; glow %s. Not available: %sconditions and texts that read aura state, and actions on aura gain/loss other than sounds.")
+          :format(plan.unit, plan.parts.found.filterString, table.concat(when, T(" or ")),
+                  own and T(", the border (shown only while the aura is)") or "", glowTxt,
+                  (not own and #Engine.BorderSpecs(data) > 0) and T("the border (hidden while engine-driven, as a condition changes it), ") or "")
       else
         txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s). It shows your icon %s, and nothing otherwise. The game checks the time left itself, so it never has to be read. Kept: position, size, groups, the %%p text, static colour/zoom; glow %s. Not available: the border (hidden while engine-driven), cooldown swipe, stack count and desaturation on the time-left icon, conditions and texts that read aura state, and actions on aura gain/loss other than sounds.")
           :format(plan.unit, table.concat(when, T(" or ")), glowTxt)
@@ -1795,7 +1809,15 @@ function Engine.Explain(data, plan, reasons)
     else
       local kept = T("border and glow")
       if data.regionType == "icon" and plan.mode ~= "always" then
-        kept = T("the border (also while nothing is drawn), and the glow: shown only while the icon is, and animated like WeakAuras' own")
+        local border = T("the border (also while nothing is drawn)")
+        if plan.mode == "active" and plan.missingPart then
+          border = T("the border (also while nothing is drawn)")
+        elseif plan.mode == "active" and Engine.OwnBorder(data, plan) then
+          border = T("the border (shown only while the icon is)")
+        elseif plan.mode == "active" and #Engine.BorderSpecs(data) > 0 then
+          border = T("WeakAuras' own border, as a condition changes it (also while nothing is drawn)")
+        end
+        kept = T("%s, and the glow: shown only while the icon is, and animated like WeakAuras' own"):format(border)
       elseif data.regionType == "aurabar" then
         kept = T("the bar colours and gradient, the border (also while nothing is drawn), and the glow: shown only while the bar is, and animated like WeakAuras' own (a glow on the bar's fill goes around the whole bar)")
       end
@@ -2899,15 +2921,226 @@ end
 -- (replaced by the static glow) and, when asked, the border. Joins att.mirrored, so OnLayout hides them
 -- and TurnOff gives them back. Only ones that are on: handing back cannot show one that was off.
 local function HideStaticDecor(att, region, data, withBorder)
+  -- a border is on or off as WA draws it (the display's own data): a look that turns an off border on must
+  -- not hand WA's back as shown
+  local base = withBorder and region.id and WA.GetData(region.id) or data
   local ri = 0
-  for _, sub in ipairs(data.subRegions or {}) do
+  for i, sub in ipairs(data.subRegions or {}) do
     if Private.subRegionTypes[sub.type] then
       ri = ri + 1
       local live = region.subRegions and region.subRegions[ri]
+      local bsub = type(base.subRegions) == "table" and base.subRegions[i] or sub
       if live and ((sub.type == "subglow" and sub.glow)
-                   or (withBorder and sub.type == "subborder" and sub.border_visible ~= false)) then
+                   or (withBorder and sub.type == "subborder" and bsub.border_visible ~= false)) then
         att.mirrored[live] = true
       end
+    end
+  end
+end
+
+-- Border. WA's border is a frame on WA's region, which stays shown while the engine decides what is drawn,
+-- so it framed an empty spot, and in a Dynamic Group the game packs or sorts only the engine's drawing (WA's
+-- frames may not hang on it). A Found icon draws the border itself, inside its aura button, so it goes with
+-- the aura, the Stack Count and time gates and the packed or sorted place: WA's edge file in the eight pieces
+-- of WA's backdrop (BackdropTemplateM33kAuras: corners, edges between them, its texture coordinates), with
+-- WA's size, offset and colour, sized from plain data at safe time like the arc pieces in the same buttons.
+-- 'Force pixel perfect scale' scales the sizes the way WA scales its frame. A look (conditions on stacks or
+-- the time left) gives its own border colour. WA's own border stays where it shows at the right times (a
+-- refresh icon, with and without the aura; Missing; Always) and where a condition WA applies itself changes
+-- it (Engine.BorderLive), unless the display is in a packed or sorted row, where WA's own is hidden.
+do
+  local C0 = 0.0625
+  local C1 = 1 - C0
+  -- per piece: ULx, ULy, LLx, LLy, URx, URy, LRx, LRy; "x" / "y": the edge's repeats
+  local UV = {
+    TopLeftCorner = { 0.5078125, C0, 0.5078125, C1, 0.6171875, C0, 0.6171875, C1 },
+    TopRightCorner = { 0.6328125, C0, 0.6328125, C1, 0.7421875, C0, 0.7421875, C1 },
+    BottomLeftCorner = { 0.7578125, C0, 0.7578125, C1, 0.8671875, C0, 0.8671875, C1 },
+    BottomRightCorner = { 0.8828125, C0, 0.8828125, C1, 0.9921875, C0, 0.9921875, C1 },
+    TopEdge = { 0.2578125, "x", 0.3671875, "x", 0.2578125, C0, 0.3671875, C0 },
+    BottomEdge = { 0.3828125, "x", 0.4921875, "x", 0.3828125, C0, 0.4921875, C0 },
+    LeftEdge = { 0.0078125, C0, 0.0078125, "y", 0.1171875, C0, 0.1171875, "y" },
+    RightEdge = { 0.1328125, C0, 0.1328125, "y", 0.2421875, C0, 0.2421875, "y" },
+  }
+  local PIECES = { "TopLeftCorner", "TopRightCorner", "BottomLeftCorner", "BottomRightCorner",
+                   "TopEdge", "BottomEdge", "LeftEdge", "RightEdge" }
+  local CORNER = { TopLeftCorner = "TOPLEFT", TopRightCorner = "TOPRIGHT", BottomLeftCorner = "BOTTOMLEFT",
+                   BottomRightCorner = "BOTTOMRIGHT" }
+  -- an edge spans from one corner to the next (NineSliceUtil's layout): its TOPLEFT and BOTTOMRIGHT
+  local EDGE = {
+    TopEdge = { "TopLeftCorner", "TOPRIGHT", "TopRightCorner", "BOTTOMLEFT" },
+    BottomEdge = { "BottomLeftCorner", "TOPRIGHT", "BottomRightCorner", "BOTTOMLEFT" },
+    LeftEdge = { "TopLeftCorner", "BOTTOMLEFT", "BottomLeftCorner", "TOPRIGHT" },
+    RightEdge = { "TopRightCorner", "BOTTOMLEFT", "BottomRightCorner", "TOPRIGHT" },
+  }
+
+  -- the borders WA draws on the display (switched on, with an edge file), as plain data, in WA's order
+  function Engine.BorderSpecs(data)
+    local out = {}
+    for i, sub in ipairs(data.subRegions or {}) do
+      if sub.type == "subborder" and sub.border_visible ~= false and sub.border_edge ~= "None" then
+        local okF, file = pcall(LSM.Fetch, LSM, "border", sub.border_edge or "Square Full White")
+        if okF and type(file) == "string" and file ~= "" then
+          local c = type(sub.border_color) == "table" and sub.border_color or {}
+          out[#out + 1] = { i = i, file = file, size = math.max(1, tonumber(sub.border_size) or 2),
+                            offset = tonumber(sub.border_offset) or 0,
+                            color = { tonumber(c[1]) or 1, tonumber(c[2]) or 1, tonumber(c[3]) or 1, tonumber(c[4]) or 1 },
+                            alpha = tonumber(sub.border_alpha) or 1, pp = sub.border_ppscale and true or false }
+        end
+      end
+    end
+    return out
+  end
+
+  function Engine.BorderKey(data)
+    local parts = {}
+    for _, b in ipairs(Engine.BorderSpecs(data)) do
+      parts[#parts + 1] = table.concat({ b.i, b.file, b.size, b.offset, table.concat(b.color, ","), b.alpha,
+                                         tostring(b.pp) }, "/")
+    end
+    return table.concat(parts, ";")
+  end
+
+  -- a condition WA applies itself changes a border (the conditions the engine draws as looks, plan.lookConds,
+  -- do not count): only WA's own border follows it
+  function Engine.BorderLive(data, plan)
+    local used = plan and plan.lookConds or {}
+    local aura = plan and plan.auraTriggers or { [1] = true }
+    -- a check on an engine-driven Aura trigger's state (other than Buffed / Show) never fires: the state is
+    -- the engine's constant one (InertConditions); an Or fires while any of its checks can
+    local function never(ch)
+      if type(ch) ~= "table" then return false end
+      if type(ch.checks) == "table" then
+        if ch.variable == "OR" then
+          if #ch.checks == 0 then return false end
+          for _, sc in ipairs(ch.checks) do if not never(sc) then return false end end
+          return true
+        end
+        for _, sc in ipairs(ch.checks) do if never(sc) then return true end end
+        return false
+      end
+      return (aura[ch.trigger] and ch.variable ~= nil and ch.variable ~= "buffed" and ch.variable ~= "show") and true or false
+    end
+    for ci, c in ipairs(type(data.conditions) == "table" and data.conditions or {}) do
+      if type(c) == "table" and not used[ci] and not never(c.check) then
+        for _, chg in ipairs(type(c.changes) == "table" and c.changes or {}) do
+          local n = type(chg) == "table" and type(chg.property) == "string" and chg.property:match("^sub%.(%d+)%.border_")
+          local sub = n and type(data.subRegions) == "table" and data.subRegions[tonumber(n)]
+          if type(sub) == "table" and sub.type == "subborder" then return true end
+        end
+      end
+    end
+    return false
+  end
+
+  -- looks that change a border (only: and nothing else)
+  function Engine.LooksBorder(data, looks, only)
+    local any = false
+    for _, l in ipairs(looks or {}) do
+      for _, chg in ipairs(l.changes or {}) do
+        local sub = #chg.path == 2 and type(data.subRegions) == "table" and data.subRegions[chg.path[1]]
+        if type(sub) == "table" and sub.type == "subborder" then any = true elseif only then return false end
+      end
+    end
+    return any
+  end
+
+  -- a display the game packs or sorts in a Dynamic Group (WA's own sub-elements are hidden there)
+  function Engine.InDynRow(data)
+    local gdata = data.parent and WA.GetData(data.parent)
+    if not (gdata and gdata.regionType == "dynamicgroup" and Engine.DynPlan) then return false end
+    local ok, gp = pcall(Engine.DynPlan, gdata)
+    return ok and type(gp) == "table" or false
+  end
+
+  -- whether a Found icon draws its border itself (see above)
+  function Engine.OwnBorder(data, plan)
+    if not plan or plan.mode ~= "active" or plan.missingPart then return false end
+    if #Engine.BorderSpecs(data) == 0 then return false end
+    return not Engine.BorderLive(data, plan) or Engine.InDynRow(data)
+  end
+
+  local function NewBorder(parent)
+    local f = CreateFrame("Frame", nil, parent)
+    local b = { frame = f, parent = parent, pieces = {}, bias = {} }
+    for _, name in ipairs(PIECES) do
+      local t = f:CreateTexture(nil, "BORDER")
+      b.pieces[name] = t
+      local okB, bias = pcall(t.GetTexelSnappingBias, t)
+      b.bias[name] = okB and type(bias) == "number" and bias or nil
+    end
+    return b
+  end
+
+  local function StyleBorder(b, anchor, under, region, spec)
+    local f = b.frame
+    local scale = 1
+    local okS, es = pcall(region.GetEffectiveScale, region)
+    if okS and type(es) == "number" and not issecretvalue(es) and es > 0 then scale = es end
+    -- pixel perfect: WA's frame takes the screen's pixel scale, so its sizes count pixels; the same in ours
+    local unit, texScale = 1, scale
+    if spec.pp and PixelUtil and PixelUtil.GetPixelToUIUnitFactor then
+      local okP, px = pcall(PixelUtil.GetPixelToUIUnitFactor)
+      if okP and type(px) == "number" and px > 0 then unit, texScale = px / scale, px end
+    end
+    local e, off = spec.size * unit, spec.offset * unit
+    f:ClearAllPoints()
+    f:SetPoint("BOTTOMLEFT", anchor, "BOTTOMLEFT", -off, -off)
+    f:SetPoint("TOPRIGHT", anchor, "TOPRIGHT", off, off)
+    b.under = under
+    Engine.BorderLevels({ borders = { b } })
+    -- the edges tile as often as WA's backdrop tiles them on a frame of this size
+    local w, h = RegionSize(region)
+    local rx = math.max(0, (w + 2 * off) / e * texScale - 2 - C0)
+    local ry = math.max(0, (h + 2 * off) / e * texScale - 2 - C0)
+    local c = spec.color
+    for _, name in ipairs(PIECES) do
+      local t, uv = b.pieces[name], UV[name]
+      t:SetTexture(spec.file, true, true)
+      local v = {}
+      for k = 1, 8 do v[k] = (uv[k] == "x" and rx) or (uv[k] == "y" and ry) or uv[k] end
+      t:SetTexCoord(v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8])
+      t:SetVertexColor(c[1], c[2], c[3], c[4] * spec.alpha)
+      pcall(t.SetSnapToPixelGrid, t, not spec.pp)
+      if spec.pp then pcall(t.SetTexelSnappingBias, t, 0)
+      elseif b.bias[name] then pcall(t.SetTexelSnappingBias, t, b.bias[name]) end
+      t:ClearAllPoints()
+      if CORNER[name] then
+        t:SetPoint(CORNER[name], f, CORNER[name], 0, 0)
+        t:SetSize(e, e)
+      else
+        local ed = EDGE[name]
+        t:SetPoint("TOPLEFT", b.pieces[ed[1]], ed[2], 0, 0)
+        t:SetPoint("BOTTOMRIGHT", b.pieces[ed[3]], ed[4], 0, 0)
+      end
+      t:Show()
+    end
+    f:Show()
+  end
+
+  -- s: the shadows that keep the borders (s.borders); parent: the frame inside the aura button they are made
+  -- in; anchor: what they frame (the icon); under: the frame they sit just above (the cooldown swipe, as in
+  -- WA); region: WA's; specs: Engine.BorderSpecs, or nil to hide them. Safe time only.
+  function Engine.StyleBorders(s, parent, anchor, under, region, specs)
+    s.borders = s.borders or {}
+    local n = specs and #specs or 0
+    for i = 1, math.max(n, #s.borders) do
+      local spec, b = specs and specs[i], s.borders[i]
+      if spec and not b then b = NewBorder(parent); s.borders[i] = b end
+      if b then
+        if spec then StyleBorder(b, anchor, under, region, spec) else b.frame:Hide() end
+      end
+    end
+  end
+
+  -- after the button's frame level was set again: the borders just above the swipe once more
+  function Engine.BorderLevels(s)
+    for _, b in ipairs(s and s.borders or {}) do
+      pcall(function()
+        local lv = b.parent:GetFrameLevel() + 1
+        if b.under then lv = math.max(lv, b.under:GetFrameLevel() + 1) end
+        b.frame:SetFrameLevel(lv)
+      end)
     end
   end
 end
@@ -4016,8 +4249,14 @@ local function ApplySlotLook(att, region, data, plan)
     local w, h = RegionSize(region)
     StyleGlowTexture(s.glow, att.button, w, h, (found and not plan.noGlow and not animated) and GlowSpec(data) or nil)
   end
+  -- the border in the aura button, with the aura (WA's own is hidden then)
+  local own = found and Engine.OwnBorder(data, plan)
+  Engine.StyleBorders(s, att.button, s.icon, s.cooldown, region, own and Engine.BorderSpecs(data) or nil)
+  att.borderOn = own or nil
+  local base = found and region.id and WA.GetData(region.id) or data
+  local hideWA = found and ((base == data and own) or (base ~= data and Engine.OwnBorder(base, plan)))
   MirrorTexts(att, region, data, true, plan)
-  if found then HideStaticDecor(att, region, data, false) end
+  if found then HideStaticDecor(att, region, data, hideWA) end
   pcall(att.button.EnableMouseMotion, att.button, data.useTooltip and true or false)
 end
 
@@ -4359,7 +4598,12 @@ do
         said[#said + 1] = T("%s: %s."):format(which == "start" and T("Start") or T("Finish"), n)
       end
     end
-    if set("main") then said[#said + 1] = T("Main stays WeakAuras' own and plays as usual.") end
+    if set("main") then
+      -- WA plays Main on the display, which a sorted row hides (the row is the game's)
+      said[#said + 1] = InSortedRow(data)
+        and T("Main is not seen in a Dynamic Group sorted by the time left: WeakAuras plays it on this display, which is hidden while the game draws the row.")
+        or T("Main stays WeakAuras' own and plays as usual.")
+    end
     -- a Start / Finish with nothing this display type draws (WA does not play it either): no sentence
     if #said == 0 then return nil end
     return T("|cff33ff99Animations:|r %s"):format(table.concat(said, " "))
@@ -4546,7 +4790,11 @@ do
   local function StyleStartCopy(o, rig, region, data, plan)
     if rig.pic then CopyPictureLook(rig.pic, region, data)
     elseif rig.text then Engine.CopyPlainText(rig.text, region, data, plan, rig.layer)
-    elseif rig.icon then Engine.StyleIconLook(rig.icon, rig.cd, region, data) end
+    elseif rig.icon then
+      Engine.StyleIconLook(rig.icon, rig.cd, region, data)
+      -- the display's border moves with the copy (the display's own is shut while the copy plays)
+      Engine.StyleBorders(rig, rig.layer, rig.icon, rig.cd, region, o.borderOn and Engine.BorderSpecs(data) or nil)
+    end
     if not rig.count then return end
     -- a lone %s sub-text as the display draws it (MirrorTexts), hung on the copy so it moves with it; a
     -- text with time and stacks together waits for the display (its time is the display's duration text)
@@ -4607,6 +4855,7 @@ do
     Engine.SafeLevel(rig.button, h)
     Engine.SafeLevel(rig.fresh, h + 1)
     Engine.SafeLevel(rig.layer, h + 2)
+    Engine.BorderLevels(rig)
     o.gates.an:SetClipsChildren(true)
     o.anClip = true
     rig.container:Show()
@@ -5802,6 +6051,15 @@ do
   end
 
   -- Status line of a child (appended to its own), nil outside dynamic groups.
+
+  -- what a packed child does not show: an icon keeps its border (the engine's, in the aura button)
+  function Dyn.PackedHidden(data)
+    if data.regionType ~= "icon" then return T("While packed, its border and texts other than %p/%s/%n are hidden.") end
+    if #Engine.BorderSpecs(data) > 0 then
+      return T("While packed, it shows its border and its %p/%s/%n texts; other texts are hidden.")
+    end
+    return T("While packed, its texts other than %p/%s/%n are hidden.")
+  end
   function Dyn.Note(data)
     local gdata = ParentOf(data)
     if not gdata then return nil end
@@ -5813,9 +6071,11 @@ do
     end
     local gp, why = Dyn.Plan(gdata)
     if gp and gp.sorted then
-      local s = T("|cff33ff99Dynamic Group:|r sorted by the time left by the game (%s first), in combat too: the group is drawn as one row of its auras in the look of '%s' (the border and texts other than %s are hidden). This display itself is not drawn while it is in the row."):format(
+      local s = T("|cff33ff99Dynamic Group:|r sorted by the time left by the game (%s first), in combat too: the group is drawn as one row of its auras in the look of '%s' (%s). This display itself is not drawn while it is in the row."):format(
         gp.dir == "descending" and T("the most time left") or T("the least time left"), tostring(gp.tpl),
-        gp.kind == "aurabar" and "%p/%s/%n" or "%p/%s")
+        gp.kind == "aurabar" and T("the border and texts other than %p/%s/%n are hidden")
+          or (#Engine.BorderSpecs(WA.GetData(gp.tpl) or {}) > 0 and T("its border on every frame; texts other than %p/%s are hidden"))
+          or T("texts other than %p/%s are hidden"))
       if gp.time then
         s = s .. " " .. T("Its 'Remaining Duration' conditions are drawn per frame: below %s s and from %s s up, each frame takes its own look (colour and glow), in combat too."):format(tostring(gp.time.x), tostring(gp.time.x))
         if gp.time.twin then
@@ -5826,10 +6086,10 @@ do
       return s
     end
     if gp and gp.sortWhy then
-      return T("|cffff9933Dynamic Group:|r not sorted by the time left, because %s; packed by the game in the children's order instead, so it leaves no gap while its aura is absent, in combat too. While packed, its border and texts other than %%p/%%s/%%n are hidden."):format(tostring(gp.sortWhy))
+      return T("|cffff9933Dynamic Group:|r not sorted by the time left, because %s; packed by the game in the children's order instead, so it leaves no gap while its aura is absent, in combat too. %s"):format(tostring(gp.sortWhy), Dyn.PackedHidden(data))
     end
     if gp then
-      return T("|cff33ff99Dynamic Group:|r packed by the game, so it leaves no gap while its aura is absent, in combat too. While packed, its border and texts other than %p/%s/%n are hidden.")
+      return T("|cff33ff99Dynamic Group:|r packed by the game, so it leaves no gap while its aura is absent, in combat too. %s"):format(Dyn.PackedHidden(data))
     end
     return T("|cffff9933Dynamic Group:|r keeps its place while its aura is absent, because %s."):format(tostring(why))
   end
@@ -5912,7 +6172,7 @@ do
     end
     if not tl then return GlowCopy(GlowSub(data)), nil, notes end
     -- per frame, the colour and the glow vary (and the twin's text colour); anything else stays the first child's
-    local said = {}
+    local said, drawn = {}, false
     local roles = twin and Engine.SubTextRoles(data) or {}
     for _, side in ipairs({ tl.below, tl.above }) do
       for _, chg in ipairs(side.changes) do
@@ -5921,12 +6181,15 @@ do
         local ok = (#p == 1 and p[1] == "color") or (sub and sub.type == "subglow")
                    or (twin and twin.color and #p == 2 and p[2] == "text_color" and roles[p[1]] == "p")
         local what = table.concat(p, ".")
+        if ok then drawn = true end
         if not ok and not said[what] then
           said[what] = true
           notes[#notes + 1] = T("a 'Remaining Duration' condition changes '%s'; a sorted row varies only the colour and the glow per frame"):format(#p == 2 and ("sub." .. what) or what)
         end
       end
     end
+    -- nothing the row can vary per frame (a border, desaturation): no gates and no twin for it
+    if not drawn then return GlowCopy(GlowSub(data)), nil, notes end
     local below, above = Engine.LookData(data, tl.below), Engine.LookData(data, tl.above)
     local function Col(d) local c = d.color or {}; return { c[1] or 1, c[2] or 1, c[3] or 1 } end
     local cb, ca = Col(below), Col(above)
@@ -5947,7 +6210,7 @@ do
     if space < 0 then return nil, T("its spacing is negative") end
     local ids = Dyn.Members(gdata)
     if #ids == 0 then return nil, T("it has no loaded children") end
-    local tplLook, unit, filterString, otherKey, w, h, first, kind
+    local tplLook, unit, filterString, otherKey, w, h, first, kind, borderLooks
     local union, unionList = {}, {}
     for _, id in ipairs(ids) do
       local cd = WA.GetData(id)
@@ -5964,7 +6227,10 @@ do
       if kind == "aurabar" and tostring(cd.orientation or "HORIZONTAL"):find("VERTICAL") then
         return nil, T("'%s' is a vertical bar (a group sorted by the time left draws horizontal bars, so far)"):format(tostring(id))
       end
-      if p.parts or p.group or p.missingPart or p.mode ~= "active" or p.stacks or (p.looks and not p.timeLooks) then
+      -- looks that change only the border: the row draws the first child's own border (noted below)
+      local borderOnly = p.looks and not p.timeLooks and Engine.LooksBorder(cd, p.looks, true)
+      if borderOnly then borderLooks = true end
+      if p.parts or p.group or p.missingPart or p.mode ~= "active" or p.stacks or (p.looks and not p.timeLooks and not borderOnly) then
         return nil, T("'%s' is not a plain 'Aura(s) Found' display (a group sorted by the time left draws those, so far)"):format(tostring(id))
       end
       if p.nameless or p.byDuration then
@@ -6011,6 +6277,10 @@ do
     local w0, h0 = math.floor((tonumber(w) or 32) + 0.5), math.floor((tonumber(h) or 32) + 0.5)
     local fd = WA.GetData(ids[1])
     local glow, time, notes = Dyn.SortedLooks(fd, w0, h0, kind)
+    if borderLooks then
+      notes = notes or {}
+      notes[#notes + 1] = T("a Stacks condition changes the border; a sorted row draws every frame with the first child's border")
+    end
     -- a bar's icon is a square of the shorter side at its icon side, the bar the rest (AuraBar.lua orient*)
     local geo
     if kind == "aurabar" then
@@ -6131,6 +6401,9 @@ do
     return fr
   end
 
+  -- every sorted row styled again on its next placing (a new UI scale)
+  function Dyn.Unstyle() for _, st in pairs(states) do st.styled = nil end end
+
   local function SortedState(gregion, gid, gp)
     local st = states[gid]
     if st and st.sig == gp.sig and st.gregion == gregion then return st end
@@ -6165,6 +6438,7 @@ do
           local fr = Dyn.SortedBarFrame(button, s, gp)
           Dyn.SortedExtras(button, s, gp)
           st.frames[#st.frames + 1] = fr
+          if st.styled then pcall(Dyn.StyleSortedFrame, st, fr) end   -- a later batch
           return
         end
         s.icon = button:CreateTexture(nil, "ARTWORK")
@@ -6187,7 +6461,9 @@ do
         button:SetDurationText(s.duration, nil)
         button:SetApplicationCount(s.count, nil)
         Dyn.SortedExtras(button, s, gp)
-        st.frames[#st.frames + 1] = { button = button, shadows = s }
+        local fr = { button = button, shadows = s }
+        st.frames[#st.frames + 1] = fr
+        if st.styled then pcall(Dyn.StyleSortedFrame, st, fr) end   -- a later batch
       end,
     })
     if not ok then st.err = tostring(err); return st end
@@ -6222,7 +6498,9 @@ do
           ts.duration:SetPoint("CENTER")
           button:SetIcon(ts.icon)
           button:SetDurationText(ts.duration, nil)
-          st.tframes[#st.tframes + 1] = { button = button, shadows = ts }
+          local fr = { button = button, shadows = ts, twin = true }
+          st.tframes[#st.tframes + 1] = fr
+          if st.styled then pcall(Dyn.StyleSortedFrame, st, fr) end   -- a later batch
         end,
       })
       if not okT then Retire(st); st.err = tostring(errT); return st end   -- the row without its twin: neither
@@ -6233,6 +6511,43 @@ do
 
   -- every frame in the first child's look; texts that hang on the first child's frames hang on the same
   -- place within each frame (read out of combat, from WA's layout of that child)
+  -- one frame in the first child's look, from StyleSorted's st.ctx. Also a frame the game makes later, in its
+  -- initializeFrame: a row of more than 10 auras gets its frames in batches of 10 as they are needed, in
+  -- combat too, and those used to keep the bare look of their making.
+  function Dyn.StyleSortedFrame(st, fr)
+    local ctx = st.ctx
+    if not ctx then return false end
+    fr.anchors = setmetatable({}, { __mode = "k" })
+    fr.chainRetry = nil
+    if fr.twin then MirrorTexts(fr, ctx.region, ctx.data, true, ctx.twinPlan)
+    else ApplySlotLook(fr, ctx.region, ctx.data, ctx.plan) end
+    -- colours that change with the time left are multiplied over a white icon
+    if ctx.overlay and not fr.twin then fr.shadows.icon:SetVertexColor(1, 1, 1, 1) end
+    for obj, pts in pairs(fr.anchors) do
+      local out = {}
+      for i, p in ipairs(pts) do
+        local rel = p[2]
+        if type(rel) == "table" and rel ~= fr.button and Under(rel, ctx.region) then
+          -- WA's places, read once per styling (a later frame may be made in combat)
+          local r = ctx.rects[rel]
+          if not r then
+            local l, b, w, h = Rect(rel)
+            if not l then return false end
+            r = { l, b, w, h }
+            ctx.rects[rel] = r
+          end
+          local q = FRAC[tostring(p[3] or p[1]):upper()] or FRAC.CENTER
+          out[i] = { p[1], fr.button, "BOTTOMLEFT", r[1] - ctx.gl + q[1] * r[3] + (p[4] or 0), r[2] - ctx.gb + q[2] * r[4] + (p[5] or 0) }
+        else
+          out[i] = p
+        end
+      end
+      obj:ClearAllPoints()
+      for _, p in ipairs(out) do obj:SetPoint(p[1], p[2], p[3], p[4] or 0, p[5] or 0) end
+    end
+    return true
+  end
+
   local function StyleSorted(st, gp)
     if st.styled then return true end
     local tplData, tplRegion = WA.GetData(gp.tpl), RegionOf(gp.tpl)
@@ -6245,34 +6560,15 @@ do
     -- glows are the frames' own animated ones (SortedExtras), not the static texture
     if FG() and (gp.glow or gp.time) then tplPlan = setmetatable({ noGlow = true }, { __index = tplPlan }) end
     if twin then tplPlan = setmetatable({ twinNoP = true }, { __index = tplPlan }) end
+    st.ctx = { data = tplData, region = tplRegion, plan = tplPlan, twinPlan = twinPlan, gl = gl, gb = gb,
+               overlay = gp.time and gp.time.overlay, rects = {} }
     local again = false
     local all = {}
     for _, fr in ipairs(st.frames) do all[#all + 1] = fr end
     for _, fr in ipairs(st.tframes or {}) do all[#all + 1] = fr; fr.twin = true end
     for _, fr in ipairs(all) do
-      fr.anchors = setmetatable({}, { __mode = "k" })
-      fr.chainRetry = nil
-      if fr.twin then MirrorTexts(fr, tplRegion, tplData, true, twinPlan)
-      else ApplySlotLook(fr, tplRegion, tplData, tplPlan) end
+      if not Dyn.StyleSortedFrame(st, fr) then st.ctx = nil; return false end
       again = again or fr.chainRetry or false
-      -- colours that change with the time left are multiplied over a white icon
-      if gp.time and gp.time.overlay and not fr.twin then fr.shadows.icon:SetVertexColor(1, 1, 1, 1) end
-      for obj, pts in pairs(fr.anchors) do
-        local out = {}
-        for i, p in ipairs(pts) do
-          local rel = p[2]
-          if type(rel) == "table" and rel ~= fr.button and Under(rel, tplRegion) then
-            local l, b, w, h = Rect(rel)
-            if not l then return false end
-            local q = FRAC[tostring(p[3] or p[1]):upper()] or FRAC.CENTER
-            out[i] = { p[1], fr.button, "BOTTOMLEFT", l - gl + q[1] * w + (p[4] or 0), b - gb + q[2] * h + (p[5] or 0) }
-          else
-            out[i] = p
-          end
-        end
-        obj:ClearAllPoints()
-        for _, p in ipairs(out) do obj:SetPoint(p[1], p[2], p[3], p[4] or 0, p[5] or 0) end
-      end
     end
     st.styled = not again   -- a centred text measured before its font was loaded: styled again next time
     return true
@@ -6438,6 +6734,7 @@ do
     local c, sh = v.container, v.shadows
     if not v.button then return end                 -- a Missing copy (Engine.ApplyCopies) has no slot button
     pcall(v.button.SetFrameLevel, v.button, c:GetFrameLevel())
+    Engine.BorderLevels(sh)
     if v.isBar and sh.bar then
       pcall(sh.bar.SetFrameLevel, sh.bar, c:GetFrameLevel() + 1)
       pcall(sh.texts.SetFrameLevel, sh.texts, c:GetFrameLevel() + 2)
@@ -6591,7 +6888,7 @@ do
     local layout = Layout(data, plan)
     local set = (layout == "frame") and "fcopies" or "copies"
     att.copies, att.fcopies = att.copies or {}, att.fcopies or {}
-    att.mirrored = att.mirrored or {}
+    att.mirrored = {}                                  -- rebuilt from the copies (WA's modify shows what left it)
     att.copyLayout = layout
     local want = {}
     for _, u in ipairs(g.units) do
@@ -6795,6 +7092,11 @@ local function ApplyUnguarded(region)
   if att.unit ~= plan.unit then c:SetUnit(plan.unit); att.unit = plan.unit end
 
   local okLook, err
+  -- a display that no longer draws its Found slot: its border goes too (ApplySlotLook draws it again)
+  if kind ~= "slot" and not (kind == "composite" and plan.parts and plan.parts.found) then
+    Engine.StyleBorders(att.shadows, nil, nil, nil, nil, nil)
+    att.borderOn = nil
+  end
   if kind == "slot" and plan.missingPart then
     -- the icon for the absent aura first (its MirrorTexts is undone by the live aura's, which keeps the texts)
     local g = att.refreshGlows or { true, true }
@@ -6828,6 +7130,7 @@ local function ApplyUnguarded(region)
     SetRemainLevels(att)
     if plan.parts.found and att.button then pcall(att.button.SetFrameLevel, att.button, c:GetFrameLevel()) end
   end
+  Engine.BorderLevels(att.shadows)
   if att.isBar and att.shadows.bar then                  -- keep bar under texts, both above the button
     local sh = att.shadows
     pcall(sh.bar.SetFrameLevel, sh.bar, c:GetFrameLevel() + 1)
@@ -7007,9 +7310,12 @@ local function ComputeSig(region, data, plan)
         tostring(sub.glowFrequency), tostring(sub.glowLength), tostring(sub.glowThickness), tostring(sub.glowBorder),
         tostring(sub.glowStartAnim), tostring(sub.glowDuration), tostring(sub.anchor_area) }, "/")
     elseif sub.type == "subborder" then
-      parts[#parts + 1] = "border/" .. tostring(sub.border_visible)
+      parts[#parts + 1] = table.concat({ "border", tostring(sub.border_visible), tostring(sub.border_edge),
+        tostring(sub.border_size), tostring(sub.border_offset), sub.border_color and table.concat(sub.border_color, ",") or "",
+        tostring(sub.border_alpha), tostring(sub.border_ppscale), tostring(sub.anchor_area) }, "/")
     end
   end
+  parts[#parts + 1] = Engine.BorderLive(data, plan) and "border:wa" or ""
   return table.concat(parts, "|")
 end
 
@@ -7434,7 +7740,15 @@ ev:RegisterEvent("SPELLS_CHANGED")
 ev:RegisterEvent("LEARNED_SPELL_IN_SKILL_LINE")
 ev:RegisterEvent("PLAYER_LEVEL_UP")
 ev:RegisterUnitEvent("UNIT_AURA", "player", "target", "focus", "pet")
+pcall(ev.RegisterEvent, ev, "UI_SCALE_CHANGED")
+pcall(ev.RegisterEvent, ev, "DISPLAY_SIZE_CHANGED")
 ev:SetScript("OnEvent", function(_, event, arg1)
+  if event == "UI_SCALE_CHANGED" or event == "DISPLAY_SIZE_CHANGED" then
+    -- the engine's borders are sized from the scale at safe time (and the sorted rows styled once)
+    if Dyn.Unstyle then pcall(Dyn.Unstyle) end
+    ScheduleAll()
+    return
+  end
   if event == "UNIT_AURA" then
     LearnFromUnit(arg1)      -- plain data out of combat; a no-op while auras are secret
     return
