@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.9.6-beta (2026-10-20)
+
+- **WeakAuras' border on engine-driven icons.** A Found icon's border is now drawn by the engine, inside the
+  game's aura button: it shows only while the aura does (no empty frame while it is absent), and it moves
+  with the icon in packed and sorted Dynamic Groups, where it was hidden before. Your edge, size, offset,
+  colour and *Force pixel perfect scale* are kept, also on group copies and during a *Start* animation, and
+  conditions on stacks or the time left can change its colour. WeakAuras' own border stays on refresh,
+  Missing and Always icons, and where a condition WeakAuras applies itself changes it.
+- **Sorted rows of more than 10 icons**: the 11th icon and on now get the first child's look too.
+- **`/ea check`**: one line per feature on whether everything the engine draws with is still there in this
+  game build, and a line to paste on Discord. It runs by itself once after a new game build. `/ea engine
+  on|off` switches the engine (as `/faengine`).
+- Ready for a new game build: an event Blizzard renames or drops no longer stops the rest of the engine, and
+  the engine's off switch is always there.
+- The status line no longer says *Main* animations play in a Dynamic Group sorted by the time left (the game
+  draws that row).
+
 ## 0.9.5-beta (2026-10-18)
 
 - **A countdown and "red and glowing" together in a sorted row.** In a Dynamic Group sorted by the time

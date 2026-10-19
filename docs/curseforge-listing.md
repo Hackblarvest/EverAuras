@@ -42,8 +42,9 @@ Forever runs on the modern engine with its "secret values" system: the moment yo
 - **Stack Count**: show an aura only at 3+ stacks (or at most, or exactly, N), **refresh icons** that show while a debuff is missing or has fewer than N stacks (Sunder Armor), and **conditions on stacks**: change its colour, glow, text or alpha by the stack count, in combat too.
 - **Dynamic Groups** that close up in combat: a DoT row without holes (also your buffs and your target's DoTs in one row), growing left, right, up, down or from the centre, or **sorted by the time left** (icons or timer bars), with **conditions on the time left** per icon (e.g. red and glowing below 4 s, also with a countdown on the icons).
 - **Party auras for healers**: "someone in the party lacks Fortitude", "someone has my Renew", or **Auto-Clone**: in a Dynamic Group set to *Group by Frame: Unit Frames*, a copy at each party member's frame, such as Renew with its countdown on whoever has it and a Fortitude icon at whoever lacks it, in combat too (your own party, also in a raid).
+- **WeakAuras' border** on these icons, shown only with the aura, also in packed and sorted Dynamic Groups, and coloured by conditions on stacks or the time left.
 - **Animated glows** (Button, Pixel, Autocast, Proc) on these icons, textures and bars, shown only while they are, also in combat, including a glow that starts when an aura has X seconds left.
-- **Start and Finish animations**: an icon or texture grows, slides or fades in (a text slides or fades) when your DoT or buff lands, and a "buff missing" warning fades out as you put the buff back on, in combat too. Main animations such as Pulse work as in WeakAuras.
+- **Start and Finish animations**: an icon or texture grows, slides or fades in (a text slides or fades) when your DoT or buff lands, and a "buff missing" warning fades out as you put the buff back on, in combat too. Main animations such as Pulse work as in WeakAuras (not in a group sorted by the time left).
 - **Debuffs on you** such as Weakened Soul or Forbearance, matched by their properties, since Blizzard hides which debuff it is in combat.
 - **Auras by dispel type**: "a poison on me", "a Magic debuff on me", "a Magic buff on my target" for Purge, with the aura's own icon and countdown.
 - **Sounds that play when the aura comes or goes**, in combat too, from the first time (EverAuras ships the game's own spell lists per dispel type).
@@ -59,7 +60,7 @@ Custom-code auras that compare values Blizzard keeps secret (for example your cu
 
 ### Getting started
 
-Type `/ea` in game (also `/everauras` or `/wa`). Questions, bug reports and aura sharing on the [EverAuras Discord](https://discord.gg/HdRNYvKbY).
+Type `/ea` in game (also `/everauras` or `/wa`). After a game patch, `/ea check` tells you whether everything EverAuras needs from the game is still there. Questions, bug reports and aura sharing on the [EverAuras Discord](https://discord.gg/HdRNYvKbY).
 
 ### Credits
 
