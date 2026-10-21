@@ -102,8 +102,9 @@ C.FEATURES = {
   { name = "Five Second Rule", items = {
       "f:C_Spell.GetSpellPowerCost", "v:Enum.PowerType.Mana", "e:UNIT_SPELLCAST_SUCCEEDED" } },
   { name = "Party and raid", items = {
-      "f:UnitExists", "f:UnitIsDeadOrGhost", "f:UnitIsConnected",
-      "e:GROUP_ROSTER_UPDATE", "e:UNIT_FLAGS", "e:UNIT_CONNECTION" } },
+      "f:UnitExists", "f:UnitIsDeadOrGhost", "f:UnitIsConnected", "f:UnitGUID", "f:IsInRaid", "f:UnitIsUnit",
+      "f:UnitIsVisible", "f:SecureButton_GetUnit", "e:GROUP_ROSTER_UPDATE", "e:UNIT_FLAGS", "e:UNIT_CONNECTION",
+      "e:PLAYER_ALIVE", "e:PLAYER_UNGHOST", "e:PARTY_MEMBER_ENABLE", "e:PARTY_MEMBER_DISABLE", "e:UNIT_PHASE" } },
   { name = "Cooldowns and bars in combat (WeakAuras' own)", items = {
       "f:C_Spell.GetSpellCooldownDuration", "r:has.SetCooldownFromDurationObject", "r:has.SetTimerDuration",
       "f:C_CurveUtil.EvaluateColorValueFromBoolean" } },

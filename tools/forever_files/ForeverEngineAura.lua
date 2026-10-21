@@ -94,6 +94,7 @@ local nameWatch = {}                                     -- uid -> true for aura
 local readd = {}                                         -- uid -> true: re-add when safe (spell learned, eligibility changed)
 local available                                          -- nil = not probed yet
 local FlushReadds                                        -- defined after Apply
+local RefreshStatus                                      -- defined with Engine.Sync
 
 local function SV() return _G[AddonName .. "Saved"] end
 local function GloballyEnabled()
@@ -130,12 +131,19 @@ SlashCmdList["FOREVERENGINE"] = function(msg)
   sv.foreverEngine = sv.foreverEngine or {}
   msg = (msg or ""):lower():gsub("%s", "")
   if msg == "off" then sv.foreverEngine.disabled = true elseif msg == "on" then sv.foreverEngine.disabled = nil end
+  -- dev: raid copies stand for the 4 players of a small test raid (Engine.CopyToken). The session keeps the
+  -- value it read first (Engine.DevRaidAlias): taken before the toggle, so the switch waits for the /reload.
+  if Engine.devAlias == nil then Engine.devAlias = sv.foreverEngine.devRaidAlias and true or false end
+  if msg == "devalias" then sv.foreverEngine.devRaidAlias = (not sv.foreverEngine.devRaidAlias) or nil end
   local n, g = 0, 0
   for _, att in pairs(attachments) do
     if att.active then n = n + 1; if att.kind == "group" then g = g + 1 end end
   end
-  WA.prettyPrint(("engine-driven auras: %s, %d active (%d in 'missing' mode). on/off takes effect after /reload")
-    :format(GloballyEnabled() and "on" or "off", n, g))
+  local saved = sv.foreverEngine.devRaidAlias and true or false
+  local dev = (saved or Engine.devAlias) and (", DEV raid alias %s%s"):format(saved and "on" or "off",
+                                                saved ~= Engine.devAlias and " after /reload" or "") or ""
+  WA.prettyPrint(("engine-driven auras: %s, %d active (%d in 'missing' mode)%s. on/off (and devalias) take effect after /reload")
+    :format(GloballyEnabled() and "on" or "off", n, g, dev))
 end
 
 -- Events by name, each on its own (Engine.badEvents: the ones the game does not know): an event a new build
@@ -855,13 +863,21 @@ local function HasEntries(on, list)
   return false
 end
 
--- Unit 'Party' / 'Smart Group' without clones: WA shows the display while the number of members with the
--- aura passes the trigger's Unit Count. Two counts can be drawn, both as copies of the display, one per
--- member (Engine.ApplyCopies): 'anyone has it' (> 0, >= 1, != 0, > 0%) as Found copies, each showing its
+-- Unit 'Party' / 'Smart Group' / 'Raid' without clones: WA shows the display while the number of members
+-- with the aura passes the trigger's Unit Count. Two counts can be drawn, both as copies of the display, one
+-- per member (Engine.ApplyCopies): 'anyone has it' (> 0, >= 1, != 0, > 0%) as Found copies, each showing its
 -- member's aura where it is, and 'someone lacks it' (< 100%, != 100%) as Missing copies, one per member
 -- who is there (alive and online when the trigger ignores the others). Returns { pattern, units, ... }.
+-- The members, as in WeakAuras: 'Party' is you and party1-4 (in a raid that is your own group of it);
+-- 'Smart Group' the same out of a raid and raid1..raidN in one; 'Raid' raid1..raidN, and nobody out of a
+-- raid; with Auto-clone too, a copy per member. units: the party set (without you for Ignore Self; empty for
+-- 'Raid'); raidUnits: the raid set, whose copies are made the first time you are in a raid at safe time and
+-- shown only while you are in one (Engine.GateCopies, where Ignore Self finds you by your GUID: your raid
+-- index moves with the roster). Smart Group's clones in a row keep to your party (Engine.RaidSet).
 Engine.GROUP_UNSUPPORTED = { "useClass", "useGroupRole", "useRaidRole", "useUnitName", "useActualSpec", "useHostility",
   "useMatch_count", "useMatchPerUnit_count", "includePets", "useNpcId", "useArenaSpec" }
+Engine.RAID_UNITS = {}
+for i = 1, 40 do Engine.RAID_UNITS[i] = "raid" .. i end
 function Engine.GroupPattern(op, raw)
   raw = Trim(tostring(raw or ""))
   local frac, n = false, nil
@@ -880,10 +896,7 @@ function Engine.GroupPattern(op, raw)
   return nil
 end
 function Engine.GroupTrigger(t, no)
-  if t.unit == "raid" then
-    no(T("Unit 'Raid' is not engine-driven yet; 'Party' and 'Smart Group' (your party) are"))
-    return nil
-  end
+  local scope = t.unit                                   -- "party", "group" (Smart Group) or "raid"
   for _, k in ipairs(Engine.GROUP_UNSUPPORTED) do
     if t[k] then no(T("option '%s' of a group trigger cannot be expressed by the engine"):format(k)) end
   end
@@ -912,14 +925,18 @@ function Engine.GroupTrigger(t, no)
     return nil
   end
   local units = {}
-  if not t.ignoreSelf then units[1] = "player" end
-  for i = 1, 4 do units[#units + 1] = "party" .. i end
+  if scope ~= "raid" then
+    if not t.ignoreSelf then units[1] = "player" end
+    for i = 1, 4 do units[#units + 1] = "party" .. i end
+  end
   local clones = t.showClones and true or false
+  local raid = scope ~= "party"                          -- Smart Group and Raid watch the raid in one, clones too
   return { pattern = pattern, units = units, clones = clones, ignoreInvisible = t.ignoreInvisible and true or false,
+           scope = scope, raid = raid, raidUnits = raid and Engine.RAID_UNITS or nil,
            ignoreSelf = t.ignoreSelf and true or false,
            ignoreDead = t.ignoreDead and true or false, ignoreDisconnected = t.ignoreDisconnected and true or false,
-           key = ("%s:%s:%s:%s:%s"):format(pattern, tostring(clones), tostring(t.ignoreSelf), tostring(t.ignoreDead),
-                                          tostring(t.ignoreDisconnected)) }
+           key = ("%s:%s:%s:%s:%s:%s:%s"):format(scope, pattern, tostring(clones), tostring(t.ignoreSelf), tostring(t.ignoreDead),
+                                                tostring(t.ignoreDisconnected), tostring(t.ignoreInvisible and true or false)) }
 end
 
 local function AnalyseAuraTrigger(t, no, data)
@@ -933,8 +950,6 @@ local function AnalyseAuraTrigger(t, no, data)
   if not UNIT_OK[unit] then
     if t.unit == "member" then
       no(T("a Specific Unit must be a unit such as party1 to party4 or raid1 to raid40 (the engine cannot follow a player's name)"))
-    elseif t.unit == "group" or t.unit == "party" or t.unit == "raid" then
-      no(T("Unit 'Smart Group', 'Party' or 'Raid' is not engine-driven yet; a Specific Unit (party1 to party4, raid1 to raid40) is"))
     else
       no(T("Unit must be Player, Target, Focus, Pet or a Specific Unit (party1 to party4, raid1 to raid40)"))
     end
@@ -1969,27 +1984,59 @@ function Engine.Explain(data, plan, reasons)
     end
     if plan.group then
       local g = plan.group
+      local layout = g.clones and Engine.CopyLayout(data, plan) or "stack"
+      local raidSet = Engine.RaidSet(g, layout)         -- Smart Group's clones in a row keep to your party
       local who = g.ignoreSelf and T("party1 to party4") or T("you and party1 to party4")
+      if g.scope == "raid" then
+        who = g.ignoreSelf and T("raid1 to raid40, the whole raid but you; nobody outside a raid, as in WeakAuras")
+                            or T("raid1 to raid40, the whole raid; nobody outside a raid, as in WeakAuras")
+      elseif raidSet then
+        who = T("%s, and in a raid raid1 to raid40 instead: the whole raid%s, as in WeakAuras"):format(who,
+                g.ignoreSelf and T(" but you") or "")
+      end
       local skip = {}
       if g.ignoreDead then skip[#skip + 1] = T("dead") end
       if g.ignoreDisconnected then skip[#skip + 1] = T("offline") end
+      if g.ignoreInvisible then skip[#skip + 1] = T("out of checking range") end
       local left = #skip > 0 and T(" (%s members left out)"):format(table.concat(skip, ", ")) or ""
       if g.clones then
-        local layout = Engine.CopyLayout(data, plan)
         local where = (layout == "frame") and T("on that member's unit frame (the Dynamic Group groups by frame; the display's place among its group's children is kept even when the others are absent)")
           or (layout == "row") and T("in a row along the Dynamic Group's growth, one fixed place per member (an absent one leaves its place empty)")
           or T("all at the display's own place (as WeakAuras' clones without a Dynamic Group)")
-        txt = txt .. " " .. T("|cff33ff99Auto-clone:|r a copy per member of your party (%s) who %s%s, %s, in combat too."):format(who,
+        txt = txt .. " " .. T("|cff33ff99Auto-clone:|r a copy per member (%s) who %s%s, %s, in combat too."):format(who,
           (g.pattern == "lacks") and T("lacks the aura") or T("has the aura, with that member's aura"), left, where)
+        if layout == "row" and raidSet then
+          txt = txt .. " " .. T("In a raid the row has 40 places (raidN at place N): for the whole raid, a Dynamic Group that groups by unit frame (Group by Frame: Unit Frames) is meant.")
+        end
       else
         txt = txt .. " " .. ((g.pattern == "lacks")
-          and T("|cff33ff99Group:|r drawn once per member of your party (%s), each copy shown while that member lacks the aura%s, in combat too."):format(who, left)
-          or T("|cff33ff99Group:|r drawn once per member of your party (%s), each copy showing that member's aura where it is%s, in combat too: one of them shows when several have it."):format(who, left))
+          and T("|cff33ff99Group:|r drawn once per member (%s), each copy shown while that member lacks the aura%s, in combat too."):format(who, left)
+          or T("|cff33ff99Group:|r drawn once per member (%s), each copy showing that member's aura where it is%s, in combat too: one of them shows when several have it."):format(who, left))
       end
-      txt = txt .. " " .. T("In a raid it watches only your own party (you and party1 to party4); sounds on aura gain/loss are not played for group triggers yet.")
-      if g.ignoreInvisible then
-        txt = txt .. " " .. T("'Ignore out of checking range' is not applied yet: a member out of range counts as one without the aura.")
+      if layout == "stack" then
+        txt = txt .. " " .. T("The copies lie on each other, each 5 frame levels above the one before (the top one covers the rest; the display's own texts and border stay above them all), so the display draws above a later display of its group that overlaps it.")
       end
+      if g.scope == "party" then
+        txt = txt .. " " .. T("In a raid it watches your own group of the raid, as WeakAuras' 'Party' does.")
+      elseif not raidSet then
+        txt = txt .. " " .. T("In a raid it watches your own group of the raid too: Smart Group's clones in a row keep to your party, since 40 fixed places would run off the screen. For the whole raid: Unit 'Raid' (a row of 40 places) or a Dynamic Group that groups by unit frame.")
+      elseif Engine.RaidCopiesMade(data) then
+        txt = txt .. " " .. (g.scope == "raid"
+          and T("The copies for the raid are made: they show while you are in a raid, in combat too.")
+          or T("The copies for the raid are made: in a raid they show instead of your party's, in combat too."))
+      else
+        -- made at safe time only (Engine.Schedule): out of combat, and while the game lets addons read auras
+        txt = txt .. " " .. (g.scope == "raid"
+          and T("The copies for the raid are made the first time you are in a raid out of combat with auras readable (when the raid forms in combat, or while the game keeps auras secret as in a PvP match: once that ends); until then it watches nobody.")
+          or T("The copies for the raid are made the first time you are in a raid out of combat with auras readable (when the raid forms in combat, or while the game keeps auras secret as in a PvP match: once that ends); until then it watches your own party."))
+      end
+      if raidSet and g.ignoreSelf then
+        txt = txt .. " " .. T("Ignore Self in a raid: your raid token is found by your GUID (or by comparing units while the GUID is secret), also in combat; when neither can be read, you are counted.")
+      end
+      if raidSet and Engine.DevRaidAlias() then
+        txt = txt .. " " .. T("|cffff9933DEV ALIAS:|r raid1 to raid40 stand for you, party1, party2 and party3 in turn (foreverEngine.devRaidAlias, '/faengine devalias'), to see 40 copies with 4 players. Switch it off for real raids.")
+      end
+      txt = txt .. " " .. T("Sounds on aura gain/loss are not played for group triggers yet.")
     end
     if plan.timeLooks then
       txt = txt .. " " .. T("|cff33ff99Conditions on the time left:|r drawn as two looks, from %s s up and below %s s, each by an aura slot of its own behind a time gate (the game formats the time and the gate hangs on the text), so the game shows the one that matches, in combat too."):format(tostring(plan.timeLooks), tostring(plan.timeLooks))
@@ -2593,7 +2640,9 @@ local function EnsurePresentClip(att, region, plan, m)
     clip:SetPoint("BOTTOMLEFT", host, "BOTTOMLEFT", -m, -m)
     att.pAnchoredM = m
   end
-  if att.pUnit ~= plan.unit then att.container2:SetUnit(plan.unit); att.pUnit = plan.unit end
+  -- a group trigger's copy (Engine.ApplyCopies) watches its member, not the display's own unit
+  local u = att.copyUnit or plan.unit
+  if att.pUnit ~= u then att.container2:SetUnit(u); att.pUnit = u end
   att.container2:Show()
   att.pclip:SetFrameLevel(host:GetFrameLevel() + 2)
   att.pclip:Show()
@@ -5280,6 +5329,38 @@ function Engine.SafeLevel(obj, level)
   if obj then pcall(function() obj:SetFrameLevel(level) end) end
 end
 
+-- The levels inside a host from the host's own (h): the containers and the Missing clip at h, the present
+-- clip at h + 2 and its glows at h + 4, the start animation's slot. a: a display (ApplyEngineFrameLevels)
+-- or a member's copy (Engine.BandCopy).
+function Engine.HostLevels(a, h)
+  Engine.SafeLevel(a.container, h)
+  Engine.SafeLevel(a.shadows.clip, h)
+  Engine.SafeLevel(a.container2, h)
+  Engine.SafeLevel(a.pclip, h + 2)
+  for _, k in ipairs(PGLOW_KEYS) do
+    if a.pclip then Engine.SafeLevel(a[k], h + 4) end
+  end
+  if a.shadows.clip then Engine.SafeLevel(a.mglowHolder, h + 2) end
+  local rig = a.startRig                                     -- the start animation's slot (Engine.ApplyStartAnim)
+  if rig then
+    Engine.SafeLevel(rig.container, h)
+    Engine.SafeLevel(rig.button, h)
+    Engine.SafeLevel(rig.fresh, h + 1)
+    Engine.SafeLevel(rig.layer, h + 2)
+  end
+end
+
+-- WA's own elements of a display that the engine leaves to WA (a plain text, the border) at base + index + 1,
+-- above the host; with stacked copies of a group trigger as far above the top copy's band (Engine.BandTop),
+-- so they stay above every copy as they were above the one copy before.
+function Engine.SubRegionLevels(att, region, base)
+  if not region.subRegions then return end
+  local lift = Engine.BandTop and Engine.BandTop(att) or 0
+  for index, sub in pairs(region.subRegions) do
+    if sub.type ~= "subbackground" and sub.SetFrameLevel then sub:SetFrameLevel(math.min(base + index + 1 + lift, 10000)) end
+  end
+end
+
 local function SetRemainLevels(att)
   if not (att.rslots and att.container and att.host) then return end
   local base = att.host:GetFrameLevel()                -- the container's level (ApplyEngineFrameLevels)
@@ -6060,17 +6141,17 @@ do
         end
       end
       if not changed then return end
+      local map = {}                       -- the unit frames looked up once for all displays (PlaceCopies)
       for _, att in pairs(attachments) do
-        if att.active and att.fcopies and next(att.fcopies) then pcall(Engine.PlaceCopies, att) end
+        if att.active and att.fcopies and next(att.fcopies) then pcall(Engine.PlaceCopies, att, map) end
       end
     end)
   end
   if Private.callbacks and Private.callbacks.RegisterCallback then
     Private.callbacks:RegisterCallback("ScanForLoads", function()
-      -- copies show and hide with their display's load at once (plain SetShown, also in combat)
-      for _, att in pairs(attachments) do
-        if att.active and att.copies then pcall(Engine.GateCopies, att) end
-      end
+      -- copies show and hide with their display's load, the next frame (plain SetShown, also in combat):
+      -- one pass however many scans came in this one
+      Engine.QueueGate()
       Dyn.FlushLoads()
     end)
   end
@@ -6814,7 +6895,7 @@ do
           end
           Engine.ApplyStacks(v, Engine.LookPlan(plan, look), true)
           Engine.ApplyTimeGate(v, Engine.LookPlan(plan, look), true)
-          if v.unit ~= plan.unit then v.container:SetUnit(plan.unit); v.unit = plan.unit end
+          if v.unit ~= plan.unit then v.container:SetUnit(plan.unit); v.unit = plan.unit; v.member = Engine.MemberKey(plan.unit) end
           ApplySlotLook(v, region, ldata, fg and plan or setmetatable({ noGlow = true }, { __index = plan }))
           Levels(v)
           -- the look's stack range: a look shown from 2 stacks up never shows with the aura (Engine.AnimPlan)
@@ -6835,6 +6916,74 @@ do
   end
 end
 
+-- Who a unit token stands for, as a container last saw it (a.member, taken at SetUnit and at each refresh):
+-- the GUID, "" for no one, nil when it cannot be told (a secret GUID), which never matches, so such a
+-- container is always refreshed (Engine.RefreshContainers on a roster change). With it whether the game
+-- sends that member's auras: one who comes back online or into checking range is no new GUID, and the
+-- container may still show what it had before.
+function Engine.MemberKey(u)
+  if not (UnitExists and UnitGUID) then return nil end
+  if not UnitExists(u) then return "" end
+  local g = UnitGUID(u)
+  if issecretvalue(g) or type(g) ~= "string" then return nil end
+  local on = UnitIsConnected and UnitIsConnected(u)
+  local seen = UnitIsVisible and UnitIsVisible(u)
+  if issecretvalue(on) or issecretvalue(seen) then return nil end
+  return g .. (on == false and "|off" or "") .. (seen == false and "|far" or "")
+end
+
+-- Are you in a raid? Plain roster state; should the game ever keep it secret, whether raid1 is there tells.
+function Engine.InRaid()
+  if IsInRaid then
+    local ok, r = pcall(IsInRaid)
+    if ok and not issecretvalue(r) and type(r) == "boolean" then return r end
+  end
+  return UnitExists and UnitExists("raid1") and true or false
+end
+
+-- Is this token you? For Ignore Self on raid tokens, whose index moves with the roster: by your GUID (plain
+-- for group members), else by UnitIsUnit (secret on maps that restrict comparing units), else not you.
+local myGUID
+function Engine.IsSelf(u)
+  if myGUID == nil and UnitGUID then
+    local g = UnitGUID("player")
+    if not issecretvalue(g) and type(g) == "string" then myGUID = g end
+  end
+  local g = myGUID and UnitGUID and UnitGUID(u)
+  if not issecretvalue(g) and type(g) == "string" then return g == myGUID end
+  if UnitIsUnit then
+    local ok, r = pcall(UnitIsUnit, u, "player")
+    if ok and not issecretvalue(r) and type(r) == "boolean" then return r end
+  end
+  return false                        -- cannot be told: you are counted (the status line says so)
+end
+
+-- Dev toggle (SavedVariables foreverEngine.devRaidAlias, '/faengine devalias', after a /reload): raid1..raid40
+-- copies stand for you, party1, party2 and party3 in turn, so 40 copies per display can be seen and timed
+-- with 4 players. The status line says so. Read once per session (Engine.devAlias), so every display and
+-- its status line agree until the next /reload.
+local RAID_ALIAS = { "player", "party1", "party2", "party3" }
+function Engine.DevRaidAlias()
+  if Engine.devAlias == nil then
+    local sv = SV()
+    if not sv then return false end
+    Engine.devAlias = (sv.foreverEngine and sv.foreverEngine.devRaidAlias) and true or false
+  end
+  return Engine.devAlias
+end
+function Engine.CopyToken(u)
+  local n = Engine.DevRaidAlias() and tonumber(u:match("^raid(%d+)$"))
+  return n and RAID_ALIAS[(n - 1) % 4 + 1] or u
+end
+
+-- has a display made its copies for the raid (Explain: the status line)
+function Engine.RaidCopiesMade(data)
+  for region, att in pairs(attachments) do
+    if att.raidBuilt and att.want and data and region.id == data.id then return true end
+  end
+  return false
+end
+
 -- Group triggers (Engine.GroupTrigger): a copy of the display per member, inside the display's host, each with
 -- its own container on its member's unit token: Found copies draw the member's aura where it is, Missing
 -- copies the display while the member lacks it. Engine.GateCopies shows a copy only while its member is
@@ -6852,13 +7001,21 @@ do
   end
   Engine.CopyLayout = Layout
 
+  -- Is the raid's set of copies part of a display (Engine.GroupTrigger's raidUnits)? Smart Group's and Raid's,
+  -- but not Smart Group's clones in a row: 40 fixed places would run off the screen, so those keep to your
+  -- party in a raid too, as before (a row of the raid is Unit 'Raid''s).
+  function Engine.RaidSet(g, layout)
+    return (g.raid and not (layout == "row" and g.scope == "group")) and true or false
+  end
+
   local function Copy(att, region, u, layout)
     local set = (layout == "frame") and "fcopies" or "copies"
     att[set] = att[set] or {}
     local cp = att[set][u]
     if not cp then
       cp = { region = region, shadows = {}, isBar = att.isBar, isTex = att.isTex, isPic = att.isPic,
-             isMotion = att.isMotion, isModel = att.isModel, isText = att.isText, copyOf = att, copyUnit = u }
+             isMotion = att.isMotion, isModel = att.isModel, isText = att.isText, copyOf = att, copyUnit = u,
+             scope = u:find("^raid") and "raid" or "party" }
       if layout == "frame" then
         if not att.copyRoot then
           att.copyRoot = CreateFrame("Frame", nil, UIParent, "DisableUntrustedLayoutScriptsTemplate")
@@ -6874,25 +7031,144 @@ do
     return cp
   end
 
+  -- Copies at the display's own place lie on each other: each gets a band of 5 frame levels above the one
+  -- before (inside a copy, cooldown, texts, borders and glows reach host + 4), so the top copy covers the
+  -- ones below it whole, and two members' swipes or countdown numbers never draw into each other. The
+  -- clips built after it take the band from the host, Engine.CopyLevels from the container. Copies in a
+  -- row or on unit frames stand apart and keep one level. i: the copy's place in its set (your party's in
+  -- its list's order, the raid's raidN = N): the two sets never show together, so each starts at the host.
+  -- cp.bandFrom: the host level the band was taken from at safe time (in combat a level can be refused).
+  function Engine.BandCopy(att, cp, i, layout)
+    if layout == "frame" then return end              -- under the copies' own root (Copy)
+    local h = att.host:GetFrameLevel()
+    local k = (layout == "stack") and (i - 1) or 0
+    local lv = math.min(h + k * 5, 9995)              -- the band's top stays under the game's 10000
+    cp.band, cp.bandLayout = i, layout
+    cp.host:SetFrameLevel(lv)
+    for _, g in ipairs({ "ge", "le", "an" }) do cp.gates[g]:SetFrameLevel(lv) end
+    Engine.HostLevels(cp, lv)
+    cp.bandFrom = Engine.IsSafe() and h or nil
+  end
+
+  -- how far above its host the top band of a display's stacked copies lies (0 without): WA's own elements of
+  -- the display go as far up (Engine.SubRegionLevels), so they stay above every copy
+  function Engine.BandTop(att)
+    local n = (att.want and att.want.group and att.copyLayout == "stack") and att.bands or 0
+    if n <= 1 or not att.host then return 0 end
+    local h = att.host:GetFrameLevel()
+    return math.min(h + (n - 1) * 5, 9995) - h
+  end
+
+  -- whether a copy's set shows now: the raid's only in a raid (and not the one that is you, for Ignore Self),
+  -- your party's not once the raid's are made and you are in one (Smart Group), so nobody counts twice.
+  -- Changes with the roster only, which places the copies again (Engine.QueueRosterPlace).
+  local function SetOn(att, g, cp, tok, inRaid)
+    if cp.scope == "raid" then return (inRaid and not (g.ignoreSelf and Engine.IsSelf(tok))) and true or false end
+    return not (inRaid and att.raidBuilt)
+  end
+
+  -- The unit frame a member's copy hangs on. The one it hung on, while that frame still shows the same
+  -- member (by GUID, plain for group members): no lookup, which runs over every unit frame (40 and more in a
+  -- raid). Else LibGetFrame's. LibGetFrame matches frames by UnitIsUnit, which the game keeps secret on
+  -- addon-restricted maps (dungeons, raids), and then finds none: a frame it gave before that shows this
+  -- member now, by GUID (of several, the first in LibGetFrame's own order of frame kinds). map: the answers
+  -- of this pass per token (false: none), shared by its displays; unit tokens never clash with its own keys.
+  local LGF = LibStub and LibStub("LibGetFrame-1.0", true)
+  local PRIO = LGF and LGF.getDefaultFramePriorities and LGF.getDefaultFramePriorities() or {}
+  local known = setmetatable({}, { __mode = "k" })     -- the frames LibGetFrame gave -> their place in PRIO
+  Engine.frameLookups = 0                                -- LibGetFrame's lookups, for copyStats (CopyPass)
+  local function Rank(f)                                 -- by the frame's name, or ElvUI's health bar's parent's
+    for _ = 1, 2 do
+      local ok, n = pcall(f.GetName, f)
+      if ok and not issecretvalue(n) and type(n) == "string" then
+        for i, pat in ipairs(PRIO) do if n:find(pat) then return i end end
+        return #PRIO + 1
+      end
+      local okP, p = pcall(f.GetParent, f)
+      if not (okP and p) then break end
+      f = p
+    end
+    return #PRIO + 1
+  end
+  local function UnitOf(f)
+    for _ = 1, 2 do                                      -- ElvUI: LibGetFrame gives the frame's health bar
+      local ok, u = pcall(SecureButton_GetUnit, f)
+      if ok and not issecretvalue(u) and type(u) == "string" then return u end
+      local okP, p = pcall(f.GetParent, f)
+      if not (okP and p) then return nil end
+      f = p
+    end
+  end
+  local function GuidOf(u)
+    local g = u and UnitGUID(u)
+    if issecretvalue(g) or type(g) ~= "string" then return nil end
+    return g
+  end
+  local function Shown(f)
+    local ok, v = pcall(f.IsVisible, f)
+    return ok and not issecretvalue(v) and v == true
+  end
+  -- Returns the frame and whether it is LibGetFrame's own choice (a frame found by GUID is asked of
+  -- LibGetFrame again on the next pass: it may know a better one by then).
+  function Engine.CopyFrame(cp, tok, map)
+    local f = map[tok]
+    if f ~= nil then return f or nil, not (map.guessed and map.guessed[tok]) end
+    local guid = SecureButton_GetUnit and UnitGUID and GuidOf(tok)
+    local guessed = false
+    if guid and cp.frame and cp.frameLGF and Shown(cp.frame) and GuidOf(UnitOf(cp.frame)) == guid then
+      f = cp.frame
+    else
+      Engine.frameLookups = Engine.frameLookups + 1
+      f = WA.GetUnitFrame and WA.GetUnitFrame(tok) or nil
+      if f then
+        if not known[f] then known[f] = Rank(f) end
+      elseif guid then
+        local by = map.byGUID                            -- the known frames by whom they show, once per pass
+        if not by then
+          by = {}
+          for kf, r in pairs(known) do
+            local g = Shown(kf) and GuidOf(UnitOf(kf))
+            if g and (not by[g] or r < known[by[g]]) then by[g] = kf end
+          end
+          map.byGUID = by
+        end
+        f = by[guid]
+        guessed = f ~= nil
+      end
+    end
+    map[tok] = f or false
+    if guessed then map.guessed = map.guessed or {}; map.guessed[tok] = true end
+    return f, not guessed
+  end
+
   local GROW_DIR = { RIGHT = { 1, 0 }, LEFT = { -1, 0 }, UP = { 0, 1 }, DOWN = { 0, -1 } }
   -- the place of each copy: on its member's frame (frame), at its member's place in a row (row), or the
   -- display's own (stack). Plain anchors, also in combat (nothing here hangs on the aura's frames).
-  function Engine.PlaceCopies(att)
+  -- map: the members' unit frames of this pass (Engine.CopyFrame), shared by every display the pass
+  -- places (CopyPass), so a token is looked up once however many displays hang on it; a token nobody
+  -- stands behind, or whose set does not show now, is not looked up at all (its copy is hidden,
+  -- Engine.GateCopies).
+  function Engine.PlaceCopies(att, map)
     local data = att.region and WA.GetData(att.region.id)
     local plan = att.want
     if not (data and plan and plan.group) then return end
+    local g = plan.group
     local layout, gdata = Layout(data, plan)
     local w, h = RegionSize(att.region)
     if layout == "frame" then
+      map = map or {}
       local k = 0
       for i, id in ipairs(Dyn.Members(gdata)) do if id == data.id then k = i - 1 end end
       local d = GROW_DIR[gdata.grow or "RIGHT"] or GROW_DIR.RIGHT
       local space = tonumber(gdata.space) or 0
       local dx = d[1] * k * (w + space) + (tonumber(gdata.xOffset) or 0)
       local dy = d[2] * k * (h + space) + (tonumber(gdata.yOffset) or 0)
+      local inRaid = g.raid and Engine.InRaid() or false
       for u, cp in pairs(att.fcopies or {}) do
-        local f = WA.GetUnitFrame and WA.GetUnitFrame(u)
-        cp.frame = f
+        local tok, f = cp.token or u, nil
+        local byLGF
+        if cp.ok and UnitExists(tok) and SetOn(att, g, cp, tok, inRaid) then f, byLGF = Engine.CopyFrame(cp, tok, map) end
+        cp.frame, cp.frameLGF = f, byLGF
         if f then
           cp.host:ClearAllPoints()
           cp.host:SetSize(w, h)
@@ -6900,17 +7176,57 @@ do
         end
       end
     elseif layout == "row" then
+      -- a fixed place per member, by its set: your party's in the order of its list (you first), the raid's
+      -- by number (raidN at place N); the two sets never show together (Engine.GateCopies). Placed when the
+      -- display is applied: nothing of a place changes with the roster.
       local d = GROW_DIR[gdata.grow or "RIGHT"] or GROW_DIR.RIGHT
       local space = tonumber(gdata.space) or 0
-      for i, u in ipairs(plan.group.units) do
-        local cp = att.copies and att.copies[u]
-        if cp then
-          cp.host:ClearAllPoints()
-          cp.host:SetSize(w, h)
-          cp.host:SetPoint("CENTER", att.host, "CENTER", d[1] * (i - 1) * (w + space) + 0, d[2] * (i - 1) * (h + space) + 0)
+      for _, list in ipairs({ g.units, att.raidWanted and g.raidUnits or {} }) do
+        for i, u in ipairs(list) do
+          local cp = att.copies and att.copies[u]
+          if cp then
+            cp.host:ClearAllPoints()
+            cp.host:SetSize(w, h)
+            cp.host:SetPoint("CENTER", att.host, "CENTER", d[1] * (i - 1) * (w + space) + 0, d[2] * (i - 1) * (h + space) + 0)
+            cp.placed = true
+          end
         end
       end
+    else
+      -- at the display's own place: copies placed in a row before (the display left its Dynamic Group)
+      -- cover the host again
+      for _, cp in pairs(att.copies or {}) do
+        if cp.placed then cp.host:ClearAllPoints(); cp.host:SetAllPoints(att.host); cp.placed = nil end
+      end
     end
+  end
+
+  -- How long making and styling a display's copies took, placing and showing them included (SavedVariables
+  -- foreverEngine.copyStats, for the record): it runs only when a display is applied, and the first time you
+  -- are in a raid. And the passes that place the copies on unit frames (CopyPass), in combat too: the last
+  -- one's time and lookups of LibGetFrame, and the slowest.
+  local function Stats()
+    local sv = SV()
+    if not sv then return nil end
+    sv.foreverEngine = sv.foreverEngine or {}
+    local st = sv.foreverEngine.copyStats or {}
+    sv.foreverEngine.copyStats = st
+    return st
+  end
+  local function Ms(ms) return math.floor(ms * 100 + 0.5) / 100 end
+  local function CopyStats(n, ms)
+    local st = Stats()
+    if not st then return end
+    st.runs = (st.runs or 0) + 1
+    st.lastN, st.lastMs = n, Ms(ms)
+    if st.lastMs >= (st.maxMs or 0) then st.maxMs, st.maxN = st.lastMs, n end
+  end
+  local function PlaceStats(ms, looks)
+    local st = Stats()
+    if not st then return end
+    st.places = (st.places or 0) + 1
+    st.lastPlaceMs, st.lastLookups = Ms(ms), looks
+    if st.lastPlaceMs >= (st.maxPlaceMs or 0) then st.maxPlaceMs, st.maxLookups = st.lastPlaceMs, looks end
   end
 
   function Engine.ApplyCopies(att, region, data, plan)
@@ -6921,9 +7237,23 @@ do
     att.mirrored = {}                                  -- rebuilt from the copies (WA's modify shows what left it)
     att.copyLayout = layout
     local want = {}
-    for _, u in ipairs(g.units) do
+    -- the raid's copies are made the first time the display is applied while you are in a raid (at safe
+    -- time, as every build: the roster handler asks for it), and kept from then on
+    att.raidWanted = Engine.RaidSet(g, layout)
+    local units, nParty = g.units, #g.units
+    local withRaid = att.raidWanted and (att.raidBuilt or Engine.InRaid())
+    if withRaid then
+      units = {}
+      for _, u in ipairs(g.units) do units[#units + 1] = u end
+      for _, u in ipairs(g.raidUnits) do units[#units + 1] = u end
+    end
+    local t0 = debugprofilestop and debugprofilestop()
+    for i, u in ipairs(units) do
       want[u] = true
       local cp = Copy(att, region, u, layout)
+      local tok = Engine.CopyToken(u)                  -- u, or what a raid token stands for with the dev alias
+      cp.token, cp.copyUnit = tok, tok
+      Engine.BandCopy(att, cp, (i > nParty) and (i - nParty) or i, layout)   -- each set from the host
       local ok
       if plan.mode == "missing" then
         local w, h = RegionSize(region)
@@ -6952,17 +7282,20 @@ do
             DisablePresentClip(cp)
           end
           ApplySlotLook(cp, region, data, plan)
-          pcall(Engine.ApplyStartAnim, cp, region, data, plan, u, true)
+          pcall(Engine.ApplyStartAnim, cp, region, data, plan, tok, true)
         end
         pcall(Engine.ApplyFinishAnim, cp, region, data, plan, false)
       end
       if ok then
-        if cp.unit ~= u then cp.container:SetUnit(u); cp.unit = u end
+        if cp.unit ~= tok then cp.container:SetUnit(tok); cp.unit = tok; cp.member = Engine.MemberKey(tok) end
         Engine.CopyLevels(cp)
         for live in pairs(cp.mirrored or {}) do att.mirrored[live] = true end
       end
       cp.ok = ok and true or false
     end
+    -- all 40 made: from now on Smart Group shows them in a raid (not a set the display has no more: a row)
+    att.raidBuilt = withRaid and true or nil
+    att.bands = (layout == "stack") and math.max(nParty, withRaid and #g.raidUnits or 0) or 0
     for _, other in ipairs({ "copies", "fcopies" }) do
       for u, cp in pairs(att[other]) do
         if other ~= set or not want[u] then cp.ok = false; Engine.DisableCopy(cp) end
@@ -6971,6 +7304,8 @@ do
     if att.copyRoot then att.copyRoot:SetShown(layout == "frame") end
     Engine.PlaceCopies(att)
     Engine.GateCopies(att)
+    Engine.SubRegionLevels(att, region, Private.frameLevels and Private.frameLevels[region.id] or 5)
+    if t0 then CopyStats(#units, debugprofilestop() - t0) end
     return true
   end
 
@@ -6981,39 +7316,107 @@ do
     DisablePresentClip(cp)
     pcall(Engine.StopStartAnim, cp)
     cp.host:Hide()
+    cp.shown = false
   end
 
-  -- a copy shows while its member is there; plain unit state, also in combat
+  -- a copy shows while its member is there; plain unit state, also in combat. cp.shown: what the copy was
+  -- last given, so a pass touches only the copies whose member changed. The raid's copies show only in a
+  -- raid (and not the one that is you, for Ignore Self); once they are made, your party's step aside for
+  -- them in a raid (Smart Group), so nobody counts twice, and until then your party's stay (SetOn).
   function Engine.GateCopies(att)
     local g = att.want and att.want.group
     if not g then return end
     -- WeakAuras collapses a display it does not load, but the copies do not all hang on its region
     local loaded = not (WA.IsAuraLoaded and att.region) or WA.IsAuraLoaded(att.region.id) == true
+    local inRaid = g.raid and Engine.InRaid() or false
     for _, set in ipairs({ "copies", "fcopies" }) do
       for u, cp in pairs(att[set] or {}) do
-        local on = loaded and cp.ok and UnitExists(u) and true or false
+        local tok = cp.token or u
+        local on = loaded and cp.ok and UnitExists(tok) and true or false
         if on and set == "fcopies" and not cp.frame then on = false end
-        if on and g.ignoreDead and UnitIsDeadOrGhost(u) then on = false end
-        if on and g.ignoreDisconnected and UnitIsConnected and not UnitIsConnected(u) then on = false end
-        cp.host:SetShown(on)
+        if on then on = SetOn(att, g, cp, tok, inRaid) end
+        if on and g.ignoreDead and UnitIsDeadOrGhost(tok) then on = false end
+        if on and g.ignoreDisconnected and UnitIsConnected and not UnitIsConnected(tok) then on = false end
+        if on and g.ignoreInvisible and UnitIsVisible then
+          local seen = UnitIsVisible(tok)               -- out of checking range (another zone, too far)
+          if not issecretvalue(seen) and not seen then on = false end
+        end
+        if cp.shown ~= on then cp.host:SetShown(on); cp.shown = on end
       end
     end
   end
 
-  -- LibGetFrame tells when a unit frame shows another member, or goes: the frame copies follow
-  local LGF = LibStub and LibStub("LibGetFrame-1.0", true)
-  if LGF and LGF.RegisterCallback then
-    local function moved()
+  -- the passes below run outside WA's and the engine's guarded entry points: a bug in one is reported
+  -- once (as Guard does), and the copies keep what they had
+  local passReported = {}
+  local function Run(label, fn, ...)
+    local ok, err = pcall(fn, ...)
+    if not ok and not passReported[label] then
+      passReported[label] = true
+      local handler = geterrorhandler and geterrorhandler()
+      if handler then handler(("engine (%s): %s"):format(label, tostring(err))) end
+    end
+  end
+
+  -- One show/hide pass (and one placing pass of the copies on unit frames) per frame, however many
+  -- UNIT_FLAGS, load scans or LibGetFrame callbacks came in it: at a pull or a roster change these come by
+  -- the dozen. The members' unit frames are looked up once per pass, for all displays (PlaceCopies' map).
+  -- Copies in a row or at the display's own place hang on nothing that moves: placed when it is applied.
+  -- A member who went offline or out of checking range, or came back: the containers whose member's state
+  -- changed are refreshed (Engine.RefreshContainers, by Engine.MemberKey).
+  local gateQueued, placeQueued, placeAgain, refreshQueued = false, false, false, false
+  local function CopyPass()
+    gateQueued = false
+    local place, refresh = placeQueued, refreshQueued
+    placeQueued, refreshQueued = false, false
+    if refresh then
       for _, att in pairs(attachments) do
-        if att.active and att.fcopies and next(att.fcopies) then
-          pcall(Engine.PlaceCopies, att)
-          Engine.GateCopies(att)
+        if att.active and (att.copies or UNIT_OK[att.unit or ""] == "group") then
+          Run("copies: refresh", Engine.RefreshContainers, att, true)
         end
       end
     end
-    pcall(LGF.RegisterCallback, "EverAurasEngineCopies", "FRAME_UNIT_UPDATE", moved)
-    pcall(LGF.RegisterCallback, "EverAurasEngineCopies", "FRAME_UNIT_ADDED", moved)
-    pcall(LGF.RegisterCallback, "EverAurasEngineCopies", "FRAME_UNIT_REMOVED", moved)
+    if place then
+      local map, looks, t0 = {}, Engine.frameLookups, debugprofilestop and debugprofilestop()
+      for _, att in pairs(attachments) do
+        if att.active and att.copies and att.copyLayout == "frame" then Run("copies: place", Engine.PlaceCopies, att, map) end
+      end
+      if t0 then PlaceStats(debugprofilestop() - t0, Engine.frameLookups - looks) end
+    end
+    for _, att in pairs(attachments) do
+      if att.active and att.copies then Run("copies: show", Engine.GateCopies, att) end
+    end
+    if placeAgain then placeAgain = false; Engine.QueuePlace() end
+  end
+  function Engine.QueueGate()
+    if gateQueued then return end
+    gateQueued = true
+    C_Timer.After(0, CopyPass)
+  end
+  -- the copies on unit frames (LibGetFrame's callbacks, a roster change)
+  function Engine.QueuePlace()
+    placeQueued = true
+    Engine.QueueGate()
+  end
+  -- a roster change: placed the next frame, and once more the frame after, since the engine may hear of
+  -- the change before Blizzard's raid frames have taken their new units
+  function Engine.QueueRosterPlace()
+    Engine.QueuePlace()
+    placeAgain = true
+  end
+  -- a member's connection or checking range changed: shown or hidden, and refreshed where that changed
+  function Engine.QueueRefresh()
+    refreshQueued = true
+    Engine.QueueGate()
+  end
+
+  -- LibGetFrame tells when a unit frame shows another member, or goes, and when it has scanned the frames
+  -- again: the frame copies follow
+  if LGF and LGF.RegisterCallback then
+    local function moved() Engine.QueuePlace() end
+    for _, e in ipairs({ "GETFRAME_REFRESH", "FRAME_UNIT_UPDATE", "FRAME_UNIT_ADDED", "FRAME_UNIT_REMOVED" }) do
+      pcall(LGF.RegisterCallback, "EverAurasEngineCopies", e, moved)
+    end
   end
 end
 
@@ -7095,7 +7498,10 @@ local function ApplyUnguarded(region)
     if att.isText then m = math.max(m, 3) end      -- the outline reaches past the measured text
     if not EnsureGroup(att, region, plan, m) then TurnOff(att, region, data, "off"); return end
   elseif kind == "copies" then
+    local hadRaid = att.raidBuilt
     local okC, errC = pcall(Engine.ApplyCopies, att, region, data, plan)
+    -- the raid's copies were just made: the status line stops saying they will be
+    if okC and att.raidBuilt and not hadRaid then pcall(RefreshStatus, att, region, data, plan) end
     if not okC then
       if not att.copyWarned then
         att.copyWarned = true
@@ -7119,7 +7525,7 @@ local function ApplyUnguarded(region)
     WA.prettyPrint(("%s: engine stack count failed: %s"):format(tostring(region.id), tostring(errSt)))
   end
   att.kind = kind
-  if att.unit ~= plan.unit then c:SetUnit(plan.unit); att.unit = plan.unit end
+  if att.unit ~= plan.unit then c:SetUnit(plan.unit); att.unit = plan.unit; att.member = Engine.MemberKey(plan.unit) end
 
   local okLook, err
   -- a display that no longer draws its Found slot: its border goes too (ApplySlotLook draws it again)
@@ -7398,12 +7804,17 @@ function Engine.Sync(region, data)
   end
   local sig = ComputeSig(region, data, plan)
   att.want, att.wantSig = plan, sig
+  RefreshStatus(att, region, data, plan)
+  if att.active and att.sig == sig and not pending[region] then return end
+  Schedule(region)
+end
+
+-- the status line of an engine-driven display (also after its copies for a raid were made)
+RefreshStatus = function(att, region, data, plan)
   local status = (Engine.Explain(data, plan))
   local note = Dyn.Note(data)
   if note and status then status = status .. "\n\n" .. note end
   SetWarning(att, data.uid, "info", status)
-  if att.active and att.sig == sig and not pending[region] then return end
-  Schedule(region)
 end
 
 ---------------------------------------------------------------------------- secret values in custom code
@@ -7510,27 +7921,16 @@ ApplyEngineFrameLevels = function(region, frameLevel)
   -- the clips hang on the containers' secret edges and are forbidden to us while an aura is shown in
   -- combat (as the late clip): best effort, every level from the host's, which is ours to ask
   local h = att.host:GetFrameLevel()
-  Engine.SafeLevel(att.container, h)
-  Engine.SafeLevel(att.shadows.clip, h)
-  Engine.SafeLevel(att.container2, h)
-  Engine.SafeLevel(att.pclip, h + 2)
-  for _, k in ipairs(PGLOW_KEYS) do
-    if att.pclip then Engine.SafeLevel(att[k], h + 4) end
-  end
-  if att.shadows.clip then Engine.SafeLevel(att.mglowHolder, h + 2) end
-  local rig = att.startRig                                   -- the start animation's slot (Engine.ApplyStartAnim)
-  if rig then
-    Engine.SafeLevel(rig.container, h)
-    Engine.SafeLevel(rig.button, h)
-    Engine.SafeLevel(rig.fresh, h + 1)
-    Engine.SafeLevel(rig.layer, h + 2)
-  end
-  pcall(SetRemainLevels, att)
-  if region.subRegions then
-    for index, sub in pairs(region.subRegions) do
-      if sub.type ~= "subbackground" and sub.SetFrameLevel then sub:SetFrameLevel(base + index + 1) end
+  Engine.HostLevels(att, h)
+  -- a group trigger's stacked copies keep their bands above the host (Engine.BandCopy): taken again only
+  -- when the host moved, since a Dynamic Group lays its children out (and calls this) again and again
+  for _, cp in pairs(att.copies or {}) do
+    if cp.band and cp.ok and cp.bandFrom ~= h then
+      pcall(Engine.BandCopy, att, cp, cp.band, cp.bandLayout); pcall(Engine.CopyLevels, cp)
     end
   end
+  pcall(SetRemainLevels, att)
+  Engine.SubRegionLevels(att, region, base)
   Engine.OnLayout(region)
 end
 
@@ -7644,9 +8044,10 @@ local function QueueLearn(unit)
 end
 
 local function QueueLearnGroup()
+  if not Engine.IsSafe() then return end       -- QueueLearn takes nothing then; the roster is not read
   for _, u in ipairs({ "player", "pet", "target", "focus" }) do QueueLearn(u) end
   local n = GetNumGroupMembers and GetNumGroupMembers() or 0
-  local raid = IsInRaid and IsInRaid()
+  local raid = Engine.InRaid()
   for i = 1, raid and math.min(n, 40) or math.min(n, 4) do QueueLearn((raid and "raid" or "party") .. i) end
 end
 
@@ -7736,9 +8137,14 @@ QueueSpellbookRefresh = function()
 end
 
 ---------------------------------------------------------------------------- events
-function Engine.RefreshContainers(att)
+-- onlyChanged (a roster change): only the containers whose token now stands for someone else, or for no
+-- one, or cannot be told; the others still watch the right member (and refresh themselves on UNIT_AURA)
+function Engine.RefreshContainers(att, onlyChanged)
   local function one(a)
     if not (a and a.container) then return end
+    local m = a.unit and Engine.MemberKey(a.unit)
+    if onlyChanged and m ~= nil and m == a.member then return end
+    a.member = m
     pcall(a.container.UpdateAllAuras, a.container)
     if a.pclipShown and a.container2 then pcall(a.container2.UpdateAllAuras, a.container2) end
     local rig = a.startRig
@@ -7754,8 +8160,10 @@ local REFRESH = { PLAYER_TARGET_CHANGED = "target", PLAYER_FOCUS_CHANGED = "focu
 local ev = CreateFrame("Frame")
 Private.frames["ForeverEngine Events"] = ev
 Engine.RegisterEvents(ev, { "PLAYER_TARGET_CHANGED", "PLAYER_FOCUS_CHANGED", "PLAYER_REGEN_ENABLED", "PLAYER_ENTERING_WORLD",
-                            "GROUP_ROSTER_UPDATE", "UNIT_FLAGS", "UNIT_CONNECTION", "SPELLS_CHANGED",
-                            "LEARNED_SPELL_IN_SKILL_LINE", "PLAYER_LEVEL_UP", "UI_SCALE_CHANGED", "DISPLAY_SIZE_CHANGED" })
+                            "GROUP_ROSTER_UPDATE", "UNIT_FLAGS", "UNIT_CONNECTION", "PLAYER_ALIVE", "PLAYER_UNGHOST",
+                            "PARTY_MEMBER_ENABLE", "PARTY_MEMBER_DISABLE", "UNIT_PHASE",
+                            "SPELLS_CHANGED", "LEARNED_SPELL_IN_SKILL_LINE", "PLAYER_LEVEL_UP", "UI_SCALE_CHANGED",
+                            "DISPLAY_SIZE_CHANGED" })
 Engine.RegisterEvents(ev, { "UNIT_PET" }, "player")
 Engine.RegisterEvents(ev, { "UNIT_AURA" }, "player", "target", "focus", "pet")
 ev:SetScript("OnEvent", function(_, event, arg1)
@@ -7769,11 +8177,18 @@ ev:SetScript("OnEvent", function(_, event, arg1)
     LearnFromUnit(arg1)      -- plain data out of combat; a no-op while auras are secret
     return
   end
-  if event == "UNIT_FLAGS" or event == "UNIT_CONNECTION" then
-    -- a member died, came back or went offline: the copies of group triggers follow
+  if event == "UNIT_FLAGS" or event == "UNIT_CONNECTION" or event == "PARTY_MEMBER_ENABLE"
+     or event == "PARTY_MEMBER_DISABLE" or event == "UNIT_PHASE" then
+    -- a member died, came back, went offline or out of checking range (another zone or phase, too far):
+    -- the copies of group triggers follow (one pass per frame); the containers of a member who comes back
+    -- online or into range are refreshed (a death is a UNIT_AURA of its own)
     if arg1 == "player" or UNIT_OK[arg1 or ""] == "group" then
-      for _, att in pairs(attachments) do if att.active and att.copies then Engine.GateCopies(att) end end
+      if event == "UNIT_FLAGS" then Engine.QueueGate() else Engine.QueueRefresh() end
     end
+    return
+  end
+  if event == "PLAYER_ALIVE" or event == "PLAYER_UNGHOST" then
+    Engine.QueueGate()       -- you released your spirit or came back to life: your own copy follows
     return
   end
   if event == "SPELLS_CHANGED" or event == "LEARNED_SPELL_IN_SKILL_LINE" or event == "PLAYER_LEVEL_UP" then
@@ -7796,18 +8211,23 @@ ev:SetScript("OnEvent", function(_, event, arg1)
   if unit then LearnFromUnit(unit) end
   local roster = event == "GROUP_ROSTER_UPDATE"
   if unit or roster or event == "PLAYER_ENTERING_WORLD" then pcall(Dyn.UpdateUnit, unit) end
-  for _, att in pairs(attachments) do
+  -- you are in a raid: displays on the whole raid make their raid copies now (in combat: as it ends, Flush)
+  local inRaid = (roster or event == "PLAYER_ENTERING_WORLD") and Engine.InRaid()
+  for region, att in pairs(attachments) do
     -- Inbound secure delegate, PoC-verified in combat. The container refreshes itself only on
     -- UNIT_AURA/UNIT_FACTION/UNIT_FLAGS/PLAYER_REGEN_*; unit swaps are our job, for every container of
-    -- the display (its looks of conditions on stacks or the time left have their own).
+    -- the display (its looks of conditions on stacks or the time left have their own). On a roster change
+    -- only the tokens that now stand for someone else; the copies are shown the next frame, those on unit
+    -- frames placed then and once more the frame after (Engine.QueueRosterPlace).
     if att.active and (event == "PLAYER_ENTERING_WORLD" or att.unit == unit
                        or (roster and (UNIT_OK[att.unit or ""] == "group" or att.copies))) then
-      Engine.RefreshContainers(att)
+      Engine.RefreshContainers(att, roster)
       if att.copies then
-        if att.fcopies and next(att.fcopies) then pcall(Engine.PlaceCopies, att) end
-        Engine.GateCopies(att)
+        if att.copyLayout == "frame" then Engine.QueueRosterPlace() else Engine.QueueGate() end
       end
     end
+    local g = inRaid and att.active and att.want and att.want.group
+    if g and att.raidWanted and not att.raidBuilt then Schedule(region) end
   end
 end)
 

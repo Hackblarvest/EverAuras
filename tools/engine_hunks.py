@@ -72,6 +72,15 @@ BUFFTRIGGER2_HUNKS = [
     #    no matchData, so nothing else kicks them when the target is cleared.
     ("  local unitExists = UnitExistsFixed(unit)\n  if unitExists then\n\n    if unitExistScanFunc[unit] then",
      "  local unitExists = UnitExistsFixed(unit)\n  if unitExists or unitExistScanFunc[unit] then -- Forever: also kick unit-existence triggers on loss\n\n    if unitExistScanFunc[unit] then"),
+    # P5 LoadAura: a delegated group trigger (Party / Smart Group / Raid) is not scanned either. Its state is
+    #    constant (P3), the engine's copies draw the members, so WeakAuras would scan up to 40 units' auras
+    #    for nothing: no RecheckActive per member (it falls through to P2's branch, whose unitsToCheck is
+    #    never read) and no entry in groupScanFuncs (roster and unit flag rechecks). matchDataChanged at the
+    #    end of LoadAura still publishes the constant state.
+    ("  elseif triggerInfo.groupTrigger then\n    triggerInfo.maxUnitCount = 0\n",
+     "  elseif triggerInfo.groupTrigger and not triggerInfo.engineDelegated then -- Forever: the engine draws delegated ones\n    triggerInfo.maxUnitCount = 0\n"),
+    ("  if triggerInfo.groupTrigger then\n    groupScanFuncs[triggerInfo.unit] = groupScanFuncs[triggerInfo.unit] or {}\n",
+     "  if triggerInfo.groupTrigger and not triggerInfo.engineDelegated then -- Forever: nothing to recheck\n    groupScanFuncs[triggerInfo.unit] = groupScanFuncs[triggerInfo.unit] or {}\n"),
 ]
 
 # Prototypes.lua: the Spell Known helper. Upstream now covers the rest on Forever itself (queued spells
@@ -423,6 +432,8 @@ CHECKS = {
         "elseif triggerInfo.engineDelegated then",
         "return UpdateDelegatedState(time, triggerInfo, triggerStates)",
         "if unitExists or unitExistScanFunc[unit] then",
+        "elseif triggerInfo.groupTrigger and not triggerInfo.engineDelegated then",
+        "  if triggerInfo.groupTrigger and not triggerInfo.engineDelegated then -- Forever: nothing to recheck",
         "local function SafeForEachAura(unit, filter, maxCount, func, usePackedAura)\n  if not C_Secrets.ShouldAurasBeSecret() then",
         "missingCountFuncs[info.matchCountFunc]"],
     "M33kAuras/Prototypes.lua": ["if Private.ExecEnv.IsSpellKnown(spell, pet) then",
