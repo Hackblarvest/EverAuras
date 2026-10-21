@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.7-beta (2026-10-21)
+
+- **Raid auras.** Group triggers on *Unit: Raid*, and *Smart Group* in a raid, are now drawn by the engine
+  and watch the whole raid, also in combat: "RAID NEEDS FORTITUDE" (*Unit Count* '< 100%') or "someone in
+  the raid has my Renew" ('> 0'). *Party* keeps watching your own group of the raid, as in WeakAuras. The
+  raid's copies are made the first time you are in a raid out of combat.
+- **Auto-Clone at the raid frames**: in a Dynamic Group set to *Group by Frame: Unit Frames*, a copy at each
+  raid member's frame, yours too, for *Smart Group* and *Raid*.
+- *Ignore Self* follows you when your raid index changes, and *Ignore out of checking range* is now applied.
+- Group copies: an animated glow now follows its own member (it followed you), stacked copies show one
+  countdown and one swipe, and joining, leaving or moving in a group costs far less.
+- Official auras: **EverAuras Shield** and **EverAuras Shield Ring** 1.1 (wago.io) show Mana Shield too,
+  counted from the game's damage meter, and the sum of all your shields.
+
 ## 0.9.6-beta (2026-10-20)
 
 - **WeakAuras' border on engine-driven icons.** A Found icon's border is now drawn by the engine, inside the
