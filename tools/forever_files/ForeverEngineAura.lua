@@ -3640,10 +3640,22 @@ end
 
 -- Texture displays: a copy of WA's texture, on the slot button (Found) or in the Missing clip. WA turns
 -- and mirrors it with texture coordinates, so the copy takes them from WA's own texture. WA's texture is
--- hidden (alpha, which WA never sets on it) while the display is engine-driven.
+-- hidden while engine-driven. SetVertexColor's alpha also changes the texture's alpha, so colour
+-- updates must preserve that hiding; preview and non-engine drawing restore the original texture.
 local function SetPicVisuals(region, shown)
   local wa = region.texture and region.texture.texture
-  if wa and wa.SetAlpha then wa:SetAlpha(shown and 1 or 0) end
+  if not (wa and wa.SetAlpha) then return end
+  local att = attachments[region]
+  if att then
+    att.picHidden = not shown
+    if not shown and att.picColorHook ~= wa then
+      hooksecurefunc(wa, "SetVertexColor", function()
+        if att.picHidden and att.picColorHook == wa then wa:SetAlpha(0) end
+      end)
+      att.picColorHook = wa
+    end
+  end
+  wa:SetAlpha(shown and 1 or 0)
 end
 
 local function CopyPictureLook(tex, region, data)
