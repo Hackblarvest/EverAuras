@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.8-beta (2026-10-24)
+
+- **Sounds on group triggers.** On Show / On Hide sounds of Party, Smart Group and Raid triggers now play per
+  member, also in combat: an Auto-Clone on each member's gain and loss, "someone has it" ('> 0') on each gain,
+  "someone lacks it" ('< 100%') on each loss. Only the members the display watches now are registered, so one
+  person never plays twice when a party becomes a raid, and *Ignore Self* is respected. A Unit Count on the
+  whole raid stays silent (40 members would mean 40 sounds).
+- **Sounds follow changes at once**, also in combat and in dungeons: someone joining, leaving or moving, or a
+  party turning into a raid, mid-fight.
+- **Auto-Clone 'All'**: a copy at every member's frame, showing the live aura (countdown, swipe, glow) where the
+  member has it and the look of your *Aura(s) Found* conditions (e.g. greyed out) where not, also in combat.
+  Icons, textures and stop motions.
+- **The border on 'Unaffected' copies**: a "lacks it" icon at a member's frame, or in a row, now has WeakAuras'
+  border while it shows.
+
 ## 0.9.7-beta (2026-10-21)
 
 - **Raid auras.** Group triggers on *Unit: Raid*, and *Smart Group* in a raid, are now drawn by the engine
