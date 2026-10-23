@@ -558,6 +558,81 @@ do
     return { sub = n, x = tl.x, edge = edge, below = below, above = above,
              key = ("%d|%s|%s|%s"):format(n, tostring(edge), table.concat(below, ","), table.concat(above, ",")) }
   end
+
+  -- Auto-clone 'All' (Engine.GroupTrigger, pattern "all"): a member's copy draws the live aura while the member
+  -- has it and the display while they lack it (Engine.ApplyCopies). WA tells its clones apart by the trigger's
+  -- 'Aura(s) Found' (variable 'buffed', a bool: 1 = has it); conditions on it become two looks, 'on' for the live
+  -- aura's slot and 'off' for the Missing clip, each the display's data with the changes active on that side
+  -- (WA's order and Else If chains, as for stacks). Only what the copies' looks read from the data can vary:
+  -- colour and desaturation, and alpha on unit frames only (frame = true): elsewhere the copies lie inside the
+  -- display, whose alpha WA sets from its own state, which is never 'buffed' (hunk P3). Returns
+  -- { on = { changes, key }, off = { changes, key }, key }, or nil and why it cannot be drawn.
+  local BUFFED_PROPS = {
+    icon = { color = true, desaturate = true }, texture = { color = true, desaturate = true },
+    stopmotion = { foregroundColor = true, backgroundColor = true, desaturateForeground = true,
+                   desaturateBackground = true },
+  }
+  function Engine.BuffedLooks(data, ti, rt, frame)
+    local conds = type(data.conditions) == "table" and data.conditions or {}
+    local entries, kinds, chain = {}, {}, 0
+    local function buffed(ch)
+      if type(ch) ~= "table" then return false end
+      if type(ch.checks) == "table" then
+        for _, sc in ipairs(ch.checks) do if buffed(sc) then return true end end
+        return false
+      end
+      return ch.trigger == ti and ch.variable == "buffed"
+    end
+    -- what an Else If chain checks: 'buffed', other things, or both (then WA's chain depends on the others)
+    local function mark(kind)
+      local k = kinds[chain]
+      kinds[chain] = (k == nil or k == kind) and kind or "mixed"
+    end
+    for ci, c in ipairs(conds) do
+      if not (type(c) == "table" and c.linked and ci > 1) then chain = chain + 1 end
+      local ch = type(c) == "table" and c.check or nil
+      if buffed(ch) then
+        if type(ch.checks) == "table" then
+          return nil, T("a condition combines 'Aura(s) Found' with other checks, which the engine cannot draw per member")
+        end
+        local e = { chain = chain, on = (ch.value == 1 or ch.value == true), changes = {} }
+        for _, chg in ipairs(type(c.changes) == "table" and c.changes or {}) do
+          local p = type(chg) == "table" and chg.property or nil
+          if p == "alpha" and not frame then
+            return nil, T("an 'Aura(s) Found' condition changes the alpha, which the engine draws per member only on unit frames (a Dynamic Group that groups by unit frame): elsewhere the copies lie inside the display, which WeakAuras keeps at one alpha for all of them")
+          elseif p == "alpha" or (BUFFED_PROPS[rt] and BUFFED_PROPS[rt][p]) then
+            e.changes[#e.changes + 1] = { path = { p }, value = chg.value }
+          elseif p ~= nil then
+            return nil, T("an 'Aura(s) Found' condition changes '%s'; per member the engine draws changes of colour and desaturation (and of alpha on unit frames)"):format(tostring(p))
+          end
+        end
+        entries[#entries + 1] = e
+        mark("buffed")
+      elseif type(ch) == "table" and (ch.variable ~= nil or ch.checks ~= nil) then
+        mark("other")
+      end
+      if kinds[chain] == "mixed" then
+        return nil, T("an Else If chain of conditions mixes 'Aura(s) Found' with other checks, which the engine cannot draw per member")
+      end
+    end
+    -- per side, the first condition of each chain that holds there (an active one ends its chain)
+    local looks = {}
+    for _, side in ipairs({ "on", "off" }) do
+      local changes, keys, hit = {}, {}, {}
+      for _, e in ipairs(entries) do
+        if not hit[e.chain] and e.on == (side == "on") then
+          hit[e.chain] = true
+          for _, chg in ipairs(e.changes) do
+            changes[#changes + 1] = chg
+            keys[#keys + 1] = chg.path[1] .. "=" .. Show(chg.value)
+          end
+        end
+      end
+      looks[side] = { changes = changes, key = table.concat(keys, ";") }
+    end
+    looks.key = looks.on.key .. "|" .. looks.off.key
+    return looks
+  end
 end
 
 -- One aura2 trigger -> its part of the plan. Reasons it cannot be drawn go through no().
@@ -870,7 +945,8 @@ end
 -- who is there (alive and online when the trigger ignores the others). Returns { pattern, units, ... }.
 -- The members, as in WeakAuras: 'Party' is you and party1-4 (in a raid that is your own group of it);
 -- 'Smart Group' the same out of a raid and raid1..raidN in one; 'Raid' raid1..raidN, and nobody out of a
--- raid; with Auto-clone too, a copy per member. units: the party set (without you for Ignore Self; empty for
+-- raid; with Auto-clone too, a copy per member (pattern "any", "lacks", or "all": both parts in every copy,
+-- shown while its member is there, Engine.ApplyCopies). units: the party set (without you for Ignore Self; empty for
 -- 'Raid'); raidUnits: the raid set, whose copies are made the first time you are in a raid at safe time and
 -- shown only while you are in one (Engine.GateCopies, where Ignore Self finds you by your GUID: your raid
 -- index moves with the roster). Smart Group's clones in a row keep to your party (Engine.RaidSet).
@@ -902,13 +978,15 @@ function Engine.GroupTrigger(t, no)
   end
   local pattern
   if t.showClones then
-    -- Auto-clone: a copy per member who has it ('Affected', and a clone per aura), or who lacks it
+    -- Auto-clone: a copy per member who has it ('Affected', and a clone per aura), who lacks it, or ('All') a
+    -- copy per member either way: the member's aura while they have it, the display while they lack it
     local mode = t.combinePerUnit and (t.perUnitMode or "affected") or "affected"
-    if mode == "all" then
-      no(T("Auto-clone for 'All' members is not engine-driven yet ('Affected' and 'Unaffected' are)"))
+    if mode == "all" and t.useGroup_count then
+      -- WA shows every member's clone only while the count holds: a gate across all copies
+      no(T("Auto-clone for 'All' members together with a Unit Count cannot be expressed by the engine; untick Unit Count"))
       return nil
     end
-    pattern = (mode == "unaffected") and "lacks" or "any"
+    pattern = (mode == "all") and "all" or (mode == "unaffected") and "lacks" or "any"
     if t.useGroup_count and Engine.GroupPattern(t.group_countOperator, t.group_count) ~= "any" then
       no(T("Auto-clone with a Unit Count other than '> 0' cannot be expressed by the engine"))
       return nil
@@ -1482,6 +1560,21 @@ function Engine.Classify(data)
         no(T("a text shown while the aura is missing has no time, stacks or name to show; use plain text (%n and %i of a single tracked spell are fine)"))
       end
     end
+    -- Auto-clone 'All': every member's copy holds the live aura and the display for a member who lacks it
+    -- (the refresh icon's two parts), so they need a place each and the display's look without the aura
+    local buffedLooks
+    if inf.group and inf.group.pattern == "all" then
+      if rt ~= "icon" and rt ~= "texture" and rt ~= "stopmotion" then
+        no(T("Auto-clone for 'All' members is engine-driven for Icons, Textures and Stop Motions (so far)"))
+      end
+      local layout = Engine.CopyLayout(data, { group = inf.group })
+      if layout == "stack" then
+        no(T("Auto-clone for 'All' members needs a Dynamic Group that grows or groups by unit frame: at the display's own place every member's copy, with the aura or without it, would lie on the same spot"))
+      end
+      local why
+      buffedLooks, why = Engine.BuffedLooks(data, ti, rt, layout == "frame")
+      if not buffedLooks then no(why) end
+    end
     if #r > 0 then return nil, r end
     -- the looks leave the border alone where only WA's own draws it: a refresh icon, or one whose border a
     -- condition WA applies itself changes (then the looks are cut again without the border)
@@ -1545,7 +1638,7 @@ function Engine.Classify(data)
              unseen = Engine.JoinLists(inf.unseen, refreshM and refreshM.unseen),
              auraTriggers = auraTriggers, gates = gates, stacks = inf.stacks,
              looks = looks, looksKey = looksKey, lookConds = lookConds, lookNotes = lookNotes, timeLooks = timeLooks,
-             durColor = durColor, group = inf.group }
+             durColor = durColor, group = inf.group, buffed = buffedLooks }
   end
 
   if rt ~= "icon" then
@@ -1688,12 +1781,22 @@ end
 local SOUND_ROUTES = {
   missing = { start = "Removed", finish = "Added" },
   active = { start = "Added", finish = "Removed" },
+  count = { missing = { start = "Removed" }, active = { start = "Added" } },   -- a group trigger's Unit Count
 }
 
 -- The routes of a plan, or nil: Always shows all the time, so its sounds stay WeakAuras' own.
+-- Group triggers play them per member (Engine.SoundTokens): Auto-clone like WA's clones, 'Affected' as a
+-- Found display and 'Unaffected' as a Missing one. A Unit Count shows with the first member who gains (> 0)
+-- or loses (< 100%) the aura and hides with the last, which no aura event marks: 'On Show' only, on each
+-- member's gain or loss. 'All' none: WA plays them as a member's clone comes or goes, not the aura.
 local function SoundRoutes(plan)
-  if not plan or not plan.ids or plan.group then return nil end
+  if not plan or not plan.ids then return nil end
   if #plan.ids == 0 and not plan.nameless then return nil end
+  local g = plan.group
+  if g then
+    if g.pattern == "all" then return nil end
+    return (g.clones and SOUND_ROUTES or SOUND_ROUTES.count)[plan.mode]
+  end
   if plan.parts then
     if plan.parts.missing then return SOUND_ROUTES.missing end
     if plan.parts.found then return SOUND_ROUTES.active end
@@ -1728,6 +1831,240 @@ local function SoundSig(data)
       tostring(x.sound_kit_id), tostring(x.sound_channel) }, "/")
   end
   return table.concat(out, ";")
+end
+
+-- Group triggers' sounds, and what all sounds share with them (in a block: the main chunk is at Lua's limit of 200
+-- locals; ApplySounds and Explain take them from Engine).
+do
+  -- The spell ids a plan's sounds are registered for, and their part of the sounds' signature.
+  local function SoundIds(plan)
+    local ids = (plan.missingPart and plan.missingPart.ids) or plan.ids or {}
+    if #ids == 0 and plan.nameless then
+      local seen, n, _, sum = SeenIds(plan)
+      return seen, ("%d:%d"):format(n, sum)         -- a thousand ids: a checksum, not a string of them
+    end
+    return ids, table.concat(ids, ",")
+  end
+
+  -- Group triggers: the members' tokens a display's sounds are registered on, those of the set it watches now
+  -- (inRaid and Engine.RaidSet: the raid's, else your party's, which leaves you out for Ignore Self), so the
+  -- party1 and the raidN of one person never both play. In a raid Ignore Self leaves out the token that is you
+  -- (Engine.IsSelf, by GUID: your raid number moves with the roster, and ApplySounds registers again when the
+  -- tokens change); Raid out of a raid has nobody. The dev alias leaves them on the real raid tokens. nil plus
+  -- why none: "count", a Unit Count in a raid (each member plays it, so a buff on the whole raid would play it
+  -- up to 40 times at once, where WA plays it once); "nameless", matching by properties in a raid (hundreds of
+  -- spells for 40 members).
+  function Engine.SoundTokens(data, plan, inRaid)
+    local g = plan.group
+    if not (inRaid and Engine.RaidSet(g, g.clones and Engine.CopyLayout(data, plan) or "stack")) then return g.units end
+    if not g.clones then return nil, "count" end
+    if plan.nameless then return nil, "nameless" end
+    local out = {}
+    for _, u in ipairs(g.raidUnits) do
+      local me = false
+      if g.ignoreSelf and UnitExists then
+        local ex = UnitExists(u)                     -- should it be secret, Engine.IsSelf tells (it reads no secret)
+        if issecretvalue(ex) or ex then me = Engine.IsSelf(u) end
+      end
+      if not me then out[#out + 1] = u end
+    end
+    return out
+  end
+
+  -- What a group display's sounds are in one set (Engine.SoundTokens): the routed sounds that are set ('start' /
+  -- 'finish'), the tokens, the spell ids, and why nothing is registered: "all" (Auto-clone 'All', SoundRoutes),
+  -- "count", "nameless", "cap" (more than Engine.SOUND_CAP registrations, sounds x spells x members: the time
+  -- of registering grows with them, and it runs again on every change of the display), or nil.
+  Engine.SOUND_CAP = 2000
+  function Engine.GroupSounds(data, plan, inRaid)
+    local routes, acts, whens = SoundRoutes(plan), data.actions or {}, {}
+    for _, when in ipairs({ "start", "finish" }) do
+      if routes and routes[when] and SoundSource(acts[when]) then whens[#whens + 1] = when end
+    end
+    local ids = SoundIds(plan)
+    if plan.group.pattern == "all" then return whens, {}, ids, "all" end
+    local tokens, why = Engine.SoundTokens(data, plan, inRaid)
+    if not tokens then return whens, {}, ids, why end
+    if #whens * #ids * #tokens > Engine.SOUND_CAP then return whens, tokens, ids, "cap" end
+    return whens, tokens, ids, nil
+  end
+  Engine.SoundRoutes = SoundRoutes
+
+  -- Who stands behind each of a group display's tokens, for its sounds' signature (ApplySounds): a token that
+  -- changes hands is registered again (at once, also in combat), whether the game binds a registration to the
+  -- token or to the player it named, and whether or not it took a token nobody stood behind (probes G9, G10). ""
+  -- for nobody, "?" for a GUID the game keeps secret (registered again as it turns plain).
+  function Engine.SoundWho(tokens)
+    local out = {}
+    for i, u in ipairs(tokens) do
+      local ex, w = UnitExists(u), ""
+      if issecretvalue(ex) then
+        w = "?"
+      elseif ex then
+        local g = UnitGUID and UnitGUID(u)
+        w = (not issecretvalue(g) and type(g) == "string") and g or "?"
+      end
+      out[i] = w
+    end
+    return table.concat(out, ",")
+  end
+
+  -- Where the game has always taken AddAuraSound: nothing restricts addons, read as Engine.IsSafe (no lockdown,
+  -- auras plain) and none of the addon restrictions a fight brings, which can be on before the lockdown is (at the
+  -- load scan as combat starts, for one). A Map restriction alone (an instance) is no fight: the engine has
+  -- registered there since 0.8. Anywhere else ApplySounds asks the game first (Engine.SoundTaken). Removing a
+  -- sound is not restricted.
+  Engine.SOUND_RESTRICTIONS = { "Combat", "Encounter", "ChallengeMode", "PvPMatch" }
+  function Engine.SoundSafe()
+    if not Engine.IsSafe() then return false end
+    local get = C_RestrictedActions and C_RestrictedActions.GetAddOnRestrictionState
+    local types = Enum and Enum.AddOnRestrictionType
+    local inactive = Enum and Enum.AddOnRestrictionState and Enum.AddOnRestrictionState.Inactive
+    if not (get and types and inactive ~= nil) then return true end
+    for _, name in ipairs(Engine.SOUND_RESTRICTIONS) do
+      local t = types[name]
+      if t ~= nil then
+        local ok, state = pcall(get, t)
+        if ok and (issecretvalue(state) or state ~= inactive) then return false end
+      end
+    end
+    return true
+  end
+
+  -- In a fight the game takes sounds too: the /fdsnd probe (2026-10-22, three clients) had every registration
+  -- taken in combat (the lockdown, auras secret, the Combat restriction on), in an instance (Map) and at each
+  -- moment a fight starts or ends, with no ADDON_ACTION_BLOCKED. An encounter's, a Challenge Mode's and a PvP
+  -- match's restrictions were not probed. So outside Engine.SoundSafe one registration of the display's first
+  -- sound and spell, on the first of its members who is there, tells whether the game takes them now: made
+  -- before the display's old sounds go, and removed at once (in the same frame: it never plays). On 'stacks
+  -- increased' where the game has it, so it is never the same as one of the display's own (Added / Removed).
+  -- Removing it tells too: should the game ever refuse to let one go (never seen, in combat or out), the old sounds
+  -- could not be removed either and would play beside the new ones, so the display keeps what it has; the test is
+  -- removed again with the retries (Engine.RetrySounds).
+  Engine.soundStray = {}
+  function Engine.SoundTaken(w, tokens, id)
+    local tok = "player"
+    for _, u in ipairs(tokens) do
+      local ex = UnitExists(u)
+      if not issecretvalue(ex) and ex then tok = u; break end
+    end
+    local trig = Enum.UnitAuraSoundTrigger
+    local ok, sid = pcall(C_UnitAuras.AddAuraSound, trig.ApplicationsIncreased or trig[w.trigger],
+      { unitToken = tok, spellID = id, soundFileName = w.src.soundFileName, soundFileID = w.src.soundFileID,
+        outputChannel = w.channel, throttleSeconds = 0.5 })
+    if not ok then return false end
+    if issecretvalue(sid) then pcall(C_UnitAuras.RemoveAuraSound, sid); return false end   -- an id it cannot keep
+    if type(sid) ~= "number" then return false end
+    if not pcall(C_UnitAuras.RemoveAuraSound, sid) then
+      Engine.soundStray[#Engine.soundStray + 1] = sid
+      return false
+    end
+    return true
+  end
+
+  -- A display WeakAuras loads only in a fight ('In Combat', 'In Encounter', 'Secret Restrictions Active'): its
+  -- sounds would be added as it loads and go as it unloads, so a fight whose restriction refuses them (an
+  -- encounter's was not probed) would never play them. They stay registered while it is not loaded instead
+  -- (ApplySounds).
+  function Engine.FightLoad(data)
+    local l = type(data.load) == "table" and data.load or {}
+    if l.use_never then return false end
+    return l.use_combat == true or l.use_encounter == true or l.use_addonRestrictionsActive == true
+  end
+
+  -- Sounds follow WeakAuras' Load tab (ApplySounds), registered at once, also in combat. Said where a load
+  -- condition can change during a fight: one that loads the display only in a fight keeps its sounds
+  -- (Engine.FightLoad); one that may load it during a fight (after an encounter, a battle resurrection, a change
+  -- of the group) gets them as it loads, or once the game takes them again should it refuse them in that fight.
+  local function SoundLoadNote(data)
+    local l = type(data.load) == "table" and data.load or {}
+    if Engine.FightLoad(data) then
+      return T("Its Load tab loads it only in a fight: its sounds are registered out of combat already and stay while it is not loaded, so the game plays them from the start of every fight, also one that might refuse new sounds (a boss fight), and outside the fight too.")
+    end
+    if l.use_encounter == false or l.use_alive ~= nil or l.use_ingroup ~= nil or l.use_groupSize ~= nil
+       or l.use_group_leader ~= nil or l.use_raid_role ~= nil then
+      return T("They follow the Load tab: if the display loads during a fight, the game takes them at once (should it refuse them in that fight, as soon as it takes them again).")
+    end
+  end
+
+  -- The status line on a group trigger's sounds (Engine.GroupSounds), nil when none is set.
+  local function GroupSoundText(data, plan)
+    local g, acts, routes = plan.group, data.actions or {}, SoundRoutes(plan)
+    -- why a set the display watches gets none of them (your party's, the raid's), nil when it gets them
+    local function Muted(inRaid)
+      local whens, tokens, ids, why = Engine.GroupSounds(data, plan, inRaid)
+      if why == "count" then
+        return T("with a Unit Count each member plays it, so a buff on the whole raid would play it up to 40 times at once (WeakAuras plays it once)")
+      elseif why == "nameless" then
+        return T("a display that matches by properties would register each of its spells for 40 members")
+      elseif why == "cap" then
+        return T("%d sound(s) x %d spells x %d members are %d registrations, more than the %d EverAuras makes for one display"):format(
+          #whens, #ids, #tokens, #whens * #ids * #tokens, Engine.SOUND_CAP)
+      end
+    end
+    local raidSet = Engine.RaidSet(g, g.clones and Engine.CopyLayout(data, plan) or "stack")
+    local inParty = g.scope ~= "raid" and Muted(false)
+    local inRaid = raidSet and Muted(true)
+    local none = inParty or (g.scope == "raid" and inRaid)          -- no set gets them
+    local parts, played, loss = {}, {}, false
+    for _, when in ipairs({ "start", "finish" }) do
+      local src, why = SoundSource(acts[when])
+      local label = when == "start" and T("'On Show'") or T("'On Hide'")
+      if g.pattern == "all" and (src or why == "kit") then
+        parts[#parts + 1] = ((when == "start")
+          and T("%s sound is not played with Auto-clone 'All': WeakAuras plays it when a member's clone appears, not when the aura comes, and the game gives addons no moment for that")
+          or T("%s sound is not played with Auto-clone 'All': WeakAuras plays it when a member's clone goes, not when the aura goes, and the game gives addons no moment for that")):format(label)
+      elseif why == "kit" then
+        parts[#parts + 1] = T("%s uses a Sound Kit ID, which the game cannot play here: pick a sound file"):format(label)
+      elseif src and routes and routes[when] then
+        local added = routes[when] == "Added"
+        played[#played + 1], loss = label, loss or not added
+        if not none then
+          parts[#parts + 1] = (g.clones
+            and (added and T("%s sound plays when a member gains the aura") or T("%s sound plays when a member loses the aura"))
+            or (added and T("%s sound plays each time a member gains the aura (also when another one already has it and the display was shown)")
+                       or T("%s sound plays each time a member loses the aura (also when another one already lacks it and the display was shown)"))):format(label)
+        end
+      elseif src and routes then
+        -- a Unit Count's 'On Hide': the display hides when the last member loses (> 0) or gains (< 100%) it
+        parts[#parts + 1] = ((plan.mode == "missing")
+          and T("%s sound is not played: no aura event marks the moment the last member has the aura again")
+          or T("%s sound is not played: no aura event marks the moment the last member loses the aura")):format(label)
+      end
+    end
+    if none and #played > 0 then
+      local which = (#played == 1) and T("%s sound is"):format(played[1]) or T("%s and %s sounds are"):format(played[1], played[2])
+      table.insert(parts, 1, T("%s not played: %s"):format(which, none))
+    end
+    if #parts == 0 then return nil end
+    local txt = T("|cff33ff99Sounds:|r %s."):format(table.concat(parts, "; "))
+    if none or #played == 0 then return txt end
+    if plan.nameless then
+      local _, n = SeenIds(plan)
+      if n == 0 then
+        return txt .. " " .. T("They wait until EverAuras has seen a matching aura once out of combat: the game plays aura sounds by spell only.")
+      end
+      txt = txt .. " " .. T("A matching aura is one of the %d spells EverAuras knows for it (the game's spell tables and the auras it has seen)."):format(n)
+    end
+    txt = txt .. " " .. T("The game plays them itself for each member as the aura comes or goes on that member, also in combat (when a member with the aura joins or leaves the group, WeakAuras plays them too; the game may not).")
+    if inRaid then
+      txt = txt .. " " .. T("In a raid %s not played: %s."):format((#played == 1) and T("it is") or T("they are"), inRaid)
+    end
+    if loss then
+      txt = txt .. " " .. T("A member who dies loses most auras, so a sound for a lost aura plays then too%s."):format(
+        g.ignoreDead and T(", although Ignore Dead leaves them out") or "")
+    end
+    if raidSet and not inRaid then
+      txt = txt .. " " .. T("They follow the members that are watched: after you join or leave a raid, someone joins or leaves the group%s, the game takes them again at once, also in combat (should it refuse them in a fight, as soon as it takes them again).")
+        :format(g.ignoreSelf and T(" or your raid number changes (Ignore Self)") or "")
+      if Engine.DevRaidAlias() then txt = txt .. " " .. T("The dev alias leaves them on the real raid1 to raid40.") end
+    else
+      txt = txt .. " " .. T("They follow the members that are watched: after someone joins or leaves the group, the game takes them again at once, also in combat (should it refuse them in a fight, as soon as it takes them again).")
+    end
+    local note = SoundLoadNote(data)
+    return note and (txt .. " " .. note) or txt
+  end
+  Engine.SoundIds, Engine.SoundLoadNote, Engine.GroupSoundText = SoundIds, SoundLoadNote, GroupSoundText
 end
 
 local MODE_TEXT = {
@@ -1773,6 +2110,8 @@ function Engine.Explain(data, plan, reasons)
   end
   if plan then
     local txt
+    -- Auto-clone 'All': each member's copy shows the live aura, or the display while the member lacks it
+    local allCopies = plan.group and plan.group.pattern == "all"
     if plan.parts then
       local when = {}
       if plan.parts.missing then when[#when + 1] = T("while the aura is absent") end
@@ -1831,12 +2170,14 @@ function Engine.Explain(data, plan, reasons)
         :format(plan.unit, plan.filterString, when)
     elseif data.regionType == "stopmotion" then
       local when = plan.missingPart and T("while the aura is absent and while its stacks match (below), nothing otherwise")
+                   or allCopies and T("both while the aura is present and while it is absent")
                    or plan.mode == "missing" and T("while the aura is absent and disappears completely while it is present")
                                          or T("while the aura is present and nothing while it is absent")
       txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It plays your animation %s, as a FlipBook animation of the game (scripts cannot run there). Kept: position, size, groups, the texture's frames, frame rate, Loop or Bounce, Inverse, End, colours, desaturate, blend mode, the background frame, %%p/%%s/%%n texts (time and stacks also in one, '%%p (%%s)'), the glow (shown only while the animation is). Not drawn: the border (hidden while engine-driven). Not available: Once and Progress animations, a Start above 0%%, conditions and texts that read aura state, and actions on aura gain/loss other than sounds.")
         :format(plan.unit, plan.filterString, when)
     elseif data.regionType == "texture" then
       local when = plan.missingPart and T("while the aura is absent and while its stacks match (below), nothing otherwise")
+                   or allCopies and T("both while the aura is present and while it is absent")
                    or plan.mode == "missing" and T("while the aura is absent and disappears completely while it is present")
                                          or T("while the aura is present and nothing while it is absent")
       txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows your texture %s. Kept: position, size, groups, texture, colour, rotation, mirror, desaturate, blend mode, %%p/%%s/%%n texts (time and stacks also in one, '%%p (%%s)'), the glow (shown only while the texture is, animated like WeakAuras' own). Not drawn: the border (hidden while engine-driven). Not available: conditions and texts that read aura state, and actions on aura gain/loss other than sounds.")
@@ -1853,12 +2194,31 @@ function Engine.Explain(data, plan, reasons)
         :format(plan.unit, plan.filterString)
     else
       local kept = T("border and glow")
-      if data.regionType == "icon" and plan.mode ~= "always" then
+      -- a group trigger's copies on unit frames or in a row draw the border themselves (Engine.OwnBorder,
+      -- Engine.CopyBorder), unless a condition WA applies itself changes it: then WeakAuras' own border on the display
+      -- itself, which WeakAuras hides when its Dynamic Group groups by unit frame, and which is the first place of a row
+      local copyLayout = plan.group and plan.group.clones and Engine.CopyLayout(data, plan) or nil
+      local waBorder = #Engine.BorderSpecs(data) > 0 and (copyLayout == "frame"
+          and T("no border on the members' unit frames, as a condition changes it (WeakAuras' own is on the display itself, which WeakAuras hides when its Dynamic Group groups by unit frame)")
+          or copyLayout == "row" and T("the border only at the display's own place, the row's first, as a condition changes it (WeakAuras' own, also while nothing is drawn; the other places have none)"))
+        or nil
+      if data.regionType == "icon" and allCopies then
+        -- each copy draws the border and glow in both parts (the live aura's slot, the Missing clip)
+        local border = (Engine.OwnBorder(data, plan) or #Engine.BorderSpecs(data) == 0)
+          and T("the border (with the aura and without it)")
+          or (copyLayout == "frame" and waBorder)
+          or T("WeakAuras' own border on the display itself, as a condition changes it (the members' copies have none)")
+        kept = T("%s, and the glow: with the aura and without it, and animated like WeakAuras' own"):format(border)
+      elseif data.regionType == "icon" and plan.mode ~= "always" then
         local border = T("the border (also while nothing is drawn)")
         if plan.mode == "active" and plan.missingPart then
           border = T("the border (also while nothing is drawn)")
         elseif plan.mode == "active" and Engine.OwnBorder(data, plan) then
           border = T("the border (shown only while the icon is)")
+        elseif plan.mode == "missing" and Engine.CopyBorder(data, plan, copyLayout) then
+          border = T("the border (shown only while the icon is)")       -- each copy's, in its Missing clip
+        elseif waBorder then
+          border = waBorder
         elseif plan.mode == "active" and #Engine.BorderSpecs(data) > 0 then
           border = T("WeakAuras' own border, as a condition changes it (also while nothing is drawn)")
         end
@@ -1867,7 +2227,7 @@ function Engine.Explain(data, plan, reasons)
         kept = T("the bar colours and gradient, the border (also while nothing is drawn), and the glow: shown only while the bar is, and animated like WeakAuras' own (a glow on the bar's fill goes around the whole bar)")
       end
       txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It %s. Kept: position, size, groups, %%n/%%i texts, static colour/desaturate/zoom, %s; cooldown numbers count like the buff frame. Not available: conditions and texts that read aura state (stacks, remaining, active), and actions on aura gain/loss other than sounds.")
-        :format(plan.unit, plan.filterString, T(MODE_TEXT[plan.missingPart and "refresh" or plan.mode]), kept)
+        :format(plan.unit, plan.filterString, T(MODE_TEXT[plan.missingPart and "refresh" or allCopies and "always" or plan.mode]), kept)
     end
     -- sub-texts with time and stacks together, drawn with the live aura
     if data.regionType ~= "text" and ((plan.parts and plan.parts.found) or (not plan.parts and plan.mode ~= "missing")) then
@@ -1929,7 +2289,7 @@ function Engine.Explain(data, plan, reasons)
     elseif plan.warn == "hostile" then
       txt = txt .. " " .. T("|cffff9933Note:|r Blizzard does not let addons pick buffs on hostile units by spell while auras are secret: on an enemy target this display finds nothing (a 'missing' icon shows as missing).")
     end
-    local routes = SoundRoutes(plan)
+    local routes = not plan.group and SoundRoutes(plan) or nil     -- a group trigger's: its Group line (GroupSoundText)
     local actions = data.actions or {}
     local sounds = {}
     for _, when in ipairs({ "start", "finish" }) do
@@ -1965,6 +2325,8 @@ function Engine.Explain(data, plan, reasons)
     end
     if #sounds > 0 then
       txt = txt .. " " .. T("|cff33ff99Sounds:|r %s; the game plays them itself, also in combat."):format(table.concat(sounds, "; "))
+      local note = routes and Engine.SoundLoadNote(data)
+      if note then txt = txt .. " " .. note end
     end
     if plan.stacks or plan.missingPart then
       local st, when = plan.stacks, nil
@@ -2003,8 +2365,14 @@ function Engine.Explain(data, plan, reasons)
         local where = (layout == "frame") and T("on that member's unit frame (the Dynamic Group groups by frame; the display's place among its group's children is kept even when the others are absent)")
           or (layout == "row") and T("in a row along the Dynamic Group's growth, one fixed place per member (an absent one leaves its place empty)")
           or T("all at the display's own place (as WeakAuras' clones without a Dynamic Group)")
-        txt = txt .. " " .. T("|cff33ff99Auto-clone:|r a copy per member (%s) who %s%s, %s, in combat too."):format(who,
-          (g.pattern == "lacks") and T("lacks the aura") or T("has the aura, with that member's aura"), left, where)
+        local whom = (g.pattern == "all")
+          and T("whether they have the aura or not: that member's aura while they have it, your display while they lack it")
+          or (g.pattern == "lacks") and T("who lacks the aura") or T("who has the aura, with that member's aura")
+        txt = txt .. " " .. T("|cff33ff99Auto-clone:|r a copy per member (%s) %s%s, %s, in combat too."):format(who, whom, left, where)
+        local lk = g.pattern == "all" and plan.buffed
+        if lk and (#lk.on.changes > 0 or #lk.off.changes > 0) then
+          txt = txt .. " " .. T("Its conditions on 'Aura(s) Found' are drawn per member: a copy takes the changes for True while its member has the aura, and those for False while they lack it.")
+        end
         if layout == "row" and raidSet then
           txt = txt .. " " .. T("In a raid the row has 40 places (raidN at place N): for the whole raid, a Dynamic Group that groups by unit frame (Group by Frame: Unit Frames) is meant.")
         end
@@ -2036,7 +2404,8 @@ function Engine.Explain(data, plan, reasons)
       if raidSet and Engine.DevRaidAlias() then
         txt = txt .. " " .. T("|cffff9933DEV ALIAS:|r raid1 to raid40 stand for you, party1, party2 and party3 in turn (foreverEngine.devRaidAlias, '/faengine devalias'), to see 40 copies with 4 players. Switch it off for real raids.")
       end
-      txt = txt .. " " .. T("Sounds on aura gain/loss are not played for group triggers yet.")
+      local sounds = Engine.GroupSoundText(data, plan)
+      if sounds then txt = txt .. " " .. sounds end
     end
     if plan.timeLooks then
       txt = txt .. " " .. T("|cff33ff99Conditions on the time left:|r drawn as two looks, from %s s up and below %s s, each by an aura slot of its own behind a time gate (the game formats the time and the gate hangs on the text), so the game shows the one that matches, in combat too."):format(tostring(plan.timeLooks), tostring(plan.timeLooks))
@@ -2064,11 +2433,28 @@ function Engine.Explain(data, plan, reasons)
   return T("|cffff8800Not engine-driven|r (blind while auras are secret) because: ") .. table.concat(reasons or {}, "; "), false
 end
 
+-- Auto-clone 'All': the layout of its copies (Engine.CopyLayout), on which its verdict hangs (Engine.Classify:
+-- refused at the display's own place, alpha looks only on unit frames); nil for any other display. The trigger
+-- side keeps the one its verdict was taken in (uid -> layout), and Engine.Sync adds the display again when its
+-- Dynamic Group lays out its children another way since.
+Engine.allLayouts = {}
+function Engine.AllLayout(data)
+  for _, tr in ipairs(type(data.triggers) == "table" and data.triggers or {}) do
+    local t = type(tr) == "table" and tr.trigger
+    if type(t) == "table" and t.type == "aura2" and (t.unit == "party" or t.unit == "group" or t.unit == "raid")
+       and t.showClones and t.combinePerUnit and t.perUnitMode == "all" then
+      return (Engine.CopyLayout(data, { group = { clones = true } }))
+    end
+  end
+  return nil
+end
+
 -- Trigger side. Called from BuffTrigger.Add with the record that is about to be stored, so the
 -- trigger and the region can never disagree about whether a display is engine-driven.
 function Engine.PrepareTriggerInfo(info, trigger, data)
   local plan = Engine.Classify(data)
   decided[data.uid] = plan or false
+  if data.uid then Engine.allLayouts[data.uid] = Engine.AllLayout(data) end   -- what the verdict hangs on (Engine.Sync)
   -- called once per Aura trigger: the display is name-watched when ANY of its Aura triggers uses names
   local anyName = false
   for _, tr in ipairs(data.triggers or {}) do
@@ -3139,6 +3525,19 @@ do
     return not Engine.BorderLive(data, plan) or Engine.InDynRow(data)
   end
 
+  -- whether a group trigger's icon copies draw the border in their Missing clip (Engine.ApplyCopies), for a
+  -- member who lacks the aura, as WA draws it on each of its clones: 'All' where the copies draw their border
+  -- with the aura (Engine.OwnBorder), and 'Unaffected' on unit frames or in a row (layout: Engine.CopyLayout's).
+  -- Not where a condition WA applies itself changes the border (Engine.BorderLive): the copies have no look of
+  -- it, so WA's own stays, on the display itself, as for 'All' and 'Affected'. Not at the display's own place
+  -- either, where WA's own frames the copies lying on it, as for a single Missing display.
+  function Engine.CopyBorder(data, plan, layout)
+    if data.regionType ~= "icon" or not (plan and plan.group) then return false end
+    if plan.group.pattern == "all" then return Engine.OwnBorder(data, plan) end
+    if plan.mode ~= "missing" or not plan.group.clones or not (layout == "frame" or layout == "row") then return false end
+    return #Engine.BorderSpecs(data) > 0 and not Engine.BorderLive(data, plan)
+  end
+
   local function NewBorder(parent)
     local f = CreateFrame("Frame", nil, parent)
     local b = { frame = f, parent = parent, pieces = {}, bias = {} }
@@ -3151,17 +3550,23 @@ do
     return b
   end
 
-  local function StyleBorder(b, anchor, under, region, spec)
-    local f = b.frame
+  -- How many UI units one unit of a border's size and offset is, and the scale its edges tile by. Pixel perfect:
+  -- WA's frame takes the screen's pixel scale, so its sizes count pixels; the same in ours (more than 2 units a
+  -- pixel on a small screen at a small UI scale). Also how far an 'All' copy's Missing clip reaches.
+  function Engine.BorderUnit(region, pp)
     local scale = 1
     local okS, es = pcall(region.GetEffectiveScale, region)
     if okS and type(es) == "number" and not issecretvalue(es) and es > 0 then scale = es end
-    -- pixel perfect: WA's frame takes the screen's pixel scale, so its sizes count pixels; the same in ours
-    local unit, texScale = 1, scale
-    if spec.pp and PixelUtil and PixelUtil.GetPixelToUIUnitFactor then
+    if pp and PixelUtil and PixelUtil.GetPixelToUIUnitFactor then
       local okP, px = pcall(PixelUtil.GetPixelToUIUnitFactor)
-      if okP and type(px) == "number" and px > 0 then unit, texScale = px / scale, px end
+      if okP and type(px) == "number" and px > 0 then return px / scale, px end
     end
+    return 1, scale
+  end
+
+  local function StyleBorder(b, anchor, under, region, spec)
+    local f = b.frame
+    local unit, texScale = Engine.BorderUnit(region, spec.pp)
     local e, off = spec.size * unit, spec.offset * unit
     f:ClearAllPoints()
     f:SetPoint("BOTTOMLEFT", anchor, "BOTTOMLEFT", -off, -off)
@@ -4611,6 +5016,11 @@ do
                 or T("WeakAuras' own, played when the display hides (it is always shown while it is loaded)")
         elseif plan.missingPart then
           why = T("not on a display shown while the aura is missing or its stacks match: WeakAuras keeps it shown when the aura comes with matching stacks, which the game does not tell addons")
+        elseif plan.group and plan.group.pattern == "all" then
+          -- each member's copy shows with the aura and without it: the aura coming or going is not when it shows
+          why = (which == "start")
+            and T("not drawn with Auto-clone 'All': WeakAuras plays it when a member's clone appears, not when the aura comes, and the game gives addons no moment for that")
+            or T("not drawn with Auto-clone 'All': WeakAuras plays it when a member's clone goes, not when the aura goes, and the game gives addons no moment for that")
         elseif which == "start" and not found then
           why = (plan.mode == "missing" and not parts)
             and T("not available while the display shows for a missing aura: the game gives addons no moment when an aura goes")
@@ -4982,8 +5392,9 @@ do
     return rig
   end
 
-  -- the copy looks like the Missing clip's underlay (part: the plan or the composite's missing part)
-  local function StyleFinishCopy(rig, region, data, part)
+  -- the copy looks like the Missing clip's underlay (part: the plan or the composite's missing part), with the
+  -- border of a group trigger's copy that draws one there (Engine.CopyUnderBorder)
+  local function StyleFinishCopy(o, rig, region, data, part)
     if rig.pic then CopyPictureLook(rig.pic, region, data)
     elseif rig.text then Engine.CopyPlainText(rig.text, region, data, part, rig.layer)
     elseif rig.icon then
@@ -4998,6 +5409,9 @@ do
       pcall(t.SetDesaturation, t, data.desaturate and 1 or 0)
       local col = data.color or { 1, 1, 1, 1 }
       t:SetVertexColor(col[1] or 1, col[2] or 1, col[3] or 1, col[4] or 1)
+      if o.underBorderOn or rig.borders then
+        Engine.StyleBorders(rig, rig.layer, t, nil, region, o.underBorderOn and Engine.BorderSpecs(data) or nil)
+      end
     end
   end
 
@@ -5020,7 +5434,7 @@ do
         o.finRigs[b] = rig
       end
       if rig then
-        local okS, err = pcall(StyleFinishCopy, rig, region, data, part)
+        local okS, err = pcall(StyleFinishCopy, o, rig, region, data, part)
         if not okS then Report(o, "finish", err) end
         Configure(rig, spec)
       end
@@ -5330,8 +5744,8 @@ function Engine.SafeLevel(obj, level)
 end
 
 -- The levels inside a host from the host's own (h): the containers and the Missing clip at h, the present
--- clip at h + 2 and its glows at h + 4, the start animation's slot. a: a display (ApplyEngineFrameLevels)
--- or a member's copy (Engine.BandCopy).
+-- clip at h + 2 and its glows at h + 4 (as an 'All' copy's one glow outside both parts), the start animation's
+-- slot. a: a display (ApplyEngineFrameLevels) or a member's copy (Engine.BandCopy).
 function Engine.HostLevels(a, h)
   Engine.SafeLevel(a.container, h)
   Engine.SafeLevel(a.shadows.clip, h)
@@ -5340,6 +5754,7 @@ function Engine.HostLevels(a, h)
   for _, k in ipairs(PGLOW_KEYS) do
     if a.pclip then Engine.SafeLevel(a[k], h + 4) end
   end
+  Engine.SafeLevel(a.aglow, h + 4)
   if a.shadows.clip then Engine.SafeLevel(a.mglowHolder, h + 2) end
   local rig = a.startRig                                     -- the start animation's slot (Engine.ApplyStartAnim)
   if rig then
@@ -5527,7 +5942,7 @@ local function ClearSounds(att)
   for _, sid in ipairs(att.soundIDs or {}) do
     pcall(C_UnitAuras.RemoveAuraSound, sid)
   end
-  att.soundIDs, att.soundSig, att.soundRouted = nil, nil, nil
+  att.soundIDs, att.soundSig, att.soundRouted, att.soundFailSig = nil, nil, nil, nil
 end
 
 -- WeakAuras' own playback of a routed sound would play at login / reload; skip it while engine-driven.
@@ -5548,18 +5963,22 @@ local function HookSoundPlay(att, region)
   region.SoundPlay = att.soundWrapper
 end
 
+-- Registers a display's sounds with the game (SoundRoutes), on its unit or, for a group trigger, on each
+-- member's token (Engine.GroupSounds): at once, also in combat. Outside Engine.SoundSafe the game is asked first
+-- (Engine.SoundTaken), before the old sounds go: should it refuse (under a fight's restriction the probe did not
+-- try), the display keeps what it has and waits (soundSig nil: Engine.RetrySounds), except what has to go
+-- (RemoveAuraSound is not restricted). WeakAuras plays nothing of a display it does not load (its Load tab), so
+-- neither does the game: the sounds are removed and registered again when it loads (Engine.LoadSounds), except
+-- for a display loaded only in a fight (Engine.FightLoad). A registration the game refused is tried again by
+-- Engine.RetrySounds, or when something changes (soundFailSig: not on every roster change or load scan with the
+-- same signature); it is reported once where the game has always taken them (Engine.SoundSafe).
 local function ApplySounds(att, region, data, plan)
   local routes = SoundRoutes(plan)
   local api = C_UnitAuras and C_UnitAuras.AddAuraSound and Enum.UnitAuraSoundTrigger
-  local ids = (plan.missingPart and plan.missingPart.ids) or plan.ids or {}
-  local idSig
-  if #ids == 0 and plan.nameless then
-    local n, fromTables, sum
-    ids, n, fromTables, sum = SeenIds(plan)
-    idSig = ("%d:%d"):format(n, sum)          -- a thousand ids: a checksum, not a string of them
-  else
-    idSig = table.concat(ids, ",")
-  end
+  local ids, idSig = Engine.SoundIds(plan)
+  local loaded = not (WA.IsAuraLoaded and region.id) or WA.IsAuraLoaded(region.id) == true
+  att.soundLoaded = loaded                                        -- WeakAuras' load state (Engine.LoadSounds)
+  if not loaded and Engine.FightLoad(data) then loaded = true end
   local want, sig = {}, { plan.unit, idSig }
   if routes and api then
     for _, when in ipairs({ "start", "finish" }) do
@@ -5572,20 +5991,51 @@ local function ApplySounds(att, region, data, plan)
       end
     end
   end
-  -- no route for a sound that is set (group triggers; a refresh icon's 'On Hide'): muted, since WeakAuras'
-  -- constant state would play it once at load
-  local mute = {}
+  -- no route for a sound that is set (a refresh icon's 'On Hide'), and every sound of a group trigger (also those
+  -- it plays: a failed one stays silent): muted, since WeakAuras' constant state would play it once at load
+  local mute, tokens = {}, { plan.unit }
   if plan.group or plan.missingPart then
     for _, when in ipairs({ "start", "finish" }) do
       local acts = data.actions and data.actions[when]
-      if type(acts) == "table" and acts.do_sound and acts.sound and not (routes and routes[when]) then
+      if type(acts) == "table" and acts.do_sound and acts.sound and (plan.group or not (routes and routes[when])) then
         mute[when] = true; sig[#sig + 1] = "mute/" .. when
       end
     end
-    if plan.group then want = {} end
+  end
+  att.soundGroup = (plan.group and next(mute)) and true or nil     -- its tokens follow the roster (Engine.RosterSounds)
+  if att.soundGroup then
+    -- the raid's tokens once the display's copies for the raid are made (at safe time, the first time you are in a
+    -- raid; from then on its sounds follow you in and out of raids in combat too): until then it watches your party
+    local inRaid = Engine.InRaid() and not (att.raidWanted and not att.raidBuilt)
+    local _, toks, _, why = Engine.GroupSounds(data, plan, inRaid)
+    tokens = why and {} or toks
+    if why then want = {} end
+    sig[#sig + 1] = ("tok/%s/%s/%s"):format(table.concat(tokens, ","), tostring(why), Engine.SoundWho(tokens))
+  elseif #want > 0 and UNIT_OK[plan.unit] == "group" then
+    -- a display on one member's token (party1, raid3): its sounds follow whoever stands behind it, as a group
+    -- trigger's do
+    sig[#sig + 1] = "who/" .. Engine.SoundWho(tokens)
+  end
+  att.soundRoster = (att.soundGroup or (#want > 0 and UNIT_OK[plan.unit] == "group")) and true or nil
+  if not loaded then
+    for _, w in ipairs(want) do mute[w.when] = true end            -- still kept from WeakAuras' load
+    want = {}
+    sig[#sig + 1] = "unloaded"
   end
   sig = table.concat(sig, ";")
-  if att.soundSig == sig then return end
+  if att.soundSig == sig or att.soundFailSig == sig then return end
+  local safe = Engine.SoundSafe()
+  if #want > 0 and #ids > 0 and #tokens > 0 and not safe and not Engine.SoundTaken(want[1], tokens, ids[1]) then
+    att.soundSig, att.soundFailSig = nil, sig                     -- refused: what it has stays until the game takes them
+    if next(mute) then
+      -- and what WeakAuras must not play stays muted, also with nothing to keep (the first registration, after the
+      -- options or a /reload): a group trigger's every sound, an unrouted one
+      att.soundRouted = att.soundRouted or {}
+      for when in pairs(mute) do att.soundRouted[when] = true end
+      HookSoundPlay(att, region)
+    end
+    return
+  end
   ClearSounds(att)
   att.soundSig, att.soundIDs, att.soundRouted = sig, {}, {}
   if next(mute) then
@@ -5596,35 +6046,101 @@ local function ApplySounds(att, region, data, plan)
   HookSoundPlay(att, region)
   local t0 = debugprofilestop and debugprofilestop()
   local info = { unitToken = plan.unit, throttleSeconds = 0.5 }   -- one table for the whole run
+  local taken, refused = 0, 0
   for _, w in ipairs(want) do
-    local okCount, failed = 0, 0
+    local okCount = 0
     -- nothing known yet: silent, rather than WeakAuras playing it when the options close
     if #ids == 0 then att.soundRouted[w.when] = true end
     info.outputChannel, info.soundFileName, info.soundFileID = w.channel, w.src.soundFileName, w.src.soundFileID
     local trigger = Enum.UnitAuraSoundTrigger[w.trigger]
-    for _, id in ipairs(ids) do
-      info.spellID = id
-      local ok, sid = pcall(C_UnitAuras.AddAuraSound, trigger, info)
-      if ok and type(sid) == "number" and not issecretvalue(sid) then
-        att.soundIDs[#att.soundIDs + 1] = sid
-        okCount = okCount + 1
-        if okCount == 1 then CheckStaleSounds(sid) end
-      else
-        failed = failed + 1
-        if not soundReported then
-          soundReported = true
-          local handler = geterrorhandler and geterrorhandler()
-          if handler then handler(("engine (aura sound): %s"):format(ok and ("no sound id for spell " .. id) or tostring(sid))) end
+    for _, tok in ipairs(tokens) do
+      info.unitToken = tok
+      for _, id in ipairs(ids) do
+        info.spellID = id
+        local ok, sid = pcall(C_UnitAuras.AddAuraSound, trigger, info)
+        if ok and not issecretvalue(sid) and type(sid) == "number" then
+          att.soundIDs[#att.soundIDs + 1] = sid
+          okCount = okCount + 1
+          if okCount == 1 then CheckStaleSounds(sid) end
+        else
+          if ok and issecretvalue(sid) then pcall(C_UnitAuras.RemoveAuraSound, sid) end   -- an id it cannot keep
+          local ex = plan.group and UnitExists(tok)
+          if plan.group and not issecretvalue(ex) and not ex then
+            -- a member's token nobody stands behind (raid4..raid40 in a raid of 3): should the game refuse it,
+            -- it is no error, and is registered once someone does (Engine.SoundWho in the signature)
+          else
+            refused = refused + 1
+            if safe and not soundReported then
+              soundReported = true
+              local handler = geterrorhandler and geterrorhandler()
+              if handler then handler(("engine (aura sound): %s"):format(ok and ("no sound id for spell " .. id) or tostring(sid))) end
+            end
+          end
         end
       end
     end
     -- a sound the game took over (for at least one spell) is kept from WeakAuras; otherwise WeakAuras
     -- plays it as before
     if okCount > 0 then att.soundRouted[w.when] = true end
+    taken = taken + okCount
   end
   if t0 then SoundStats(#att.soundIDs, debugprofilestop() - t0) end
-  -- a failed registration is tried again on the next apply (e.g. after combat)
+  -- a failed registration is tried again (Engine.RetrySounds: after combat, a loading screen, a restriction's
+  -- change or end); a group trigger's sounds are muted either way, so for one that took none; in a fight, any the
+  -- game refused although it took the first (all of them again). Not by a roster change or a load scan that
+  -- leaves the signature as it is (soundFailSig): in a raid that would be 80 refused calls a time.
   if #ids > 0 and not (att.soundRouted.start or att.soundRouted.finish) then att.soundSig = nil end
+  if plan.group and #ids > 0 and #tokens > 0 and taken == 0 then att.soundSig = nil end
+  if refused > 0 and not safe then att.soundSig = nil end
+  if att.soundSig == nil then att.soundFailSig = sig end
+end
+
+do
+  -- ApplySounds outside Apply (a load scan, a roster change): a bug in it is reported once, as Apply's is.
+  local function SoundsAgain(region, att)
+    local data = WA.GetData(region.id)
+    if not data then return end
+    local ok, err = pcall(ApplySounds, att, region, data, att.want)
+    if not ok and not soundReported then
+      soundReported = true
+      local handler = geterrorhandler and geterrorhandler()
+      if handler then handler("engine (aura sound): " .. tostring(err)) end
+    end
+  end
+
+  -- WeakAuras' load scan: the displays whose load state changed, at once, also in combat. Called as the scan
+  -- happens, not a frame later.
+  function Engine.LoadSounds()
+    if not WA.IsAuraLoaded then return end
+    for region, att in pairs(attachments) do
+      if att.active and att.want and att.soundLoaded ~= (WA.IsAuraLoaded(region.id) == true) then SoundsAgain(region, att) end
+    end
+  end
+
+  -- A roster change: a group trigger's sounds follow the members it watches (Engine.SoundTokens), registered again
+  -- at once, also in combat, when its tokens changed (you joined or left a raid; with Ignore Self, your raid number
+  -- moved) or someone else stands behind one of them (Engine.SoundWho); so do those of a display on one member's
+  -- token.
+  function Engine.RosterSounds()
+    for region, att in pairs(attachments) do
+      if att.active and att.want and att.soundRoster then SoundsAgain(region, att) end
+    end
+  end
+
+  -- The displays whose sounds wait (soundSig nil: refused by the game) are registered again whenever what the game
+  -- allows may have changed: after combat, a loading screen, auras turning secret or plain, a restriction's change or
+  -- end. In a fight each costs one call should the game still refuse (Engine.SoundTaken).
+  function Engine.RetrySounds()
+    for i = #Engine.soundStray, 1, -1 do                          -- a test the game would not let go
+      if pcall(C_UnitAuras.RemoveAuraSound, Engine.soundStray[i]) then table.remove(Engine.soundStray, i) end
+    end
+    for region, att in pairs(attachments) do
+      if att.active and att.want and att.soundSig == nil then
+        att.soundFailSig = nil
+        SoundsAgain(region, att)
+      end
+    end
+  end
 end
 
 ---------------------------------------------------------------------------- dynamic groups
@@ -6100,11 +6616,18 @@ do
     end)
   end
 
+  -- The signature of a group's plan; one that is not packed with what its children's copies hang on (Group by
+  -- Frame: unit frames or nameplates, Engine.CopyLayout), which one reason ("it anchors per unit") does not tell.
+  local function PlanSig(gdata, gp, why)
+    if gp then return gp.sig end
+    return "-" .. tostring(why) .. (gdata.useAnchorPerUnit and ("/" .. tostring(gdata.anchorPerUnit)) or "")
+  end
+
   -- Re-plans a group; when the plan changed, retires the old chain and re-applies every child.
   function Dyn.Refresh(gdata)
     if not (gdata and gdata.regionType == "dynamicgroup") then return nil end
     local gp, why = Dyn.Plan(gdata)
-    local sig = gp and gp.sig or ("-" .. tostring(why))
+    local sig = PlanSig(gdata, gp, why)
     if lastSig[gdata.id] ~= sig then
       lastSig[gdata.id] = sig
       if not gp and states[gdata.id] then Retire(states[gdata.id]); states[gdata.id] = nil end
@@ -6153,6 +6676,7 @@ do
       -- one pass however many scans came in this one
       Engine.QueueGate()
       Dyn.FlushLoads()
+      Engine.LoadSounds()                  -- sounds now (at once, also in combat)
     end)
   end
 
@@ -6209,8 +6733,7 @@ do
   function Dyn.Sig(data)
     local gdata = ParentOf(data)
     if not gdata then return "" end
-    local gp, why = Dyn.Plan(gdata)
-    return gp and gp.sig or ("-" .. tostring(why))
+    return PlanSig(gdata, Dyn.Plan(gdata))
   end
 
   function Dyn.Release(att, region)
@@ -6843,6 +7366,7 @@ do
   -- frame levels inside a variant's host, as ApplyUnguarded sets them for a slot
   local function Levels(v)
     local c, sh = v.container, v.shadows
+    if v.underBorders then Engine.BorderLevels(v.underBorders) end   -- a copy's border in its Missing clip ('All', 'Unaffected')
     if not v.button then return end                 -- a Missing copy (Engine.ApplyCopies) has no slot button
     pcall(v.button.SetFrameLevel, v.button, c:GetFrameLevel())
     Engine.BorderLevels(sh)
@@ -6932,13 +7456,15 @@ function Engine.MemberKey(u)
   return g .. (on == false and "|off" or "") .. (seen == false and "|far" or "")
 end
 
--- Are you in a raid? Plain roster state; should the game ever keep it secret, whether raid1 is there tells.
+-- Are you in a raid? Plain roster state; should the game ever keep it secret, whether raid1 is there tells (kept
+-- secret too: not in a raid, your party's tokens, which name your own group in a raid as well).
 function Engine.InRaid()
   if IsInRaid then
     local ok, r = pcall(IsInRaid)
     if ok and not issecretvalue(r) and type(r) == "boolean" then return r end
   end
-  return UnitExists and UnitExists("raid1") and true or false
+  local ex = UnitExists and UnitExists("raid1")
+  return (not issecretvalue(ex) and ex) and true or false
 end
 
 -- Is this token you? For Ignore Self on raid tokens, whose index moves with the roster: by your GUID (plain
@@ -7229,6 +7755,18 @@ do
     if st.lastPlaceMs >= (st.maxPlaceMs or 0) then st.maxPlaceMs, st.maxLookups = st.lastPlaceMs, looks end
   end
 
+  -- A copy's border in its Missing clip ('All', 'Unaffected': Engine.CopyBorder), so it shows exactly while the
+  -- display for a member who lacks the aura does. specs: Engine.BorderSpecs, or nil to hide it. While the copies
+  -- draw it, WA's own border on the display is hidden (Engine.ApplyCopies), and the copy's finish animation
+  -- carries it (Engine.ApplyFinishAnim).
+  function Engine.CopyUnderBorder(cp, region, specs)
+    if specs or cp.underBorders then
+      cp.underBorders = cp.underBorders or {}
+      Engine.StyleBorders(cp.underBorders, cp.shadows.clip, cp.host, nil, region, specs)
+    end
+    cp.underBorderOn = specs and true or nil
+  end
+
   function Engine.ApplyCopies(att, region, data, plan)
     local g = plan.group
     local layout = Layout(data, plan)
@@ -7247,6 +7785,30 @@ do
       for _, u in ipairs(g.units) do units[#units + 1] = u end
       for _, u in ipairs(g.raidUnits) do units[#units + 1] = u end
     end
+    -- Auto-clone 'All': every copy holds both parts on its member's container, as the refresh icon does: the
+    -- live aura in its slot and, in a Missing clip on the same aura, the display for a member who lacks it.
+    -- Each part in its look of the conditions on 'Aura(s) Found' (Engine.BuffedLooks).
+    local all = g.pattern == "all"
+    local looks = all and plan.buffed or nil
+    local onData = looks and Engine.LookData(data, looks.on) or data
+    local offData = looks and Engine.LookData(data, looks.off) or data
+    -- alpha: the copies on unit frames do not lie inside the display, so WA's alpha of it does not reach them:
+    -- each part takes the display's own, or its look's ('All'); elsewhere they have the display's from WA
+    local function Alpha(d)
+      return (layout == "frame") and math.min(1, math.max(0, tonumber(d.alpha) or 1)) or 1
+    end
+    local aOn, aOff = Alpha(onData), Alpha(offData)
+    -- an icon's border goes round the display for a member who lacks it too (WA's clones all have it), drawn in
+    -- the Missing clip, which then reaches past the border (in the border's own units, Engine.BorderUnit):
+    -- 'All''s and, on unit frames or in a row, 'Unaffected''s (Engine.CopyBorder)
+    local underBorder = Engine.CopyBorder(data, plan, layout) and Engine.BorderSpecs(data) or nil
+    local reach = 0
+    for _, b in ipairs(underBorder or {}) do
+      reach = math.max(reach, math.ceil(math.max(0, b.offset) * Engine.BorderUnit(region, b.pp) - 0.001))
+    end
+    -- meanwhile WA's own border on the display goes, once for the display: a row's first place lies on it, and
+    -- before any copy is made (Unit 'Raid' out of a raid) it would frame an empty place there
+    if underBorder then HideStaticDecor(att, region, data, true) end
     local t0 = debugprofilestop and debugprofilestop()
     for i, u in ipairs(units) do
       want[u] = true
@@ -7256,11 +7818,17 @@ do
       Engine.BandCopy(att, cp, (i > nParty) and (i - nParty) or i, layout)   -- each set from the host
       local ok
       if plan.mode == "missing" then
+        -- a copy that drew the live aura before (as 'Affected' or 'All'): its slot goes
+        if cp.slotBuilt then pcall(cp.container.SetAuraSlotEnabled, cp.container, KEY, false) end
+        DisablePresentClip(cp)
+        StopAnimatedGlow(cp.aglow)
         local w, h = RegionSize(region)
         local m = ClipMargin(w, h, data, GlowSpec(data))
         if cp.isText then m = math.max(m, 3) end
-        ok = EnsureGroup(cp, region, plan, m)
+        ok = EnsureGroup(cp, region, plan, math.max(m, reach))
         if ok then ApplyUnderlayLook(cp, region, data, plan) end
+        -- its border in the Missing clip, as 'All''s (none at the display's own place: WA's own frames them there)
+        Engine.CopyUnderBorder(cp, region, ok and underBorder or nil)
         pcall(Engine.StopStartAnim, cp)
         if ok then pcall(Engine.ApplyFinishAnim, cp, region, data, plan, true) end
       else
@@ -7273,22 +7841,54 @@ do
           c:SetAuraSlotEnabled(KEY, true)
         end
         ok = cp.slotBuilt
+        local glowSub = ok and GlowSub(onData) or nil
+        -- 'All': the glow is the same with the aura and without it (Engine.BuffedLooks takes no glow changes), so
+        -- one animated glow on the copy's host, outside both parts, above them as the live part's would be; not
+        -- one in each part, the live part's in a second container per copy (45 more for the raid, each with its
+        -- aura buttons). Not while the parts differ in alpha; without ForeverGlow, a glow in each part as before.
+        local oneGlow = false
+        if all and glowSub and aOn == aOff then
+          local w, h = RegionSize(region)
+          local holder = GlowHolder(cp, "aglow", cp.host)
+          oneGlow = StartAnimatedGlow(holder, glowSub, w, h)
+          if oneGlow then
+            Engine.SafeLevel(holder, cp.host:GetFrameLevel() + 4)          -- as Engine.HostLevels keeps it
+            holder:SetAlpha(aOn)
+          end
+        end
+        if not oneGlow then StopAnimatedGlow(cp.aglow) end
+        if ok and all then
+          -- 'All': the Missing clip on the same aura (filter, candidates), as the refresh icon's; room for the glow
+          -- only when it is drawn in there
+          local w, h = RegionSize(region)
+          ok = EnsureGroup(cp, region, plan, math.max(oneGlow and 0 or ClipMargin(w, h, data, GlowSpec(data)), reach))
+        elseif cp.groupBuilt then
+          DisableKind(cp, "group")                       -- one from 'Unaffected' or 'All' before
+          StopAnimatedGlow(cp.mglowHolder)
+        end
         if ok then
-          local glowSub = GlowSub(data)
-          if glowSub then
+          if glowSub and not oneGlow then
             local w, h = RegionSize(region)
             cp.pclipShown = EnsurePresentClip(cp, region, plan, AnimatedGlowMargin(w, h, glowSub))
           else
             DisablePresentClip(cp)
           end
-          ApplySlotLook(cp, region, data, plan)
-          pcall(Engine.ApplyStartAnim, cp, region, data, plan, tok, true)
+          -- the display for the absent aura first (its MirrorTexts is undone by the live aura's, which keeps the texts)
+          if all then ApplyUnderlayLook(cp, region, offData, plan, oneGlow) end
+          Engine.CopyUnderBorder(cp, region, underBorder)   -- 'Affected': one from 'All' or 'Unaffected' goes
+          ApplySlotLook(cp, region, onData, oneGlow and setmetatable({ noGlow = true }, { __index = plan }) or plan)
+          if all then HideStaticDecor(cp, region, data, cp.isPic or cp.isMotion or cp.isModel) end
+          pcall(Engine.ApplyStartAnim, cp, region, onData, plan, tok, true)   -- none for 'All' (Engine.AnimPlan)
+        else
+          StopAnimatedGlow(cp.aglow)
         end
         pcall(Engine.ApplyFinishAnim, cp, region, data, plan, false)
       end
       if ok then
         if cp.unit ~= tok then cp.container:SetUnit(tok); cp.unit = tok; cp.member = Engine.MemberKey(tok) end
         Engine.CopyLevels(cp)
+        if (cp.aOn or 1) ~= aOn then cp.gates.ge:SetAlpha(aOn); cp.aOn = aOn end       -- the slot, its glow clip
+        if cp.shadows.clip and (cp.aOff or 1) ~= aOff then cp.shadows.clip:SetAlpha(aOff); cp.aOff = aOff end
         for live in pairs(cp.mirrored or {}) do att.mirrored[live] = true end
       end
       cp.ok = ok and true or false
@@ -7314,6 +7914,7 @@ do
     if cp.slotBuilt then pcall(c.SetAuraSlotEnabled, c, KEY, false) end
     if cp.groupBuilt then pcall(c.SetAuraGroupEnabled, c, KEY, false) end
     DisablePresentClip(cp)
+    StopAnimatedGlow(cp.aglow)
     pcall(Engine.StopStartAnim, cp)
     cp.host:Hide()
     cp.shown = false
@@ -7688,6 +8289,7 @@ local function ComputeSig(region, data, plan)
     table.concat(data.backgroundColor or {}, ","), table.concat(data.icon_color or {}, ","),
     tostring(data.foreverEngineRange), tostring(data.foreverEngineRangeSpell), tostring(data.foreverEngineGlowPart),
     SoundSig(data), tostring(data.parent), Dyn.Sig(data), plan.stacks and plan.stacks.key or "", plan.looksKey or "",
+    plan.buffed and plan.buffed.key or "", plan.group and tostring(data.alpha) or "",   -- copies on unit frames
     table.concat(data.color or {}, ","), region.icon and table.concat({ region.icon:GetTexCoord() }, ",") or "",
     Engine.AnimKey(data) }
   if data.regionType == "progresstexture" then
@@ -7793,10 +8395,24 @@ function Engine.Sync(region, data)
     if fresh then plan = fresh; decided[data.uid] = fresh          -- new ranks / sightings -> new filters
     else plan.gen = spellbookGen end                               -- eligibility is the trigger side's call
   end
+  -- Auto-clone 'All' whose Dynamic Group lays out its children another way than when the trigger side took its
+  -- verdict (Engine.allLayouts): added again at safe time (FlushReadds, a frame later: not inside WA's modify),
+  -- which takes the verdict afresh. Until then it stays as decided.
+  local lay = data.uid and Engine.allLayouts[data.uid]
+  local stale = lay ~= nil and lay ~= Engine.AllLayout(data)
+  if stale and not readd[data.uid] then
+    readd[data.uid] = true
+    C_Timer.After(0, FlushReadds)
+  end
   if not plan then
     if att.want or att.active then att.want = nil; Schedule(region) end
     if isAura2 and ENGINE_REGIONS[data.regionType] then
-      SetWarning(att, data.uid, "info", (Engine.Explain(data)))
+      local status, yes = Engine.Explain(data)
+      if yes and stale then
+        -- a fresh look would say engine-driven, but the trigger side's verdict stands until the display is added again
+        status = T("|cffff8800Not engine-driven|r yet (blind while auras are secret): its Dynamic Group lays out its children another way now, and EverAuras takes the display up again out of combat with auras readable.")
+      end
+      SetWarning(att, data.uid, "info", status)
     else
       SetWarning(att, data.uid, nil, nil)
     end
@@ -7940,11 +8556,12 @@ function Private.Resume(...) origResume(...); ScheduleAll() end
 
 Private.callbacks:RegisterCallback("AboutToDelete", function(_, uid, id)
   decided[uid], nameWatch[uid], readd[uid], durWatch[uid], fpUsers[uid], lateUsers[uid] = nil, nil, nil, nil, nil, nil
+  Engine.allLayouts[uid] = nil
   for region, att in pairs(attachments) do
     if region.id == id and att.want then att.want = nil; Schedule(region) end
   end
 end)
-Private.callbacks:RegisterCallback("WA_SECRET_STATE_UPDATE", function() Engine.Flush() end)
+Private.callbacks:RegisterCallback("WA_SECRET_STATE_UPDATE", function() Engine.Flush(); Engine.RetrySounds() end)
 
 ---------------------------------------------------------------------------- learning + spellbook events
 local QueueSpellbookRefresh   -- defined below
@@ -8163,7 +8780,7 @@ Engine.RegisterEvents(ev, { "PLAYER_TARGET_CHANGED", "PLAYER_FOCUS_CHANGED", "PL
                             "GROUP_ROSTER_UPDATE", "UNIT_FLAGS", "UNIT_CONNECTION", "PLAYER_ALIVE", "PLAYER_UNGHOST",
                             "PARTY_MEMBER_ENABLE", "PARTY_MEMBER_DISABLE", "UNIT_PHASE",
                             "SPELLS_CHANGED", "LEARNED_SPELL_IN_SKILL_LINE", "PLAYER_LEVEL_UP", "UI_SCALE_CHANGED",
-                            "DISPLAY_SIZE_CHANGED" })
+                            "DISPLAY_SIZE_CHANGED", "ADDON_RESTRICTION_STATE_CHANGED" })
 Engine.RegisterEvents(ev, { "UNIT_PET" }, "player")
 Engine.RegisterEvents(ev, { "UNIT_AURA" }, "player", "target", "focus", "pet")
 ev:SetScript("OnEvent", function(_, event, arg1)
@@ -8175,6 +8792,15 @@ ev:SetScript("OnEvent", function(_, event, arg1)
   end
   if event == "UNIT_AURA" then
     LearnFromUnit(arg1)      -- plain data out of combat; a no-op while auras are secret
+    return
+  end
+  if event == "ADDON_RESTRICTION_STATE_CHANGED" then
+    -- fired before a restriction becomes active and after it has ended: sounds the game refused under it
+    -- (Engine.SoundTaken), a frame later, once per frame
+    if not Engine.soundRetryQueued then
+      Engine.soundRetryQueued = true
+      C_Timer.After(0, function() Engine.soundRetryQueued = nil; pcall(Engine.RetrySounds) end)
+    end
     return
   end
   if event == "UNIT_FLAGS" or event == "UNIT_CONNECTION" or event == "PARTY_MEMBER_ENABLE"
@@ -8200,12 +8826,7 @@ ev:SetScript("OnEvent", function(_, event, arg1)
     wipe(descDurations)      -- a new rank changes the description
     LearnFromAllUnits()      -- buffs that procced in combat and are still up become readable now
     Engine.Flush()
-    for region, att in pairs(attachments) do
-      if att.active and att.want and att.soundSig == nil then
-        local d = WA.GetData(region.id)
-        if d then pcall(ApplySounds, att, region, d, att.want) end
-      end
-    end
+    Engine.RetrySounds()     -- sounds the game refused in the fight, or out of it
   end
   local unit = REFRESH[event]
   if unit then LearnFromUnit(unit) end
@@ -8229,6 +8850,9 @@ ev:SetScript("OnEvent", function(_, event, arg1)
     local g = inRaid and att.active and att.want and att.want.group
     if g and att.raidWanted and not att.raidBuilt then Schedule(region) end
   end
+  -- a group trigger's sounds follow the members it watches: registered again at once, also in combat (should the
+  -- game refuse them in a fight, ApplySounds leaves soundSig nil for the retries above)
+  if roster or event == "PLAYER_ENTERING_WORLD" then Engine.RosterSounds() end
 end)
 
 

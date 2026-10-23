@@ -93,8 +93,11 @@ ENGINE_STUBS = r"""
     GetSpellTexture = function() return 134400 end,
   }
   C_SpellBook = { GetNumSpellBookSkillLines = function() return 0 end }
+  -- the displays of the imports being classified, by id (register()): a child's verdict can depend on its
+  -- parent group (Auto-clone 'All' needs a Dynamic Group)
+  CLASSIFY_KNOWN = {}
   EverAuras = { IsLibsOK = function() return true end, L = {}, prettyPrint = function() end,
-                GetData = function() return nil end,
+                GetData = function(id) return CLASSIFY_KNOWN[id] end,
                 LoadFunction = function(src) local f, err = loadstring(src); if not f then error(err) end; return f() end }
   EverAurasSaved = { foreverEngine = { learned = setmetatable({}, { __index = function(_, k) return { [idFor(k)] = true } end }) } }
   local realLibStub = LibStub
@@ -154,6 +157,18 @@ def classify(verdict, item):
     return "BLIND", text
 
 
+def register(lua, root):
+    """makes an import's group and children known to the engine's GetData (a decoded import, as for walk())"""
+    known = lua.globals().CLASSIFY_KNOWN
+    items = [root["d"]]
+    kids = root["c"]
+    if kids is not None:
+        items += [kids[k] for k in sorted(kids.keys())]
+    for item in items:
+        if item is not None and item["id"] is not None:
+            known[item["id"]] = item
+
+
 def walk(root):
     """yields every non-group display of an import (d = top, c = children), as Lua tables."""
     items = [root["d"]]
@@ -176,6 +191,7 @@ def main(paths):
         name = os.path.basename(p)
         if t is None:
             print("== %s: NOT DECODED (%s)" % (name, info)); continue
+        register(lua, t)
         disp = list(walk(t))
         top = t["d"]["id"] if t["d"] is not None else None
         print("== %s  '%s'  format v%s  %d display(s)" % (name, top, info, len(disp)))

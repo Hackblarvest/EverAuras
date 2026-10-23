@@ -83,7 +83,8 @@ C.FEATURES = {
       "f:PixelUtil.GetPixelToUIUnitFactor", "e:UI_SCALE_CHANGED", "e:DISPLAY_SIZE_CHANGED" } },
   { name = "Sounds on aura gain and loss", items = {
       "f:C_UnitAuras.AddAuraSound", "f:C_UnitAuras.RemoveAuraSound", "v:Enum.UnitAuraSoundTrigger.Added",
-      "v:Enum.UnitAuraSoundTrigger.Removed" } },
+      "v:Enum.UnitAuraSoundTrigger.Removed", "f:C_RestrictedActions.GetAddOnRestrictionState",
+      "v:Enum.AddOnRestrictionState.Inactive", "e:ADDON_RESTRICTION_STATE_CHANGED" } },
   { name = "Range gate", items = {
       "f:C_Spell.IsSpellInRange", "f:C_Spell.GetSpellIDForSpellIdentifier", "f:C_Spell.SpellHasRange",
       "f:C_SpellBook.IsSpellKnown", "f:C_Timer.NewTicker", "f:C_CurveUtil.EvaluateColorValueFromBoolean" } },
