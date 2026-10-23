@@ -20,3 +20,4 @@ Probe_Anim2.lua
 Probe_Absorb.lua
 Probe_Twin.lua
 Probe_ManaShield.lua
+Probe_Sound.lua
