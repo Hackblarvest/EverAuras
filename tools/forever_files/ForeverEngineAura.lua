@@ -2381,6 +2381,8 @@ function Engine.Explain(data, plan, reasons)
           and T("|cff33ff99Group:|r drawn once per member (%s), each copy shown while that member lacks the aura%s, in combat too."):format(who, left)
           or T("|cff33ff99Group:|r drawn once per member (%s), each copy showing that member's aura where it is%s, in combat too: one of them shows when several have it."):format(who, left))
       end
+      -- Engine.EmptyGate
+      txt = txt .. " " .. T("While no member's copy shows (nobody there to watch, or all of them left out), nothing is drawn at the display's place: WeakAuras' own border, glow and %p/%s texts are hidden there too.")
       if layout == "stack" then
         txt = txt .. " " .. T("The copies lie on each other, each 5 frame levels above the one before (the top one covers the rest; the display's own texts and border stay above them all), so the display draws above a later display of its group that overlaps it.")
       end
@@ -5475,6 +5477,7 @@ local function DisableKind(att, kind)
       for _, cp in pairs(att[set] or {}) do cp.ok = false; Engine.DisableCopy(cp) end
     end
     if att.copyRoot then att.copyRoot:Hide() end
+    att.emptySet, att.emptyOnly = nil, nil          -- in att.mirrored still: TurnOff gives them back, a new look its own
     return
   end
   -- the Found slot: also a composite's Found part (it stayed drawing when a composite lost its Found part)
@@ -7767,11 +7770,53 @@ do
     cp.underBorderOn = specs and true or nil
   end
 
+  -- WA's own elements on the display that the copies stand in for (the texts with the aura's time or stacks, the
+  -- glow, and the border where the copies draw it) are hidden by each copy's look (cp.mirrored); WA's border stays
+  -- where it frames the copies (a Missing display at its own place) or a condition WA applies itself changes it. While
+  -- no copy shows, nothing is drawn at the display's place to light or frame: no copy made (Unit 'Raid' out of a raid
+  -- before the raid's copies are made, or none could be made), or none shown (Unit 'Raid' after the raid, Ignore Self
+  -- with you alone, the members left out or gone). Then, whatever the pattern and layout, they all go, once for the
+  -- display. att.emptySet: the ones that are on (MirrorTexts, HideStaticDecor), so handing back shows none that was off.
+  function Engine.EmptySet(att, region, data)
+    local e = {}
+    MirrorTexts(e, region, data, false)
+    HideStaticDecor(e, region, data, true)
+    att.emptySet = e.mirrored
+  end
+
+  -- From Engine.GateCopies, which shows the copies from plain unit state, so in combat too (WA's own elements are
+  -- plain frames): the ones of att.emptySet the copies do not hide join att.mirrored while no copy shows (OnLayout keeps
+  -- them hidden, TurnOff gives them back), att.emptyOnly; handed back as soon as one shows.
+  function Engine.EmptyGate(att, empty)
+    if not att.emptySet then return end              -- not drawing copies (DisableKind)
+    att.mirrored = att.mirrored or {}
+    if empty and not att.emptyOnly then
+      local only = {}
+      for live in pairs(att.emptySet) do
+        if not att.mirrored[live] then
+          att.mirrored[live], only[live] = true, true
+          if live.SetShown then live:SetShown(false) end
+        end
+      end
+      att.emptyOnly = only
+    elseif not empty and att.emptyOnly then
+      for live in pairs(att.emptyOnly) do
+        att.mirrored[live] = nil
+        if live.SetShown then live:SetShown(true) end
+      end
+      att.emptyOnly = nil
+    end
+  end
+
   function Engine.ApplyCopies(att, region, data, plan)
     local g = plan.group
     local layout = Layout(data, plan)
     local set = (layout == "frame") and "fcopies" or "copies"
     att.copies, att.fcopies = att.copies or {}, att.fcopies or {}
+    -- hidden while no copy showed (Engine.EmptyGate): handed back below where nothing hides them now, since the
+    -- raid's copies are made at a roster change, not in WA's modify, which shows them itself
+    local wasEmpty = att.emptyOnly
+    att.emptyOnly = nil
     att.mirrored = {}                                  -- rebuilt from the copies (WA's modify shows what left it)
     att.copyLayout = layout
     local want = {}
@@ -7806,8 +7851,8 @@ do
     for _, b in ipairs(underBorder or {}) do
       reach = math.max(reach, math.ceil(math.max(0, b.offset) * Engine.BorderUnit(region, b.pp) - 0.001))
     end
-    -- meanwhile WA's own border on the display goes, once for the display: a row's first place lies on it, and
-    -- before any copy is made (Unit 'Raid' out of a raid) it would frame an empty place there
+    -- meanwhile WA's own border on the display goes, once for the display: a row's first place lies on it (while no
+    -- copy shows, Engine.EmptyGate)
     if underBorder then HideStaticDecor(att, region, data, true) end
     local t0 = debugprofilestop and debugprofilestop()
     for i, u in ipairs(units) do
@@ -7893,6 +7938,7 @@ do
       end
       cp.ok = ok and true or false
     end
+    Engine.EmptySet(att, region, data)
     -- all 40 made: from now on Smart Group shows them in a raid (not a set the display has no more: a row)
     att.raidBuilt = withRaid and true or nil
     att.bands = (layout == "stack") and math.max(nParty, withRaid and #g.raidUnits or 0) or 0
@@ -7904,6 +7950,9 @@ do
     if att.copyRoot then att.copyRoot:SetShown(layout == "frame") end
     Engine.PlaceCopies(att)
     Engine.GateCopies(att)
+    for live in pairs(wasEmpty or {}) do
+      if att.emptySet[live] and not att.mirrored[live] and live.SetShown then live:SetShown(true) end
+    end
     Engine.SubRegionLevels(att, region, Private.frameLevels and Private.frameLevels[region.id] or 5)
     if t0 then CopyStats(#units, debugprofilestop() - t0) end
     return true
@@ -7930,6 +7979,7 @@ do
     -- WeakAuras collapses a display it does not load, but the copies do not all hang on its region
     local loaded = not (WA.IsAuraLoaded and att.region) or WA.IsAuraLoaded(att.region.id) == true
     local inRaid = g.raid and Engine.InRaid() or false
+    local any = false                                  -- a copy shows (Engine.EmptyGate)
     for _, set in ipairs({ "copies", "fcopies" }) do
       for u, cp in pairs(att[set] or {}) do
         local tok = cp.token or u
@@ -7943,8 +7993,10 @@ do
           if not issecretvalue(seen) and not seen then on = false end
         end
         if cp.shown ~= on then cp.host:SetShown(on); cp.shown = on end
+        any = any or on
       end
     end
+    Engine.EmptyGate(att, not any)
   end
 
   -- the passes below run outside WA's and the engine's guarded entry points: a bug in one is reported
