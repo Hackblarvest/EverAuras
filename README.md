@@ -69,7 +69,7 @@ and lets the client draw it.
 2. Install **EverAuras** with the [CurseForge](https://www.curseforge.com/wow/addons/everauras) or
    [Wago](https://addons.wago.io/addons/everauras) app (game version *WoW Forever*), or download the latest `EverAuras-<version>.zip` from
    [Releases](https://github.com/Hackblarvest/EverAuras/releases) and unzip it into
-   `_classic_beta_\Interface\AddOns`. It holds `EverAuras`, `EverAurasOptions`, `EverAurasArchive` and
+   `_forever_\Interface\AddOns` (`_classic_beta_\Interface\AddOns` for the beta client). It holds `EverAuras`, `EverAurasOptions`, `EverAurasArchive` and
    `EverAurasModelPaths` (an `EverAurasTemplates` folder from 0.8.0 or earlier never loaded and can be
    deleted). Textures in auras imported from WeakAuras, M33kAuras
    or ForeverAuras are pointed at EverAuras' own copy of the same media automatically.

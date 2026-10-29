@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.9-beta (2026-10-29)
+
+- **Nothing left at a group display's place while no copy shows.** When no member's copy of a *Party*,
+  *Smart Group* or *Raid* trigger shows (*Unit: Raid* outside a raid, *Ignore Self* while you are alone,
+  everyone else gone, or everyone dead with *Ignore Dead*), WeakAuras' own border, glow and %p/%s texts no
+  longer frame an empty spot there. They come back as soon as a copy shows, also in combat.
+
 ## 0.9.8-beta (2026-10-24)
 
 - **Sounds on group triggers.** On Show / On Hide sounds of Party, Smart Group and Raid triggers now play per
