@@ -21,3 +21,4 @@ Probe_Absorb.lua
 Probe_Twin.lua
 Probe_ManaShield.lua
 Probe_Sound.lua
+Probe_RowAnim.lua
