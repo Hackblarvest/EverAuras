@@ -2495,6 +2495,11 @@ local function RegionSize(region)
   if att and att.textW then return att.textW, att.textH end
   local w, h = region:GetWidth(), region:GetHeight()
   if issecretvalue(w) or issecretvalue(h) then return 32, 32 end
+  -- WA zooms a display by resizing its region (its own Start, Main or Finish, such as Grow or Pulse:
+  -- Icon:Scale), also one the engine draws and WA's is hidden: the size at rest, which WA keeps
+  if (tonumber(region.scalex) or 1) ~= 1 or (tonumber(region.scaley) or 1) ~= 1 then
+    w, h = tonumber(region.width) or w, tonumber(region.height) or h
+  end
   return math.max(math.floor(w + 0.5), 1), math.max(math.floor(h + 0.5), 1)
 end
 
@@ -4735,9 +4740,10 @@ local function ApplySlotLook(att, region, data, plan)
     local w, h = RegionSize(region)
     StyleGlowTexture(s.glow, att.button, w, h, (found and not plan.noGlow and not animated) and GlowSpec(data) or nil)
   end
-  -- the border in the aura button, with the aura (WA's own is hidden then)
+  -- the border in the aura button, with the aura (WA's own is hidden then); in a sorted row's frame with a
+  -- Start in its body, shut with it (Engine.RowRest)
   local own = found and Engine.OwnBorder(data, plan)
-  Engine.StyleBorders(s, att.button, s.icon, s.cooldown, region, own and Engine.BorderSpecs(data) or nil)
+  Engine.StyleBorders(s, att.body or att.button, s.icon, s.cooldown, region, own and Engine.BorderSpecs(data) or nil)
   att.borderOn = own or nil
   local base = found and region.id and WA.GetData(region.id) or data
   local hideWA = found and ((base == data and own) or (base ~= data and Engine.OwnBorder(base, plan)))
@@ -4862,7 +4868,29 @@ do
   -- The elapsed text's options: wide below x seconds. Tried in turn as /fdanim2 does: the wide rule from -60 s
   -- (a time counted up may read a hair under 0), then from 0; 60 W's, then 30 (still far past the display),
   -- in case the game refuses one. nil: no formatter at all, so no gate and nothing drawn (Engine.AnimPlan).
-  local function ElapsedOptions(x)
+  -- zero: for the buttons of a sorted row, which the game hands from aura to aura. It switches the text off for
+  -- an aura without a duration (Blizzard_CustomAuraButton ApplyDurationText), so such a button would keep the
+  -- text its last aura left, wide for good when that aura went within X s. So the same format rides inside a
+  -- binding of ours that writes "0" for such an aura (probe /fdpair: the game writes a binding's zero text),
+  -- next to it if the binding takes no format (inside, nothing the button does after it resets the zero
+  -- text). One per x; nil without the API. Not tried in game on such an aura yet (/fdrowanim).
+  Engine.zeroOptions = {}
+  local function ElapsedOptions(x, zero)
+    if zero then
+      local cache = Engine.zeroOptions
+      if cache[x] == nil then
+        local plain = ElapsedOptions(x)
+        local ok, opts = pcall(function()
+          local b = C_DurationUtil.CreateDurationTextBinding()
+          b:SetZeroDurationText("0")
+          local tf = plain.textFormat
+          if pcall(b.SetTextFormat, b, tf.formatString, tf.components) then return { binding = b } end
+          return { binding = b, textFormat = tf }
+        end)
+        cache[x] = (ok and type(opts) == "table") and opts or false
+      end
+      return cache[x] or nil
+    end
     local f
     for _, t in ipairs({ { -60, 60 }, { 0, 60 }, { -60, 30 }, { 0, 30 } }) do
       f = f or Engine.GateFormatter(x, Engine.TIME_WIDE:sub(1, t[2]), t[1])
@@ -4873,12 +4901,30 @@ do
                             components = { { property = (P and P.ElapsedDuration) or 2, formatter = f } } } }
   end
 
+  -- fs as button's elapsed text (zero: with the zero text first, then without it, as ElapsedOptions says):
+  -- true when the game took it, and whether with the zero text
+  local function BindElapsed(button, fs, x, zero)
+    local opts = zero and ElapsedOptions(x, true)
+    if opts and pcall(button.SetDurationText, button, fs, opts) then return true, true end
+    opts = ElapsedOptions(x)
+    if opts and pcall(button.SetDurationText, button, fs, opts) then return true, false end
+    return false, false
+  end
+
   local function Finite(...)
     for i = 1, select("#", ...) do
       local v = select(i, ...)
       if type(v) ~= "number" or v ~= v or v == math.huge or v == -math.huge then return false end
     end
     return true
+  end
+
+  -- an animation's seconds as WA plays them (Animations.lua): its duration read by WA's own ParseNumber (so
+  -- also "50%" and "1/2"); none, 0 or less runs over one second
+  local function PlayedSeconds(a)
+    local ok, d = pcall(Private.ParseNumber or tonumber, a.duration)
+    d = ok and tonumber(d) or nil
+    return (d and d > 0 and Finite(d)) and d or 1
   end
 
   -- A display's start or finish animation as the game is to play it (WA's Animate, Animations.lua: a Start
@@ -4916,8 +4962,7 @@ do
       local ok, e = pcall(ease, p, power)
       return (ok and Finite(e)) and e or p
     end
-    local d = tonumber(a.duration) or 0
-    if d <= 0 then d = 1 end                  -- WA runs a duration of 0 over one second
+    local d = PlayedSeconds(a)                -- WA runs a duration of 0 over one second
     -- the gate's whole seconds: the elapsed time counts from when the aura was put on, the animation from
     -- when its button shows, a moment later (0.2 s of room for that)
     local spec = { which = which, d = d, x = math.max(1, math.ceil(d + 0.2)), notes = notes,
@@ -4990,16 +5035,108 @@ do
     return spec
   end
 
-  -- a display in a Dynamic Group the game draws as one sorted row (its own drawing is hidden there)
+  -- one animation's settings as the signature takes them: "which,key=value,...", "" for none WA plays
+  local function AnimPart(data, which)
+    local a = type(data.animation) == "table" and data.animation[which] or nil
+    if not (type(a) == "table" and (a.type == "preset" or a.type == "custom")) then return "" end
+    local keys = {}
+    for k, v in pairs(a) do
+      if type(k) == "string" and type(v) ~= "table" and type(v) ~= "function" then keys[#keys + 1] = k end
+    end
+    table.sort(keys)
+    local parts = { which }
+    for _, k in ipairs(keys) do parts[#parts + 1] = k .. "=" .. tostring(a[k]) end
+    return table.concat(parts, ",")
+  end
+
+  -- One animation as WA plays it on a display of kind (Private.Animate), to tell whether two displays play the
+  -- same: by the table WA plays (a preset's own, whatever the display's still holds; none for a preset it
+  -- does not know), its duration as WA runs it (PlayedSeconds: none, 0 or less over one second), its easing
+  -- and the parts it turns on that this kind shows (an icon does not rotate), with WA's defaults. Never by the
+  -- rest of the table: WA's options write one setting at a time and clear none (a part turned off, a custom
+  -- Start before a preset, a blank duration), and WA writes its defaults and the parts' functions into the
+  -- custom table it plays. "" for none WA plays.
+  local function PlayedPart(data, which, kind)
+    local a = type(data.animation) == "table" and data.animation[which] or nil
+    if type(a) ~= "table" then return "" end
+    if a.type == "preset" then
+      a = a.preset and Private.anim_presets and Private.anim_presets[a.preset] or nil
+      if type(a) ~= "table" then return "" end
+    elseif a.type ~= "custom" then
+      return ""
+    end
+    local ease = tostring(a.easeType or "none")
+    local out = { "custom", tostring(a.duration_type or "seconds"), tostring(PlayedSeconds(a)),
+                  ease == "none" and ease or (ease .. "/" .. tostring(tonumber(a.easeStrength) or 3)) }
+    local n = #out
+    local function part(use, typeKey, funcKey, default, ...)
+      if not use then return end
+      local t = a[typeKey] or default
+      out[#out + 1] = typeKey .. "=" .. tostring(t) .. ((t == "custom") and ("/" .. tostring(a[funcKey])) or "")
+      for i = 1, select("#", ...), 2 do
+        local k, d = select(i, ...)
+        out[#out + 1] = k .. "=" .. tostring(tonumber(a[k]) or a[k] or d)
+      end
+    end
+    part(a.use_translate, "translateType", "translateFunc", "straightTranslate", "x", 0, "y", 0)
+    part(a.use_alpha, "alphaType", "alphaFunc", "straight", "alpha", 0)
+    part(a.use_scale and kind ~= "text", "scaleType", "scaleFunc", "straightScale", "scalex", 1, "scaley", 1)
+    part(a.use_rotate and kind == "texture", "rotateType", "rotateFunc", "straight", "rotate", 0)
+    part(a.use_color, "colorType", "colorFunc", "straightColor", "colorR", 1, "colorG", 1, "colorB", 1, "colorA", 1)
+    if #out == n then return "" end
+    return table.concat(out, ",")
+  end
+
+  -- The Start of a Dynamic Group's sorted row (Dyn.SortPlan). The row plays ONE Start on every frame, and a
+  -- frame cannot tell whose aura it shows (its look is the first child's too), so it is the first child's,
+  -- and only when every child plays the same (PlayedPart; the alpha and anchor point the spec takes are the
+  -- first child's). spec, or nil plus why (nil, nil: no child has a Start WA plays; the first child's own
+  -- reason, as its single display's, when none plays one, such as a preset WA does not know). Icons only
+  -- (Engine.AnimPlan names Progress Bars). Kept per settings: Dyn.Plan runs often. Never through
+  -- Engine.AnimPlan, which asks Dyn.Plan whether the display is in a sorted row, which asks this.
+  Engine.rowStarts = {}
+  function Engine.RowStart(ids, kind)
+    if kind ~= "icon" then return nil end
+    local first = WA.GetData(ids[1])
+    if not first then return nil end
+    local parts, keys = {}, { Engine.AnimKey(first) }
+    for i, id in ipairs(ids) do
+      local d = WA.GetData(id)
+      parts[i] = d and PlayedPart(d, "start", kind) or ""
+      keys[#keys + 1] = tostring(id) .. "=" .. parts[i]
+    end
+    local key = table.concat(keys, "\1")
+    local memo = Engine.rowStarts[key]
+    if not memo then
+      memo = {}
+      for i = 2, #ids do
+        if parts[i] ~= parts[1] then
+          memo.why = T("'%s' has another Start than '%s' (the row plays one Start on every frame, so all its children need the same one)")
+            :format(tostring(ids[i]), tostring(ids[1]))
+          break
+        end
+      end
+      if not memo.why then memo.spec, memo.why = Engine.AnimSpec(first, "start", "icon") end
+      Engine.rowStarts[key] = memo
+    end
+    if memo.spec and not ElapsedOptions(memo.spec.x) then
+      return nil, T("the game took no elapsed-time text, which keeps it from playing again at every redraw")
+    end
+    return memo.spec, memo.why
+  end
+
+  -- a display in a Dynamic Group the game draws as one sorted row (its own drawing is hidden there): the
+  -- row's plan, else false
   local function InSortedRow(data)
     local gdata = data.parent and WA.GetData(data.parent)
     if not (gdata and gdata.regionType == "dynamicgroup" and Engine.DynPlan) then return false end
     local ok, gp = pcall(Engine.DynPlan, gdata)
-    return ok and type(gp) == "table" and gp.sorted and true or false
+    return ok and type(gp) == "table" and gp.sorted and gp or false
   end
 
   -- Which of a display's Start and Finish the game plays: { start = spec, finish = spec } plus, for one
-  -- that is set but not drawn, startWhy / finishWhy.
+  -- that is set but not drawn, startWhy / finishWhy. In a sorted row: rowStart = the Start the row plays
+  -- on its frames (Engine.RowStart), never start (the display's own slot stays off).
   function Engine.AnimPlan(data, plan)
     local out = {}
     if not plan then return out end
@@ -5041,12 +5178,17 @@ do
         elseif not kind then
           why = (rt == "text") and T("not drawn yet on texts with the aura's time, stacks or name (plain texts only)")
                 or T("not drawn yet on %s (Icons, Textures and plain Texts only)"):format(T(KIND_NAME[rt] or tostring(rt)))
-        elseif which == "start" and InSortedRow(data) then
-          why = T("not drawn yet in a Dynamic Group sorted by the time left")
         else
-          spec, why = Engine.AnimSpec(data, which, kind)
-          if spec and not ElapsedOptions(spec.x) then
-            spec, why = nil, T("not drawn: the game took no elapsed-time text, which keeps it from playing again at every redraw")
+          local row = which == "start" and InSortedRow(data)
+          if row then
+            -- the row plays its Start on each of its frames (Dyn.SortPlan); this display's own slot stays off
+            out.rowStart = row.start
+            why = (not row.start and row.startWhy) and T("not drawn in this sorted row: %s"):format(row.startWhy) or nil
+          else
+            spec, why = Engine.AnimSpec(data, which, kind)
+            if spec and not ElapsedOptions(spec.x) then
+              spec, why = nil, T("not drawn: the game took no elapsed-time text, which keeps it from playing again at every redraw")
+            end
           end
         end
         out[which], out[which .. "Why"] = spec, why
@@ -5075,6 +5217,12 @@ do
                        or T("the display itself takes over with all its texts and a static glow (an animated glow shows at once)")
       said[#said + 1] = T("Start is played by the game when the aura is put on, also in combat (not when you switch to a target or meet someone who already has it; not for auras without a duration), %s; after %d s %s. After each refresh of the aura (also a stack that refreshes it) the copy stands in again for %d s, and if the game redraws its auras within the first %d s (it does when you enter or leave combat), the animation starts again.")
         :format(copy, ap.start.x, takeOver, ap.start.x, ap.start.x)
+    elseif ap.rowStart then
+      local x = ap.rowStart.x
+      -- the copy carries the frame's icon, swipe, border and a lone %s (Engine.StyleRowCopy), so those move
+      -- with it; the frame's static glow waits for the frame
+      said[#said + 1] = T("Start is played by the game on each frame of the sorted row when that frame's aura is put on, also in combat (not when you switch to a target or meet someone who already has it; not for auras without a duration; not when the row only re-sorts), on a copy of the frame (its icon, swipe and border, and a lone stack count %%s); after %d s the frame itself takes over (its static glow too; an animated glow and the %%p text show at once in their places). After each refresh the copy stands in again for %d s, and if the game redraws its auras within the first %d s (it does when you enter or leave combat), the animation starts again. All children of the group have this Start.")
+        :format(x, x, x)
     elseif ap.startWhy then
       said[#said + 1] = T("Start: %s."):format(ap.startWhy)
     end
@@ -5085,7 +5233,8 @@ do
       said[#said + 1] = T("Finish: %s."):format(ap.finishWhy)
     end
     for _, which in ipairs({ "start", "finish" }) do
-      for _, n in ipairs(ap[which] and ap[which].notes or {}) do
+      local spec = ap[which] or (which == "start" and ap.rowStart) or nil
+      for _, n in ipairs(spec and spec.notes or {}) do
         said[#said + 1] = T("%s: %s."):format(which == "start" and T("Start") or T("Finish"), n)
       end
     end
@@ -5102,21 +5251,11 @@ do
 
   -- For the signature: the animations' settings and what their look depends on.
   function Engine.AnimKey(data)
-    local anim = type(data.animation) == "table" and data.animation or nil
-    if not anim then return "" end
+    if type(data.animation) ~= "table" then return "" end
     local out = {}
     for _, which in ipairs({ "start", "finish" }) do
-      local a = anim[which]
-      if type(a) == "table" and (a.type == "preset" or a.type == "custom") then
-        local keys = {}
-        for k, v in pairs(a) do
-          if type(k) == "string" and type(v) ~= "table" and type(v) ~= "function" then keys[#keys + 1] = k end
-        end
-        table.sort(keys)
-        local parts = { which }
-        for _, k in ipairs(keys) do parts[#parts + 1] = k .. "=" .. tostring(a[k]) end
-        out[#out + 1] = table.concat(parts, ",")
-      end
+      local part = AnimPart(data, which)
+      if part ~= "" then out[#out + 1] = part end
     end
     if #out == 0 then return "" end
     local gdata = data.parent and WA.GetData(data.parent)
@@ -5185,23 +5324,61 @@ do
   end
 
   -- A rig to spec: the setters when it changed, the gate's time, the hand-over (once: a group handed over
-  -- twice is an error). Without its time the gate stays shut and the copy unseen, so not handed over then.
+  -- twice is an error). Without its time the gate stays shut and the copy unseen, so not handed over then;
+  -- nor without its group (a copy row's whose group the game refused: Engine.RowStartRig).
+  -- rig.zero: a copy row's, whose gate writes the zero text (ElapsedOptions); rig.zeroText: it does.
   local function Configure(rig, spec)
-    if rig.key ~= spec.key then
+    if rig.ag and rig.key ~= spec.key then
       local ok = pcall(SetRig, rig, spec)
       rig.key, rig.stale = ok and spec.key or nil, not ok
     end
     if rig.x ~= spec.x then
-      local opts = ElapsedOptions(spec.x)
-      if opts and pcall(rig.button.SetDurationText, rig.button, rig.fs, opts) then rig.x = spec.x end
+      local ok, zero = BindElapsed(rig.button, rig.fs, spec.x, rig.zero)
+      if ok then rig.x, rig.zeroText = spec.x, zero end
     end
-    if rig.x and not rig.added and pcall(rig.button.AddAuraShownAnimation, rig.button, rig.ag) then rig.added = true end
+    if rig.x and rig.ag and not rig.added and pcall(rig.button.AddAuraShownAnimation, rig.button, rig.ag) then rig.added = true end
   end
 
   -- no animation any more: the group out of the button's list (clear = the gate's text too)
   local function Unhand(rig, clear)
     if rig.added and pcall(rig.button.RemoveAuraShownAnimation, rig.button, rig.ag) then rig.added = false end
     if clear and rig.x then pcall(rig.button.ClearDurationText, rig.button); rig.x = nil end
+  end
+
+  -- A copy's place in its button (a start slot's, a copy row's): the gate text, the clip open below X and the
+  -- layer the animation moves, in it
+  local function CopyLayer(rig, button)
+    rig.fs = GateText(button, button)
+    rig.fresh = FreshClip(button, button, rig.fs)
+    rig.fresh:SetFrameLevel(button:GetFrameLevel() + 1)
+    local layer = CreateFrame("Frame", nil, rig.fresh)
+    layer:SetAllPoints(button)
+    layer:SetFrameLevel(button:GetFrameLevel() + 2)
+    rig.layer = layer
+    return layer
+  end
+
+  -- the copy's live icon and swipe, fed by the game like the display's own
+  local function CopyIcon(rig, layer, button)
+    rig.icon = layer:CreateTexture(nil, "ARTWORK")
+    rig.icon:SetAllPoints(layer)
+    pcall(rig.icon.SetSnapToPixelGrid, rig.icon, false)
+    pcall(rig.icon.SetTexelSnappingBias, rig.icon, 0)
+    rig.cd = CreateFrame("Cooldown", nil, layer, "CooldownFrameTemplate")
+    rig.cd:SetAllPoints(rig.icon)
+    pcall(rig.cd.SetDrawBling, rig.cd, false)
+    local fmt = Private.ForeverAuraCountdownFormatter()
+    if fmt then pcall(rig.cd.SetCountdownFormatter, rig.cd, fmt) end
+    button:SetIcon(rig.icon)
+    button:SetDurationCooldown(rig.cd)
+  end
+
+  -- the stack count, fed by the game like the display's own: a stacking aura refreshed by each new stack
+  -- would otherwise lose its number for X s every time (StyleStartCopy styles it)
+  local function CopyCount(rig, layer, button)
+    rig.count = layer:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    rig.count:SetPoint("CENTER")
+    button:SetApplicationCount(rig.count, nil)
   end
 
   -- Start: container "A" in the display's Stack Count gates with one slot on the display's aura. Its button
@@ -5224,13 +5401,7 @@ do
         pcall(button.SetMouseClickEnabled, button, false)
         pcall(button.EnableMouseMotion, button, false)
         rig.button = button
-        rig.fs = GateText(button, button)
-        rig.fresh = FreshClip(button, button, rig.fs)
-        rig.fresh:SetFrameLevel(button:GetFrameLevel() + 1)
-        local layer = CreateFrame("Frame", nil, rig.fresh)
-        layer:SetAllPoints(button)
-        layer:SetFrameLevel(button:GetFrameLevel() + 2)
-        rig.layer = layer
+        local layer = CopyLayer(rig, button)
         if o.isPic then
           rig.pic = layer:CreateTexture(nil, "ARTWORK")
           rig.pic:SetAllPoints(layer)
@@ -5239,25 +5410,9 @@ do
         elseif o.isText then
           rig.text = layer:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
         else
-          rig.icon = layer:CreateTexture(nil, "ARTWORK")
-          rig.icon:SetAllPoints(layer)
-          pcall(rig.icon.SetSnapToPixelGrid, rig.icon, false)
-          pcall(rig.icon.SetTexelSnappingBias, rig.icon, 0)
-          rig.cd = CreateFrame("Cooldown", nil, layer, "CooldownFrameTemplate")
-          rig.cd:SetAllPoints(rig.icon)
-          pcall(rig.cd.SetDrawBling, rig.cd, false)
-          local fmt = Private.ForeverAuraCountdownFormatter()
-          if fmt then pcall(rig.cd.SetCountdownFormatter, rig.cd, fmt) end
-          button:SetIcon(rig.icon)
-          button:SetDurationCooldown(rig.cd)
+          CopyIcon(rig, layer, button)
         end
-        if not o.isText then
-          -- the stack count, fed by the game like the display's own: a stacking aura refreshed by each new
-          -- stack would otherwise lose its number for X s every time (StyleStartCopy styles it)
-          rig.count = layer:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-          rig.count:SetPoint("CENTER")
-          button:SetApplicationCount(rig.count, nil)
-        end
+        if not o.isText then CopyCount(rig, layer, button) end
         -- the display's own drawing: from the text's end to the display's top right (plus the margin)
         local an = gates.an
         an:ClearAllPoints()
@@ -5296,6 +5451,10 @@ do
     if not sub then rig.count:SetAlpha(0); return end
     local pts = StyleShadowText(region, rig.count, sub, true, nil)
     local okW, w, h = pcall(function() return region:GetWidth(), region:GetHeight() end)
+    -- WA zooms its region (its own Start or Main, such as Grow or Pulse: Icon:Scale) and the frames on it
+    -- with it: their sizes as at rest (one zoomed to nearly nothing is read as it is)
+    local zx, zy = tonumber(region.scalex) or 1, tonumber(region.scaley) or 1
+    if not (zx >= 0.1 and zy >= 0.1) then zx, zy = 1, 1 end
     for _, p in ipairs(pts) do
       -- WA hangs it on its icon or on the icon's inner / outer frame, all on the display's centre: the same
       -- point of the copy, shifted by half the size difference
@@ -5305,8 +5464,8 @@ do
         if okR and type(rw) == "number" and type(rh) == "number" and type(w) == "number" and type(h) == "number"
            and not (issecretvalue(rw) or issecretvalue(rh) or issecretvalue(w) or issecretvalue(h)) then
           local rp = tostring(p[3]):upper()
-          p[4] = (p[4] or 0) + ((rp:find("RIGHT") and 1) or (rp:find("LEFT") and -1) or 0) * (rw - w) / 2
-          p[5] = (p[5] or 0) + ((rp:find("TOP") and 1) or (rp:find("BOTTOM") and -1) or 0) * (rh - h) / 2
+          p[4] = (p[4] or 0) + ((rp:find("RIGHT") and 1) or (rp:find("LEFT") and -1) or 0) * (rw - w) / 2 / zx
+          p[5] = (p[5] or 0) + ((rp:find("TOP") and 1) or (rp:find("BOTTOM") and -1) or 0) * (rh - h) / 2 / zy
         end
       end
       p[2] = rig.layer
@@ -5314,6 +5473,57 @@ do
     Engine.SetAnchors(nil, rig.count, pts)
     rig.count:SetAlpha(1)                       -- Shown is secret on a count text; Alpha is ours
   end
+
+  -- A sorted row's Start (Dyn.SortedStartTwin): each button of the row's COPY ROW gets, in its initializeFrame,
+  -- what the start slot's gets (the gate text, the clip open below X, the live icon, swipe and count in it,
+  -- the group handed over), without the display's gate "an": the row's frames shut themselves
+  -- (Engine.RowRest). Its gate writes the zero text (ElapsedOptions): the button goes from aura to aura.
+  -- The gate is bound once the copy is made and before its group: a copy whose group the game refuses (a
+  -- batch made in combat, maybe) still stands in for its shut frame those X s, at rest, as one not handed over
+  -- does (rig.err says why; rig.ag nil). One without its gate is never seen: no group then.
+  function Engine.RowStartRig(button, spec)
+    local rig = { button = button, zero = true }
+    local layer = CopyLayer(rig, button)
+    CopyIcon(rig, layer, button)
+    CopyCount(rig, layer, button)
+    local ok, zero = BindElapsed(button, rig.fs, spec.x, true)
+    if not ok then return rig end
+    rig.x, rig.zeroText = spec.x, zero
+    local okG, err = pcall(NewGroup, rig, button, layer)
+    if not okG then rig.ag, rig.err = nil, err; return rig end
+    Configure(rig, spec)
+    return rig
+  end
+
+  -- A sorted row's frame with a Start, in its initializeFrame: its own drawing shut while its copy plays, as
+  -- the start slot's gate "an" shuts the display's. The frame's one duration text is the elapsed gate (its %p
+  -- goes on the text twin, Dyn.SortPlan), and a clip from the text's end to the frame's top right (plus the
+  -- margin) holds a body over the frame that takes its icon, swipe, count and static glow, made after it.
+  -- Both at the button's level, so the row's levels stay as they are. body, gate, clip and whether the gate
+  -- writes the zero text; nil when the game takes no elapsed text (the frame is drawn as without a Start).
+  function Engine.RowRest(button, spec)
+    local fs = GateText(button, button)
+    local ok, zero = BindElapsed(button, fs, spec.x, true)
+    if not ok then return nil end
+    local lv = button:GetFrameLevel()
+    local rest = CreateFrame("Frame", nil, button)
+    rest:SetClipsChildren(true)
+    rest:SetPoint("BOTTOMLEFT", fs, "BOTTOMRIGHT")
+    rest:SetPoint("TOPRIGHT", button, "TOPRIGHT", MARGIN, MARGIN)
+    rest:SetFrameLevel(lv)
+    local body = CreateFrame("Frame", nil, rest)
+    body:SetAllPoints(button)
+    body:SetFrameLevel(lv)
+    return body, fs, rest, zero
+  end
+
+  -- a copy row's frame in the row's look (Dyn.StyleSortedFrame; ctx: the row's, from its first child): as the
+  -- start slot's copy, with the row's border just above the copy's swipe
+  function Engine.StyleRowCopy(rig, ctx)
+    StyleStartCopy({ borderOn = ctx.borderOn }, rig, ctx.region, ctx.data, ctx.plan)
+    Engine.BorderLevels(rig)
+  end
+  Engine.ConfigureRowRig = Configure             -- at safe time (Dyn.ApplyRowStart)
 
   -- o: the display's attachment, a look of it (Engine.ApplyVariants) or a member's copy (Engine.ApplyCopies);
   -- data: the look's; unit: o's container's. on = o draws the live aura in its slot. Safe time only.
@@ -6291,6 +6501,7 @@ do
     for _, hc in ipairs(st.half or {}) do pcall(hc.SetUnit, hc, nil); hc:Hide() end
     if st.sortc then pcall(st.sortc.SetUnit, st.sortc, nil); st.sortc:Hide() end
     if st.twinc then pcall(st.twinc.SetUnit, st.twinc, nil); st.twinc:Hide() end
+    if st.animc then pcall(st.animc.SetUnit, st.animc, nil); st.animc:Hide() end
     st.root:Hide()
   end
 
@@ -6716,9 +6927,9 @@ do
           or T("texts other than %p/%s are hidden"))
       if gp.time then
         s = s .. " " .. T("Its 'Remaining Duration' conditions are drawn per frame: below %s s and from %s s up, each frame takes its own look (colour and glow), in combat too."):format(tostring(gp.time.x), tostring(gp.time.x))
-        if gp.time.twin then
-          s = s .. " " .. T("Its %p text is drawn on a second row of the same auras, sorted the same way on top of the first, in its own format and colour.")
-        end
+      end
+      if gp.twin then
+        s = s .. " " .. T("Its %p text is drawn on a second row of the same auras, sorted the same way on top of the first, in its own format and colour.")
       end
       for _, n in ipairs(gp.notes or {}) do s = s .. " " .. T("Not drawn: %s."):format(n) end
       return s
@@ -6918,6 +7129,36 @@ do
       notes = notes or {}
       notes[#notes + 1] = T("a Stacks condition changes the border; a sorted row draws every frame with the first child's border")
     end
+    -- the row's signature (a new one builds the row again), the Start's part below
+    local sig = table.concat({ "sorted", tostring(gdata.sort), grow, tostring(space), tostring(limit),
+                               tostring(gdata.selfPoint), table.concat(ids, "\1"), table.concat(unionList, ","),
+                               tplLook, unit, filterString, otherKey, time and time.key or "",
+                               first.durColor and first.durColor.key or "" }, "|")
+    -- the row's Start (Engine.RowStart): each frame's one duration text becomes its elapsed gate, so the time
+    -- looks and a time-and-stacks text, which need it too, keep it off (so far), and a lone %p goes on the
+    -- text twin; nor on this very row (its signature with the Start) after the game refused it when it built
+    -- the row or frames made later (Dyn.BreakRowStart): a row changed since tries it again
+    local start, startWhy = Engine.RowStart(ids, kind)
+    local twin = time and time.twin
+    if start then
+      local usedBy, role = Engine.UsesDurationText(fd)
+      local broken = Dyn.rowStartBroken[gdata.id]
+      if time then
+        start, startWhy = nil, T("the first child's 'Remaining Duration' conditions use each frame's duration text, which the Start needs too (so far)")
+      elseif role == "pair" then
+        start, startWhy = nil, T("the first child's text '%s' shows the time and the stacks in one text, on each frame's duration text, which the Start needs too (so far)")
+          :format((usedBy:gsub("|", "||")))
+      elseif broken and broken.sig == sig .. "|S" .. start.x then
+        start, startWhy = nil, (broken.kind == "later") and T("the game refused it on frames made later (said once in chat)")
+                               or T("the game refused it when the row was built (said once in chat)")
+      elseif role == "p" then
+        twin = {}                   -- no colour of its own: the twin's plan takes the display's (StyleSorted)
+      end
+    end
+    if gdata.animate then
+      notes = notes or {}
+      notes[#notes + 1] = T("'Animated Expand and Collapse' (the game moves its frames to their new places at once)")
+    end
     -- a bar's icon is a square of the shorter side at its icon side, the bar the rest (AuraBar.lua orient*)
     local geo
     if kind == "aurabar" then
@@ -6926,15 +7167,15 @@ do
       elseif fd.icon_side == "LEFT" then geo = { icon = { 0, (h0 - is) / 2, is }, bar = { is, 0, w0 - is, h0 } }
       else geo = { icon = { w0 - is, (h0 - is) / 2, is }, bar = { 0, 0, w0 - is, h0 } } end
     end
+    -- the Start's gate seconds and the containers it takes are built once: a new X builds the row again; the
+    -- rest of it goes through the setters (Dyn.ApplyRowStart)
+    if start then sig = sig .. "|S" .. start.x end
     return { sorted = true, dir = gdata.sort, grow = grow, axis = g.axis, sign = g.sign, centred = g.centred,
              kind = kind, geo = geo,
              ids = ids, tpl = ids[1], unit = unit, filterString = filterString, candidate = candidate,
              w = w0, h = h0, space = space, limit = limit, selfPoint = gdata.selfPoint or "CENTER",
-             glow = glow, time = time, notes = notes,
-             sig = table.concat({ "sorted", tostring(gdata.sort), grow, tostring(space), tostring(limit),
-                                  tostring(gdata.selfPoint), table.concat(ids, "\1"), table.concat(unionList, ","),
-                                  tplLook, unit, filterString, otherKey, time and time.key or "",
-                                  first.durColor and first.durColor.key or "" }, "|") }
+             glow = glow, time = time, notes = notes, start = start, startWhy = startWhy, twin = twin,
+             sig = sig }
   end
 
   -- flow per grow: axis, growth (horizontal, vertical) and the corner the first frame takes
@@ -6943,6 +7184,15 @@ do
     DOWN = { "y", "Right", "Down", "TOPLEFT" }, UP = { "y", "Right", "Up", "BOTTOMLEFT" },
     HORIZONTAL = { "x", "Right", "Down", "TOPLEFT" }, VERTICAL = { "y", "Right", "Down", "TOPLEFT" },
   }
+
+  -- A sorted row's containers above the group's own level (their buttons one up). The row: its frames at +3,
+  -- their swipe +4, border +5, glow holders +6 and glows +7, a Start's gate clip and body at the frame's own
+  -- level (Engine.RowRest). The copy row of a Start above all that: its buttons +9, clip +10, copy +11, swipe
+  -- +12, border +13. The text twin on top, so the %p stays readable over the flying copies.
+  function Dyn.RowLevels(gp)
+    if gp.start then return { sortc = 2, animc = 8, twinc = 14 } end
+    return { sortc = 2, twinc = 7 }
+  end
 
   -- A sorted frame's glow and 'Remaining Duration' looks, built once inside the aura button, where they go
   -- with the aura (anchors inside a button are refused once it shows an aura; frames of ours outside that
@@ -7038,6 +7288,140 @@ do
     return fr
   end
 
+  -- A sorted row's Start that the game did not take, said once in chat per group and kind: "build" (the frames
+  -- made with the row: built again without it), "later" (frames made later: built again without it when it
+  -- can be), "set" (the setters at safe time), "style".
+  Dyn.startSaid = {}
+  function Dyn.SayRowStart(st, kind, err)
+    local key = tostring(st.gid) .. "|" .. kind
+    if Dyn.startSaid[key] then return end
+    Dyn.startSaid[key] = true
+    local what = (kind == "later" and "refused on frames made later (the row is drawn again without it when it can be)")
+                 or (kind == "build" and "failed when the row was built (it is drawn again without it)")
+                 or "failed"
+    WA.prettyPrint(("%s: engine sorted Start %s: %s"):format(tostring(st.gid), what, tostring(err)))
+  end
+
+  -- The game refused a row's Start on frames made with the row (kind "build": the copy row's first batch, a
+  -- row frame's gate) or made later (kind "later": a row of more auras than frames gets them in batches of 10,
+  -- in combat too): the row is built again without its Start at the next safe time (Dyn.SortPlan reads this;
+  -- the children sync again, and the new signature applies them when it is safe). Kept with the row's
+  -- signature: the same row is not tried again this session, a row changed since (another X, other children)
+  -- is. Till then the row's frames made from now on take no gate (st.startBroken; not st.startOK, which keeps
+  -- the copies that work updated and styled): a copy without its gate is never seen, and a frame shut under
+  -- it would show nothing for X s of each new aura.
+  Dyn.rowStartBroken = {}
+  function Dyn.BreakRowStart(st, kind, err)
+    st.startBroken = true
+    local broken = Dyn.rowStartBroken[st.gid]
+    if broken and broken.sig == st.sig then return end
+    Dyn.rowStartBroken[st.gid] = { kind = kind, sig = st.sig }
+    Dyn.SayRowStart(st, kind, err)
+    local gdata = WA.GetData(st.gid)
+    if gdata then Requeue(gdata) end
+  end
+
+  -- A copy made later whose hand-over the game refused (in combat, maybe): handed over when the row is placed
+  -- at the next safe time (Dyn.ApplyRowStart); till then it stands still where its frame is shut.
+  function Dyn.RetryRowStart(st)
+    if st.retryQueued then return end
+    st.retryQueued = true
+    C_Timer.After(0, function()
+      st.retryQueued = nil
+      local r = RegionOf(st.gp.tpl)
+      if r and attachments[r] then Dyn.Schedule(r) end
+    end)
+  end
+
+  -- A row's styling put off while WA zooms its first child's region to nearly nothing or mirrors it
+  -- (StyleSorted): the row placed again a moment later, 20 times at most (WA's Starts last a second or two;
+  -- false after that: styled as it reads).
+  function Dyn.RetryStyle(st)
+    if st.styleQueued then return true end
+    st.styleTries = (st.styleTries or 0) + 1
+    if st.styleTries > 20 then return false end
+    st.styleQueued = true
+    C_Timer.After(0.05, function()
+      st.styleQueued = nil
+      local r = RegionOf(st.gp.tpl)
+      if r and attachments[r] then Dyn.Schedule(r) end
+    end)
+    return true
+  end
+
+  -- A sorted row's Start (gp.start, Engine.RowStart) is played on a COPY ROW: a third aura group of the same
+  -- auras sorted the same way on the same spot (as the text twin: /fdtwin), above the row, whose frames each
+  -- carry a copy that the game animates (Engine.RowStartRig); the row's own frames shut their drawing for X s
+  -- (Engine.RowRest). Built before the row, so its frames know whether to. The first batch not taken
+  -- (st.startOK false): no copy row, the row as without a Start, said once, and built again without it
+  -- (Dyn.BreakRowStart, so its status lines say so). A copy made later without its gate or its group: the
+  -- row's frames made from then on take no gate, and the row is built again without its Start; a refused
+  -- hand-over is tried again (Dyn.RetryRowStart). The two aura groups make their later batches each in its
+  -- own update, in no fixed order: a copy that has its gate but no group stands in at rest for a frame made
+  -- with its gate before it.
+  function Dyn.SortedStartTwin(st, gp, gregion)
+    local a = CreateFrame("AuraContainer", nil, st.root, "CustomAuraContainerTemplate")
+    st.animc, st.aframes, st.start = a, {}, gp.start
+    local f = FLOW[gp.grow] or FLOW.RIGHT
+    local A, D = AnchorUtil and AnchorUtil.FlowLayoutAxis, AnchorUtil and AnchorUtil.FlowDirection
+    if f[1] == "y" and A then a:SetFlowLayoutAxis(A.Vertical) end
+    if D then a:SetFlowLayoutGrowthDirection(D[f[2]], D[f[3]]) end
+    a:SetFlowLayoutAnchorPoint(f[4])
+    a:SetPoint(gp.selfPoint, gregion, gp.selfPoint)
+    a:SetFrameLevel(gregion:GetFrameLevel() + Dyn.RowLevels(gp).animc)
+    local M, Dir = AuraContainerSortMethod, AuraContainerSortDirection
+    local later = false                         -- the first batch is made inside AddAuraGroup
+    local ok, err = pcall(a.AddAuraGroup, a, KEY .. "S", gp.filterString, {
+      candidateFilters = gp.candidate,
+      maxFrameCount = gp.limit,
+      sortMethod = M and M.ExpirationOnly,
+      sortDirection = Dir and (gp.dir == "descending" and Dir.Reverse or Dir.Normal),
+      layout = { elementWidth = gp.w, elementHeight = gp.h, elementSpacing = gp.space },
+      initializeFrame = function(button)
+        button:SetSize(gp.w, gp.h)
+        pcall(button.SetMouseClickEnabled, button, false)
+        pcall(button.EnableMouseMotion, button, false)
+        local okR, rig = pcall(Engine.RowStartRig, button, st.start)
+        if not (okR and type(rig) == "table") then rig = { button = button, err = rig } end
+        rig.rowCopy = true
+        st.aframes[#st.aframes + 1] = rig
+        if not later then return end
+        if not (rig.x and rig.ag) then
+          Dyn.BreakRowStart(st, "later", rig.err or "the game took no elapsed-time text")
+        elseif not rig.added then
+          Dyn.RetryRowStart(st)
+        end
+        -- a later batch; one without its gate is never seen
+        if rig.x and st.styled then pcall(Dyn.StyleSortedFrame, st, rig) end
+      end,
+    })
+    later = true
+    local good = ok and #st.aframes > 0
+    local why = not ok and err or nil
+    for _, rig in ipairs(st.aframes) do
+      good = good and rig.x ~= nil and rig.added == true
+      why = why or rig.err
+    end
+    st.startOK = good
+    if good then pcall(a.SetUnit, a, gp.unit); return end
+    pcall(a.SetUnit, a, nil)
+    a:Hide()
+    Dyn.BreakRowStart(st, "build", why or "the game took no elapsed-time text or animation")
+  end
+
+  -- At safe time (PlaceSorted): every copy to the row's Start through the setters (an edit that keeps the
+  -- gate's seconds; new ones build the row again), and the hand-over of one the game refused then.
+  function Dyn.ApplyRowStart(st, gp)
+    if not gp.start then return end
+    st.start = gp.start
+    for _, rig in ipairs(st.aframes) do
+      if rig.ag then
+        local ok, err = pcall(Engine.ConfigureRowRig, rig, gp.start)
+        if not ok then Dyn.SayRowStart(st, "set", err) end
+      end
+    end
+  end
+
   -- every sorted row styled again on its next placing (a new UI scale)
   function Dyn.Unstyle() for _, st in pairs(states) do st.styled = nil end end
 
@@ -7045,7 +7429,7 @@ do
     local st = states[gid]
     if st and st.sig == gp.sig and st.gregion == gregion then return st end
     Retire(st)
-    st = { sig = gp.sig, gregion = gregion, gp = gp, links = {}, lg = {}, tg = {}, frames = {} }
+    st = { sig = gp.sig, gregion = gregion, gp = gp, gid = gid, links = {}, lg = {}, tg = {}, frames = {} }
     st.root = CreateFrame("Frame", nil, gregion, "DisableUntrustedLayoutScriptsTemplate")
     st.root:SetAllPoints(gregion)
     states[gid] = st
@@ -7058,8 +7442,10 @@ do
     c:SetFlowLayoutAnchorPoint(f[4])
     -- WA hangs the first child by the group's anchor point on the same point of the group
     c:SetPoint(gp.selfPoint, gregion, gp.selfPoint)
-    c:SetFrameLevel(gregion:GetFrameLevel() + 2)
+    local levels = Dyn.RowLevels(gp)
+    c:SetFrameLevel(gregion:GetFrameLevel() + levels.sortc)
     local M, Dir = AuraContainerSortMethod, AuraContainerSortDirection
+    if gp.start then Dyn.SortedStartTwin(st, gp, gregion) end    -- first: the row's frames shut only with it
     local ok, err = pcall(c.AddAuraGroup, c, KEY, gp.filterString, {
       candidateFilters = gp.candidate,
       maxFrameCount = gp.limit,
@@ -7078,44 +7464,65 @@ do
           if st.styled then pcall(Dyn.StyleSortedFrame, st, fr) end   -- a later batch
           return
         end
-        s.icon = button:CreateTexture(nil, "ARTWORK")
+        -- with the row's Start: the frame's drawing in a body behind its elapsed gate (Engine.RowRest), so it
+        -- shows from X s on, when its copy is gone; the animated glow stays on the button and shows at once.
+        -- No gate: drawn as without a Start, and the row built again without it (one of its first frames, or
+        -- one made later: st.rowBuilt). None either once the Start broke (st.startBroken: a copy made later
+        -- took no gate or group), so no frame waits shut under a copy that is not drawn
+        local parent = button
+        if st.startOK and not st.startBroken then
+          local okR, body, gate, rest, zero = pcall(Engine.RowRest, button, st.start)
+          if okR and body then parent, s.body, s.egate, s.rest, s.zeroText = body, body, gate, rest, zero
+          else
+            Dyn.BreakRowStart(st, st.rowBuilt and "later" or "build",
+                              okR and "the game took no elapsed-time text on the row" or body)
+          end
+        end
+        s.icon = parent:CreateTexture(nil, "ARTWORK")
         s.icon:SetAllPoints(button)
         pcall(s.icon.SetSnapToPixelGrid, s.icon, false)
         pcall(s.icon.SetTexelSnappingBias, s.icon, 0)
-        s.cooldown = CreateFrame("Cooldown", nil, button, "CooldownFrameTemplate")
+        s.cooldown = CreateFrame("Cooldown", nil, parent, "CooldownFrameTemplate")
         s.cooldown:SetAllPoints(s.icon)
         pcall(s.cooldown.SetDrawBling, s.cooldown, false)
         local fmt = Private.ForeverAuraCountdownFormatter()
         if fmt then pcall(s.cooldown.SetCountdownFormatter, s.cooldown, fmt) end
-        s.duration = button:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        s.duration = parent:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
         s.duration:SetPoint("CENTER")
-        s.count = button:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        s.count = parent:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
         s.count:SetPoint("CENTER")
-        s.glow = button:CreateTexture(nil, "OVERLAY")
+        s.glow = parent:CreateTexture(nil, "OVERLAY")
         s.glow:Hide()
         button:SetIcon(s.icon)
         button:SetDurationCooldown(s.cooldown)
-        button:SetDurationText(s.duration, nil)
+        if not s.body then button:SetDurationText(s.duration, nil) end   -- else the gate is the duration text
         button:SetApplicationCount(s.count, nil)
         Dyn.SortedExtras(button, s, gp)
-        local fr = { button = button, shadows = s }
+        local fr = { button = button, shadows = s, body = s.body }
         st.frames[#st.frames + 1] = fr
         if st.styled then pcall(Dyn.StyleSortedFrame, st, fr) end   -- a later batch
       end,
     })
-    if not ok then st.err = tostring(err); return st end
+    st.rowBuilt = true                                     -- frames from here on come in later batches
+    if not ok then
+      if st.animc then Retire(st) end                      -- no copy row without its row
+      st.err = tostring(err)
+      return st
+    end
     pcall(c.SetUnit, c, gp.unit)
-    -- the text twin (Dyn.SortedLooks): the same auras sorted the same way on the same spot, above the row's
-    -- colours and glows; each frame holds only the %p text (its duration text) and an icon never seen
-    if gp.time and gp.time.twin then
+    -- the text twin (Dyn.SortedLooks, Dyn.SortPlan): the same auras sorted the same way on the same spot, above
+    -- the row's colours and glows (and a Start's copies); each frame holds only the %p text (its duration text)
+    -- and an icon never seen
+    if gp.twin then
       local t = CreateFrame("AuraContainer", nil, st.root, "CustomAuraContainerTemplate")
       st.twinc, st.tframes = t, {}
       if f[1] == "y" and A then t:SetFlowLayoutAxis(A.Vertical) end
       if D then t:SetFlowLayoutGrowthDirection(D[f[2]], D[f[3]]) end
       t:SetFlowLayoutAnchorPoint(f[4])
       t:SetPoint(gp.selfPoint, gregion, gp.selfPoint)
-      -- just above the row's highest piece: the row's buttons at +3, their glow holders at +6, the glows at +7
-      t:SetFrameLevel(gregion:GetFrameLevel() + 7)
+      -- just above the row's highest piece: the row's buttons at +3, their glow holders at +6, the glows at +7;
+      -- with a Start above its copy row (Dyn.RowLevels)
+      t:SetFrameLevel(gregion:GetFrameLevel() + levels.twinc)
       local okT, errT = pcall(t.AddAuraGroup, t, KEY .. "T", gp.filterString, {
         candidateFilters = gp.candidate,
         maxFrameCount = gp.limit,
@@ -7154,6 +7561,13 @@ do
   function Dyn.StyleSortedFrame(st, fr)
     local ctx = st.ctx
     if not ctx then return false end
+    -- a copy row's frame (Dyn.SortedStartTwin): hung on its own copy, read no place of WA's; a failure never
+    -- keeps the row from its look
+    if fr.rowCopy then
+      local ok, err = pcall(Engine.StyleRowCopy, fr, ctx)
+      if not ok then Dyn.SayRowStart(st, "style", err) end
+      return true
+    end
     fr.anchors = setmetatable({}, { __mode = "k" })
     fr.chainRetry = nil
     if fr.twin then MirrorTexts(fr, ctx.region, ctx.data, true, ctx.twinPlan)
@@ -7165,7 +7579,8 @@ do
       for i, p in ipairs(pts) do
         local rel = p[2]
         if type(rel) == "table" and rel ~= fr.button and Under(rel, ctx.region) then
-          -- WA's places, read once per styling (a later frame may be made in combat)
+          -- WA's places, read once per styling (a later frame may be made in combat), as at rest: divided by
+          -- WA's zoom of the region (ctx.kx / ky, StyleSorted), with which its icon and inner / outer frames scale
           local r = ctx.rects[rel]
           if not r then
             local l, b, w, h = Rect(rel)
@@ -7174,7 +7589,8 @@ do
             ctx.rects[rel] = r
           end
           local q = FRAC[tostring(p[3] or p[1]):upper()] or FRAC.CENTER
-          out[i] = { p[1], fr.button, "BOTTOMLEFT", r[1] - ctx.gl + q[1] * r[3] + (p[4] or 0), r[2] - ctx.gb + q[2] * r[4] + (p[5] or 0) }
+          out[i] = { p[1], fr.button, "BOTTOMLEFT", (r[1] - ctx.gl + q[1] * r[3]) * ctx.kx + (p[4] or 0),
+                     (r[2] - ctx.gb + q[2] * r[4]) * ctx.ky + (p[5] or 0) }
         else
           out[i] = p
         end
@@ -7192,22 +7608,37 @@ do
     if not (tplData and tplRegion and tplPlan) then return false end
     local gl, gb = Rect(tplRegion)
     if not gl then return false end
-    local twin = gp.time and gp.time.twin
+    -- WA plays the children's own Start and Main on their regions, hidden here: a zoom (Grow, Shrink, Pulse
+    -- ...: Icon:Scale) resizes the first child's, and its icon and inner / outer frames with it, so its places
+    -- are read as at rest, divided by that zoom (sizes: RegionSize). One zoomed to nearly nothing or mirrored
+    -- is read again a moment later (Dyn.RetryStyle), as it is once that was tried long enough.
+    local zx, zy = tonumber(tplRegion.scalex) or 1, tonumber(tplRegion.scaley) or 1
+    if not (zx >= 0.1 and zy >= 0.1) then
+      if Dyn.RetryStyle(st) then return false end
+      zx, zy = 1, 1
+    end
+    local twin = gp.twin
     local twinPlan = twin and setmetatable({ twinOnlyP = true, durColor = twin.color }, { __index = tplPlan })
     -- glows are the frames' own animated ones (SortedExtras), not the static texture
     if FG() and (gp.glow or gp.time) then tplPlan = setmetatable({ noGlow = true }, { __index = tplPlan }) end
-    if twin then tplPlan = setmetatable({ twinNoP = true }, { __index = tplPlan }) end
+    -- the %p is the twin's; with a Start the frame's duration text is its gate, which no text may take over
+    if twin or gp.start then tplPlan = setmetatable({ twinNoP = true }, { __index = tplPlan }) end
     st.ctx = { data = tplData, region = tplRegion, plan = tplPlan, twinPlan = twinPlan, gl = gl, gb = gb,
-               overlay = gp.time and gp.time.overlay, rects = {} }
+               kx = 1 / zx, ky = 1 / zy, overlay = gp.time and gp.time.overlay, rects = {},
+               borderOn = st.startOK and Engine.OwnBorder(tplData, tplPlan) or nil }   -- the copies' border
     local again = false
     local all = {}
     for _, fr in ipairs(st.frames) do all[#all + 1] = fr end
     for _, fr in ipairs(st.tframes or {}) do all[#all + 1] = fr; fr.twin = true end
+    if st.startOK then
+      for _, fr in ipairs(st.aframes) do all[#all + 1] = fr; fr.rowCopy = true end
+    end
     for _, fr in ipairs(all) do
       if not Dyn.StyleSortedFrame(st, fr) then st.ctx = nil; return false end
       again = again or fr.chainRetry or false
     end
     st.styled = not again   -- a centred text measured before its font was loaded: styled again next time
+    st.styleTries = nil
     return true
   end
 
@@ -7224,6 +7655,7 @@ do
     end
     -- not styled yet when the first child has not been laid out: tried again when WA shows it
     if StyleSorted(st, gp) then att.dynRetry = nil else att.dynRetry = (att.dynRetry or 0) + 1 end
+    if st.startOK then Dyn.ApplyRowStart(st, gp) end
     att.dyn = st
     if not att.sortHidden then att.host:SetAlpha(0); att.sortHidden = true end
     HideWASubs(att, region, data)
@@ -7297,6 +7729,7 @@ do
       end
       if st.sortc and (unit == nil or st.gp.unit == unit) then pcall(st.sortc.UpdateAllAuras, st.sortc) end
       if st.twinc and (unit == nil or st.gp.unit == unit) then pcall(st.twinc.UpdateAllAuras, st.twinc) end
+      if st.animc and st.startOK and (unit == nil or st.gp.unit == unit) then pcall(st.animc.UpdateAllAuras, st.animc) end
     end
   end
   Engine.DynUpdateUnit = Dyn.UpdateUnit                 -- for the tests

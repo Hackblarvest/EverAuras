@@ -77,6 +77,10 @@ C.FEATURES = {
       "r:anim.Scale", "r:anim.Path", "r:anim.CreateControlPoint", "r:anim.SetDurationText.elapsed",
       "r:anim.AddAuraShownAnimation", "r:post.RemoveAuraShownAnimation", "r:post.AddAuraShownAnimation",
       "r:post.ClearDurationText" } },
+  -- a sorted row's copy row, and the zero-duration text its gates write (without it they take the plain
+  -- elapsed text, as a single display's gates do): neither touches the Start and Finish of single displays
+  { name = "Start animations in sorted Dynamic Groups", items = {
+      "r:sorted.anim", "f:C_DurationUtil.CreateDurationTextBinding", "r:anim.SetDurationText.zero" } },
   { name = "Animated glow, Stop Motion and Models", items = {
       "r:anim.SetLooping", "r:anim.FlipBook", "r:anim.CreateMaskTexture", "r:anim.PlayerModel" } },
   { name = "WeakAuras' border on icons", items = {
@@ -115,7 +119,10 @@ C.FEATURES = {
 local FILTER = "HELPFUL|PLAYER"
 local CAND = { includeSpellIDs = { [1] = true } }   -- a spell no aura has: the slots stay empty
 local SLOT = { icon = "eaCheckI", bar = "eaCheckB", stack = "eaCheckS", time = "eaCheckT", anim = "eaCheckA" }
-local GROUP = { missing = "eaCheckM", sorted = "eaCheckR" }
+local GROUP = { missing = "eaCheckM", sorted = "eaCheckR", rowAnim = "eaCheckRS" }
+-- a Start as Engine.AnimSpec gives one (a fade over 0.25 s, its gate 1 s), for a sorted row's copy
+local ROW_START = { d = 0.25, x = 1, a0 = 0, a1 = 1, s0 = { 1, 1 }, s1 = { 1, 1 }, origin = "CENTER", smooth = "NONE",
+                    pts = { { 0, 0 } }, key = "eaCheck" }
 
 local function Rec(res, key, f, ...)
   if type(f) ~= "function" then res[key] = MISSING; return false end
@@ -235,6 +242,30 @@ local function GroupInit(rig, res, b)
   res["ginitok"] = OK
 end
 
+-- a sorted row's Start: the engine's own copy (Engine.RowStartRig) in a group button, with its gate's
+-- zero-duration text and the hand-over; the zero text is asked of a copy whose gate the game took, else it
+-- goes as the copy does
+local function RowAnimInit(rig, res, b)
+  if rig.rowAnim ~= nil then return end
+  rig.rowAnim = false
+  local E = Engine()
+  if E and E.RowStartRig then
+    local ok, r = pcall(E.RowStartRig, b, ROW_START)
+    if ok and type(r) == "table" then rig.rowAnim = r end
+    -- a copy whose group the game refused keeps its gate (r.err: why)
+    res["sorted.anim"] = (not rig.rowAnim and (FAILED .. ": " .. tostring(r)))
+                         or (not r.x and (FAILED .. ": the game took no elapsed-time text"))
+                         or (not r.added and (FAILED .. ": the game took no animation" .. (r.err and (": " .. tostring(r.err)) or "")))
+                         or OK
+  else
+    res["sorted.anim"] = MISSING
+  end
+  local r = rig.rowAnim
+  res["anim.SetDurationText.zero"] = (r and r.zeroText and OK)
+    or (r and r.x and (FAILED .. ": the game took the elapsed-time text only without its zero-duration text"))
+    or res["sorted.anim"]
+end
+
 -- built once per session (frames stay, and slot keys must be new in a container); later runs only repeat
 -- the calls made on the buttons and containers after initializeFrame
 local function BuildRig()
@@ -274,9 +305,27 @@ local function BuildRig()
         { candidateFilters = CAND, maxFrameCount = 2, sortMethod = M and M.ExpirationOnly,
           sortDirection = D and D.Normal, layout = { elementWidth = 20, elementHeight = 20, elementSpacing = 2 },
           initializeFrame = function(b) pcall(GroupInit, rig, res, b) end })
+    res["sorted.anim"] = MISSING .. ": the game never set a group button up"
+    res["anim.SetDurationText.zero"] = res["sorted.anim"]
+    local okA, errA = pcall(g.AddAuraGroup, g, GROUP.rowAnim, FILTER,
+        { candidateFilters = CAND, maxFrameCount = 2, sortMethod = M and M.ExpirationOnly,
+          sortDirection = D and D.Normal, layout = { elementWidth = 20, elementHeight = 20, elementSpacing = 2 },
+          initializeFrame = function(b)
+            local okI, errI = pcall(RowAnimInit, rig, res, b)
+            if not okI then
+              res["sorted.anim"] = FAILED .. ": " .. tostring(errI)
+              res["anim.SetDurationText.zero"] = res["sorted.anim"]
+            end
+          end })
+    if not okA then
+      res["sorted.anim"] = FAILED .. ": " .. tostring(errA)
+      -- no button set up before it failed: the zero text goes as the copy (else RowAnimInit said)
+      if rig.rowAnim == nil then res["anim.SetDurationText.zero"] = res["sorted.anim"] end
+    end
   else
     res["missing.AddAuraGroup"] = FAILED .. ": " .. tostring(g)
     res["sorted.AddAuraGroup"] = res["missing.AddAuraGroup"]
+    res["sorted.anim"], res["anim.SetDurationText.zero"] = res["missing.AddAuraGroup"], res["missing.AddAuraGroup"]
   end
   return rig
 end
