@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.9.10-beta (2026-11-04)
+
+- **Start animations in Dynamic Groups sorted by the time left.** Each icon now plays the *Start* (slide,
+  grow, fade ...) at its place in the row when its aura is put on, also in combat, with its swipe, border
+  and stack count; a `%p` countdown and an animated glow show at once. All children need the same *Start*
+  (if not, the status line names one that differs); not yet with a time-and-stacks text or *Remaining
+  Duration* conditions (other than ones that only colour the `%p` text) on the first child.
+- As on single displays, the *Start* does not play for an aura without a duration or one already on a target
+  you switch to, and entering or leaving combat in the first seconds after the aura was put on plays it again
+  (a DoT that starts the fight, for example). Should the game refuse the row's copies, the row is drawn as
+  before and says so once in chat.
+- `/ea check` has a new line, *Start animations in sorted Dynamic Groups*.
+
 ## 0.9.9-beta (2026-10-29)
 
 - **Nothing left at a group display's place while no copy shows.** When no member's copy of a *Party*,
