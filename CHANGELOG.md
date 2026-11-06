@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.11-beta (2026-11-06)
+
+- **Texture displays no longer show without their aura.** An engine-driven Texture with a WeakAuras
+  animation (a *Main* such as *Pulse*, or a *Start*) or a *Color* condition showed WeakAuras' own texture
+  again each time WeakAuras coloured it, so it could show with no aura at all (a poison warning without any
+  poison on you), in and out of combat and right after closing the options. The engine now hides WeakAuras'
+  texture another way, and a see-through colour stays see-through in the options. Thanks to zazomazzo for
+  finding the cause ([pull request #1](https://github.com/Hackblarvest/EverAuras/pull/1)) and to the player
+  who reported it.
+- Progress Textures and Stop Motions can still do this with an animation or a colour condition; their fix
+  comes in a later version.
+
 ## 0.9.10-beta (2026-11-04)
 
 - **Start animations in Dynamic Groups sorted by the time left.** Each icon now plays the *Start* (slide,
