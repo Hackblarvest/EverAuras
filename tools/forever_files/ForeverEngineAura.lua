@@ -4052,10 +4052,13 @@ end
 
 -- Texture displays: a copy of WA's texture, on the slot button (Found) or in the Missing clip. WA turns
 -- and mirrors it with texture coordinates, so the copy takes them from WA's own texture. WA's texture is
--- hidden (alpha, which WA never sets on it) while the display is engine-driven.
+-- hidden by its Shown state while the display is engine-driven, never by alpha: SetVertexColor sets the
+-- alpha too, and WA recolours the texture (Color, ColorAnim) on colour conditions and whenever one of its
+-- animations starts, loops or ends, which showed it again without the aura (PR #1). WA never calls
+-- Show / Hide on that texture, so handing it back shows it in WA's own colour and alpha.
 local function SetPicVisuals(region, shown)
   local wa = region.texture and region.texture.texture
-  if wa and wa.SetAlpha then wa:SetAlpha(shown and 1 or 0) end
+  if wa and wa.SetShown then wa:SetShown(shown) end
 end
 
 local function CopyPictureLook(tex, region, data)
@@ -4251,7 +4254,7 @@ do
   end
 end
 
--- Text displays: WA's text is hidden (alpha; WA colours it with SetTextColor, never SetAlpha) and drawn
+-- Text displays: WA's text is hidden (by its Shown state, see SetTextVisuals) and drawn
 -- again on the slot button (Found) or in the Missing clip, in WA's font, size, outline, shadow, justify
 -- and width. Plain text is copied as WA shows it (raid markers included); %p / %s / %n are the engine's
 -- own duration text, stack count and spell name.
