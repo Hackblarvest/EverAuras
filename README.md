@@ -11,7 +11,7 @@ anywhere: questing, dungeons or raids. Ported-as-is, WeakAuras is blind exactly 
 EverAuras is not blind. It never reads the secret data; it hands the display to the game engine
 and lets the client draw it.
 
-> **Status:** beta (0.9.12), built on M33kAuras `fd03b21` (release 5.20.7-rg4-m99) and developed against
+> **Status:** beta (0.9.13), built on M33kAuras `fd03b21` (release 5.20.7-rg4-m99) and developed against
 > the Forever *beta* client (interface 16001). Blizzard patches can still break things; please report
 > what you find on [Discord](https://discord.gg/HdRNYvKbY) or in the
 > [issues](https://github.com/Hackblarvest/EverAuras/issues).

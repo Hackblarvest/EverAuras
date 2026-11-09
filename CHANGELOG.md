@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.13-beta (2026-11-10)
+
+- **Displays no longer disappear when EverAuras learns something new.** Out of combat EverAuras learns from the
+  auras it sees, and when that changes what a display follows, EverAuras sets that display up again. A display that
+  was already loaded could then disappear, sometimes until a `/reload` or until the options were opened and closed.
+  It hit displays that match a debuff on you by its properties, displays with *Remaining Time* on their trigger,
+  most displays with two or more Aura triggers (such as the *missing or about to run out* icon) and, the first time
+  their aura was seen, displays written with a spell's name. They now come back by themselves.
+- **A new debuff no longer touches the displays it has nothing to do with.** Any new or changed debuff seen out of
+  combat used to set up the first three kinds above again, so even a debuff that had nothing to do with them could
+  make them disappear. Now only a display whose setup really changes is restarted.
+- Two smaller fixes: a Dynamic Group with *Animated Expand and Collapse* on no longer puts two children on one spot
+  when all of them become engine-driven at the same moment, and a display that stays off the engine for another
+  reason no longer keeps saying its aura has not been seen once it has.
+
 ## 0.9.12-beta (2026-11-09)
 
 - **Masque no longer switches the engine off for every display.** As soon as Masque was loaded, no display was
