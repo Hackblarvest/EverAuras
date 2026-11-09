@@ -6619,6 +6619,8 @@ do
   end
 
   local function AnchorStart(st)
+    -- a child being added again is out of WeakAuras' layout for a moment, so where the others stand says nothing: the row stays put
+    if Engine.reAdding and st.ref ~= nil then return true end
     local gp = st.gp
     local x = gp.axis == "x"
     local low = gp.centred or gp.sign > 0
@@ -8770,14 +8772,37 @@ local function Schedule(region)
 end
 Dyn.Schedule = Schedule
 
+-- WA.Add on a display that is already loaded makes new triggers and drops the old state, but WeakAuras only loads what is not
+-- loaded, so the display would stay hidden until the next real load (a /reload, the options window). So its old triggers are
+-- unloaded first and it is loaded again after the Add, also when the Add fails. During the Add it still counts as loaded, as
+-- before: what runs inside reads that (its place in a Dynamic Group and on unit frames, its status line, its sounds and copies).
+-- While WeakAuras is paused (options window, login) or holds back its load scan, it loads everything itself afterwards.
+function Engine.ReAdd(data)
+  local id = data.id
+  local reload = WA.IsAuraLoaded and WA.IsAuraLoaded(id) == true and not data.controlledChildren and not WA.IsPaused()
+     and WA.IsLoginFinished() and not Private.IsOptionsProcessingPaused()
+  if reload then Private.UnloadDisplays({ [id] = true }) end
+  Engine.reAdding = reload             -- its group's row keeps its place meanwhile (AnchorStart)
+  xpcall(WA.Add, Private.GetErrorHandlerUid(data.uid, "ForeverEngine re-add"), data)
+  Engine.reAdding = nil
+  if reload then
+    Private.loaded[id] = false       -- WeakAuras' own word for 'not now, but it could be'; the scan writes the real value
+    Private.ScanForLoads({ [id] = true })
+  end
+end
+
 -- A display whose spell was unknown at load is not engine-driven; once the spell is learned only a
 -- full re-add lets the trigger side re-classify it. Done at safe time, like everything else.
 FlushReadds = function()
   if not Engine.IsSafe() then return end
-  for uid in pairs(readd) do
+  -- the ids first: a re-add can show a display whose actions make another display's region, which may ask for a re-add of
+  -- its own (Engine.Sync), and a table cannot take a new key while it is walked. That one waits for its timer.
+  local uids = {}
+  for uid in pairs(readd) do uids[#uids + 1] = uid end
+  for _, uid in ipairs(uids) do
     readd[uid] = nil
     local data = Private.GetDataByUID and Private.GetDataByUID(uid)
-    if data then xpcall(WA.Add, Private.GetErrorHandlerUid(uid, "ForeverEngine re-add"), data) end
+    if data then xpcall(Engine.ReAdd, Private.GetErrorHandlerUid(uid, "ForeverEngine re-add"), data) end
   end
 end
 
@@ -8911,9 +8936,10 @@ function Engine.Sync(region, data)
   end
   -- Auto-clone 'All' whose Dynamic Group lays out its children another way than when the trigger side took its
   -- verdict (Engine.allLayouts): added again at safe time (FlushReadds, a frame later: not inside WA's modify),
-  -- which takes the verdict afresh. Until then it stays as decided.
+  -- which takes the verdict afresh. Until then it stays as decided. Not a display with no Aura trigger left: nothing
+  -- would take a verdict for it, and it would be added again every frame.
   local lay = data.uid and Engine.allLayouts[data.uid]
-  local stale = lay ~= nil and lay ~= Engine.AllLayout(data)
+  local stale = isAura2 and lay ~= nil and lay ~= Engine.AllLayout(data)
   if stale and not readd[data.uid] then
     readd[data.uid] = true
     C_Timer.After(0, FlushReadds)
@@ -8935,7 +8961,9 @@ function Engine.Sync(region, data)
   local sig = ComputeSig(region, data, plan)
   att.want, att.wantSig = plan, sig
   RefreshStatus(att, region, data, plan)
-  if att.active and att.sig == sig and not pending[region] then return end
+  -- A shown child still waiting for its place in the row (Dyn.Place found nothing of its group to measure from) is not done: this is its
+  -- chance when the others stand, as when its whole group turns engine-driven at once. One that is not shown has nowhere to go yet.
+  if att.active and att.sig == sig and not pending[region] and not (att.dynRetry and region:IsShown()) then return end
   Schedule(region)
 end
 
@@ -9109,9 +9137,24 @@ local function LearnFingerprints(unit)
     end
   end
   if changed then
-    for uid in pairs(durWatch) do readd[uid] = true end
-    for uid in pairs(fpUsers) do readd[uid] = true end
-    for uid in pairs(lateUsers) do readd[uid] = true end
+    -- A new debuff seldom concerns these displays, and a re-add restarts a display (hidden and shown again, with its On Hide
+    -- and On Show): only the ones whose verdict or filter really changes. Classify fills the three tables again, so not in them.
+    local uids = {}
+    for _, set in ipairs({ durWatch, fpUsers, lateUsers }) do
+      for uid in pairs(set) do uids[uid] = true end
+    end
+    for uid in pairs(uids) do
+      local data = Private.GetDataByUID and Private.GetDataByUID(uid)
+      local plan, was = data and Engine.Classify(data), decided[uid]
+      if data and (plan and plan.key or false) ~= (was and was.key) then
+        readd[uid] = true
+      elseif data then
+        -- the same verdict, perhaps for one reason fewer or with other notes: its status line is read again, the display left alone
+        if plan then decided[uid] = plan end
+        local r = Private.regions[data.id]
+        if r and r.region and attachments[r.region] then Guard("sync", Engine.Sync, r.region, data) end
+      end
+    end
     FlushReadds()
   end
 end
@@ -9248,7 +9291,13 @@ local function OnSpellbookChanged()
   for uid in pairs(nameWatch) do
     if decided[uid] == false then
       local data = Private.GetDataByUID and Private.GetDataByUID(uid)
-      if data and Engine.Classify(data) then readd[uid] = true end
+      if data and Engine.Classify(data) then
+        readd[uid] = true
+      elseif data then
+        -- still refused, perhaps for one reason fewer: its status line is read again, as in LearnFingerprints
+        local r = Private.regions[data.id]
+        if r and r.region and attachments[r.region] then Guard("sync", Engine.Sync, r.region, data) end
+      end
     end
   end
   for region, att in pairs(attachments) do
