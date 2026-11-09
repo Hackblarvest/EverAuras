@@ -2,11 +2,14 @@
 
 ## 0.9.12-beta (2026-11-09)
 
-- **Masque no longer switches the engine off.** As soon as Masque was loaded, no display was engine-driven, so
-  auras disappeared in combat, even with EverAuras disabled in Masque's settings. Masque skins only Icons, so the
-  other display types no longer care whether it is loaded. An Icon can be engine-driven when it, or all of
-  EverAuras, is disabled in Masque's *Skin Settings*; a change there counts after a `/reload`. An Icon that Masque
-  does skin still cannot be engine-driven, and says so on its Display tab. Thanks to kakkakk for the report
+- **Masque no longer switches the engine off for every display.** As soon as Masque was loaded, no display was
+  engine-driven, so auras disappeared in combat, even with EverAuras disabled in Masque's settings. Masque skins
+  only Icons, so the other display types no longer care whether it is loaded. An Icon can be engine-driven when
+  it, or all of EverAuras, is disabled in Masque's *Skin Settings*; a change there counts after a `/reload`. An
+  Icon that Masque does skin (every Icon, until you disable it there) still cannot be engine-driven, so it cannot
+  follow its aura in combat unless that aura is never secret, and it says so on its Display tab. Displays that
+  now become engine-driven can lose what the engine can't do, also out of combat, such as conditions and texts
+  that read the aura. Thanks to kakkakk for the report
   ([issue #2](https://github.com/Hackblarvest/EverAuras/issues/2)).
 
 ## 0.9.11-beta (2026-11-06)
