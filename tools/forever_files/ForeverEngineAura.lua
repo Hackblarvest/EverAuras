@@ -1471,6 +1471,32 @@ function Engine.RefreshSameAura(m, f)
   end
 end
 
+-- Masque skins Icon displays only, each in a group of its own. Its skin sits on WeakAuras' button, and the engine's icon is not
+-- that button, so a skinned icon stays with WeakAuras. Disabled in Masque's settings (for the display, or for the whole addon:
+-- Masque passes that on to each display's group) it is a plain icon the engine can draw. Asked once per display and session: a
+-- change in Masque counts after a /reload, like '/faengine', since adding a loaded display again does not load its triggers again
+-- (and the status line then says what really happens). The same call as Icon.lua's, so the same group, also for displays that do
+-- not load here, under their own name; with all of the addon off none is needed. Anything unexpected counts as skinned.
+do
+  local skins = {}                                         -- uid -> Masque's answer for this session
+  function Engine.MasqueSkins(data)
+    local msq = data.regionType == "icon" and LibStub("Masque", true)
+    if not msq then return false end
+    if skins[data.uid] ~= nil then return skins[data.uid] end
+    local ok, group = pcall(function()
+      local all = msq:Group(AddonName)
+      if all.db.Disabled then return all end
+      local one = msq:Group(AddonName, data.id:lower():gsub(" ", "_"), data.uid)
+      one:SetName(data.id)
+      return one
+    end)
+    local db = ok and type(group) == "table" and group.db
+    if type(db) ~= "table" then return true end
+    if data.uid then skins[data.uid] = not db.Disabled end
+    return not db.Disabled
+  end
+end
+
 function Engine.Classify(data)
   local r = {}
   local function no(msg)
@@ -1483,7 +1509,7 @@ function Engine.Classify(data)
   if not GloballyEnabled() then no(T("the engine is switched off (/faengine on)")) end
   if data.foreverEngine == false then no(T("'Let the game engine draw this aura' is off for this display (Display tab)")) end
   if not Engine.IsAvailable() then no(T("Blizzard_AuraContainer is not available")) end
-  if LibStub("Masque", true) then no(T("Masque is loaded")) end
+  if Engine.MasqueSkins(data) then no(T("Masque skins this icon (to let the game engine draw it, disable this display or all of EverAuras in Masque's settings and /reload)")) end
   if data.uid then durWatch[data.uid] = nil; fpUsers[data.uid] = nil; lateUsers[data.uid] = nil end
   local triggers = type(data.triggers) == "table" and data.triggers or {}
   local n, auraIdx = #triggers, {}
