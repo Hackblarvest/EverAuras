@@ -1189,7 +1189,7 @@ end)
 ---------------------------------------------------------------------------- the steps (chat)
 local STEPS = {
 	{ "Setup", {
-		"Out of combat with .gm off (the fights in steps 2, 4, 6 and 7 must be real combat), Imp out (Blood Pact);",
+		"Out of combat (the fights in steps 2, 4, 6 and 7 must be real combat), Imp out (Blood Pact);",
 		"Demon Armor, Unending Breath, Detect Invisibility off",
 		"(the build checked this: any 'setup:' line above says what to change; no new build needed).",
 		"Z0, ZB, ZE, ZF show Blood Pact with BLUE (top left). ORANGE (top right) = stale already.",
@@ -1237,9 +1237,9 @@ local STEPS = {
 	} },
 	{ "B2: frames made in combat (Q4)", {
 		"B2 shows every buff on you. Its frames 11-20 are made when an 11th buff comes, and that must happen in combat.",
-		"Out of combat: F1 (target yourself: .aura goes on your target), .aura buffs with a duration until B2 shows 10",
+		"Out of combat: put buffs with a duration on yourself until B2 shows 10",
 		"icons, e.g. 1243 1126 1459 976 14752 19740 15366 22888 (a buff without a duration shows no copy).",
-		"Then pull a mob that keeps hitting you (.gm off; Imp on passive, so the fight lasts), F1 again, .aura one or two",
+		"Then pull a mob that keeps hitting you (Imp on passive, so the fight lasts) and put on one or two",
 		"more. Chat must then say 'B2 batch 2 (... 11-20, combat true)': 'all ... steps ok', or which one was refused.",
 		"New icons: does each copy slide down into place, then leave a grey box with BLUE after 1 s?",
 		"'combat false' (the 11th came out of combat)? hide, cancel buffs to 10 or fewer, build again, redo this step.",

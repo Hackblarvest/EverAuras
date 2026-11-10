@@ -752,7 +752,7 @@ end
 ---------------------------------------------------------------------------- the steps
 local STEPS = {
 	{ "Setup and the legend (G9)", {
-		"On the priest, with Centrius and Anvelore in a party, out of combat (.gm off). Mute the other two clients or turn off their sound in the background: you should hear only this one.",
+		"On the priest, with Centrius and Anvelore in a party, out of combat. Mute the other two clients or turn off their sound in the background: you should hear only this one.",
 		"EverAuras' own displays play sounds on Fortitude and Renew too: for steps 1-8 select the groups EA Raid Units, EA Raid Group, EA Raid Clone and EA Raid Clone Next in /ea and tick Load: Never (it ticks it for every display in the group). Untick EA Raid Units again before step 9.",
 		"/fdsnd reg - Fortitude r3 (1245) gets a WORD per token when it is ADDED and a NOISE when it is REMOVED (/fdsnd legend). A horn, an animal or a bell is one of EverAuras' displays that is still loaded.",
 		"G9: the line 'G9 group tokens' says whether 'party', 'raid' and 'group' got an id. Buff a party member: Stack / Spread on top of Left / Right = that group token works.",
@@ -765,12 +765,12 @@ local STEPS = {
 	} },
 	{ "Throttle (G7)", {
 		"a) /fdsnd clear, /fdsnd same - ONE sound (SharpPunch) on every raid token, throttle 5 s. Buff three people within 5 s: 3 punches = the throttle is per registration; 1 punch = shared by all registrations of that sound.",
-		"b) Optional, many at once: /fdsnd clear, .learn 21562, /fdsnd reg 21562 raid1 raid2 raid3, one Prayer of Fortitude: Star + Circle + Diamond together?",
+		"b) Optional, many at once (a priest who knows Prayer of Fortitude, 21562): /fdsnd clear, /fdsnd reg 21562 raid1 raid2 raid3, one Prayer of Fortitude: Star + Circle + Diamond together?",
 		"Then /fdsnd clear, /fdsnd reg, /fdsnd next.",
 	} },
 	{ "Death (G8)", {
-		"Buff raid2 (%RAID2%), target them and .die. A noise = a death fires Removed (raid2 = BananaPeelSlip, plus their party noise). The chat line says DEAD.",
-		".revive and buff again. Optional: the same while the others are in combat (then the chat cannot see the aura; just listen). /fdsnd next.",
+		"Buff raid2 (%RAID2%) and let them die. A noise = a death fires Removed (raid2 = BananaPeelSlip, plus their party noise). The chat line says DEAD.",
+		"Bring them back to life and buff again. Optional: the same while the others are in combat (then the chat cannot see the aura; just listen). /fdsnd next.",
 	} },
 	{ "Token or player (G10)", {
 		"/fdsnd who. Let %RAID2% (raid2) leave the raid and invite them again, so the raid tokens move (the chat prints the roster change). LISTEN as they leave and as they join again: a word or a noise at that moment = a token changing hands makes the game play aura sounds.",
@@ -784,7 +784,7 @@ local STEPS = {
 		"The start of a fight: /fdsnd arm, pull a mob, let the fight end, /fdsnd arm again. The 'arm:' lines say whether a registration was taken as your combat flag changed, at PLAYER_REGEN_DISABLED / _ENABLED and as the Combat restriction changed. /fdsnd next.",
 	} },
 	{ "In an instance (G5)", {
-		"Port the group into a dungeon (.tele, .summon). Out of combat: /fdsnd clear, /fdsnd reg, buff someone.",
+		"Take the group into a dungeon. Out of combat: /fdsnd clear, /fdsnd reg, buff someone.",
 		"Pull a mob there: /fdsnd clear, /fdsnd reg in combat, buff someone. The reg line shows the Encounter/Map restriction states. /fdsnd next.",
 	} },
 	{ "Over a /reload (and removing by id)", {
