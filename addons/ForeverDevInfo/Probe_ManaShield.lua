@@ -13,7 +13,7 @@
      Known dead ends kept for completeness: the buff tooltip text has no $w1 in this client (no amount in
      it), and C_Spell.IsActiveSpell is meant for toggled spells.
 
-     Round 1 (local server, rank 2) found: the aura's points are {} even out of combat (Mana Shield lacks the
+     Round 1 (rank 2) found: the aura's points are {} even out of combat (Mana Shield lacks the
      "aura points on client" attribute every other shield has), so every points[] row is dead; in combat every
      aura getter and C_TooltipInfo refuse; UnitGetTotalAbsorbs is 0; the combat log and combat text stay
      silent; UNIT_COMBAT stays plain ("WOUND ABSORB amount 0" = a fully absorbed hit). What works is the damage

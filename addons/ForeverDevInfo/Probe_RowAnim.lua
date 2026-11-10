@@ -1,5 +1,5 @@
 --[[ Probe_RowAnim.lua - /fdrowanim: the in-game questions behind Start animations in sorted rows (EverAuras'
-     Dynamic Groups sorted by the time left). Made for the local GM server and a level 60 warlock.
+     Dynamic Groups sorted by the time left). Made for a level 60 warlock.
 
      Written for the ForeverDevInfo dev addon (in both TOCs, after Probe_Sound.lua; copy the addon folder into the
      client's Interface\AddOns\ForeverDevInfo while the client is closed). It logs into ForeverDevInfoDB.rowAnimProbe
