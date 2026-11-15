@@ -1280,6 +1280,7 @@ do
       end
     end
   end
+  Engine.SingleSpell = SingleSpell
 
   local DURATION_SYMS = { p = true, t = true }
 
@@ -2259,6 +2260,8 @@ function Engine.Explain(data, plan, reasons)
     if data.regionType ~= "text" and ((plan.parts and plan.parts.found) or (not plan.parts and plan.mode ~= "missing")) then
       for _, n in ipairs(Engine.SubTextNotes(data, (plan.parts and plan.parts.found) or plan)) do txt = txt .. " " .. n end
     end
+    -- static sub-texts: drawn with the display, or left to WeakAuras and why (Engine.PlainNotes)
+    for _, n in ipairs(Engine.PlainNotes(data, plan)) do txt = txt .. " " .. n end
     -- start / finish animations played by the game (Engine.ApplyStartAnim / Engine.ApplyFinishAnim)
     local animNote = Engine.AnimNotes(data, plan)
     if animNote then txt = txt .. " " .. animNote end
@@ -2990,6 +2993,9 @@ end
 local function EnsureGroup(att, region, part, m)
   local c = att.container
   m = m or 0
+  -- the clip reaches as far as the display's plain sub-texts drawn in it may (a label above the icon); a group
+  -- trigger's copies draw none (Engine.DrawPlainSubs)
+  if not att.copyOf then m = math.max(m, Engine.PlainReach(region.id and WA.GetData(region.id))) end
   if not att.groupBuilt then
     if not BuildGroup(att, region, part, m) then return false end
     att.groupFilter, att.groupKey = part.filterString, part.key
@@ -3114,12 +3120,15 @@ function Engine.SubFont(sub)
   return font, sub.text_fontSize or 12, flags
 end
 
--- Returns the points it set (WA's one point for the sub-text).
-local function StyleShadowText(region, fs, sub, isCount, att)
+-- Returns the points it set (WA's one point for the sub-text). onto: hung at the same place of that frame of ours
+-- instead (Engine.LayerAnchors), never on WA's frames.
+local function StyleShadowText(region, fs, sub, isCount, att, onto)
   fs:SetFont(Engine.SubFont(sub))
   if isCount and sub.text_color then fs:SetTextColor(unpack(sub.text_color)) end -- duration colour is engine-owned
   if sub.text_shadowColor then fs:SetShadowColor(unpack(sub.text_shadowColor)) end
-  fs:SetShadowOffset(sub.text_shadowXOffset or 0, sub.text_shadowYOffset or 0)
+  -- WA draws no shadow under its SLUG outlines (SubText.lua modify), whatever the offsets say
+  local slug = sub.text_fontType == "OUTLINE|SLUG" or sub.text_fontType == "THICKOUTLINE|SLUG"
+  fs:SetShadowOffset(slug and 0 or (sub.text_shadowXOffset or 0), slug and 0 or (sub.text_shadowYOffset or 0))
   fs:SetJustifyH(sub.text_justify or "CENTER")
   -- WA picks the frame and points (it only ever clears and sets points): taken down on a stand-in, then
   -- set on ours. The offsets WA's options set are text_anchorX/YOffset (SubText.lua); anchorX/YOffset is unused.
@@ -3132,7 +3141,11 @@ local function StyleShadowText(region, fs, sub, isCount, att)
   end
   region:AnchorSubRegion(rec, "point", sub.anchor_point, ResolveSelfPoint(sub, region.regionType),
     tonumber(sub.text_anchorXOffset) or 0, tonumber(sub.text_anchorYOffset) or 0)
-  Engine.SetAnchors(att, fs, rec.pts)
+  if onto then
+    Engine.SetAnchors(nil, fs, Engine.LayerAnchors(region, rec.pts, onto))
+  else
+    Engine.SetAnchors(att, fs, rec.pts)
+  end
   return rec.pts
 end
 
@@ -3288,6 +3301,12 @@ end
 -- region.subRegions is built from data.subRegions skipping unknown types (RegionPrototype), so walk
 -- both with the same rule. Remembers the live WA sub-texts that read aura state (%p / %s): in slot
 -- mode they are mirrored onto engine-fed shadows, in every mode the WA originals are hidden.
+-- att.mirrored (and dynHidden, emptySet, emptyOnly) hold the index in region.subRegions, not the frame: WA
+-- hands a display's sub-regions back to shared pools and takes them again on every modify, so a frame can
+-- move to another place (a %p frame becomes the label's); the frame at that place is looked up each time.
+-- The value is the display's own data entry it was marked for (Engine.SubTag): an edit while the engine
+-- stays on (the options open while auras are secret out of combat) can drop or move entries, and the entry
+-- is then looked up where that data entry is now (Engine.MarkedSub), or left alone once it is gone.
 -- A text with time and stacks takes both the duration text and the stack count (each button has one of
 -- each), so first come, first served (Engine.SubTextRoles): a later text that needs one of them is hidden
 -- and named on the status line (Engine.SubTextNotes). plan: the display's, for %i / %n in such a text.
@@ -3305,7 +3324,7 @@ local function MirrorTexts(att, region, data, useShadows, plan)
       ri = ri + 1
       local live = region.subRegions and region.subRegions[ri]
       local role = roles[i]
-      if role and live then att.mirrored[live] = true end
+      if role and live then att.mirrored[ri] = Engine.SubTag(region, i) end
       if onlyP and role ~= "p" then
         -- the row's own frames draw it
       elseif role == "p" and noP then
@@ -3325,7 +3344,7 @@ local function MirrorTexts(att, region, data, useShadows, plan)
       elseif not role and not haveN and useShadows and s.name and sub.type == "subtext" and sub.text_visible ~= false
              and Trim(sub.text_text) == "%n" then
         haveN = true
-        if live then att.mirrored[live] = true end
+        if live then att.mirrored[ri] = Engine.SubTag(region, i) end
         StyleShadowText(region, s.name, sub, true, att); s.name:SetAlpha(1)
       end
     end
@@ -3430,7 +3449,7 @@ local function HideStaticDecor(att, region, data, withBorder)
       local bsub = type(base.subRegions) == "table" and base.subRegions[i] or sub
       if live and ((sub.type == "subglow" and sub.glow)
                    or (withBorder and sub.type == "subborder" and bsub.border_visible ~= false)) then
-        att.mirrored[live] = true
+        att.mirrored[ri] = Engine.SubTag(region, i)
       end
     end
   end
@@ -3501,26 +3520,27 @@ do
 
   -- a condition WA applies itself changes a border (the conditions the engine draws as looks, plan.lookConds,
   -- do not count): only WA's own border follows it
+  -- a check on an engine-driven Aura trigger's state (other than Buffed / Show) never fires: the state is the
+  -- engine's constant one (InertConditions); an Or fires while any of its checks can. aura: plan.auraTriggers.
+  function Engine.NeverFires(ch, aura)
+    if type(ch) ~= "table" then return false end
+    if type(ch.checks) == "table" then
+      if ch.variable == "OR" then
+        if #ch.checks == 0 then return false end
+        for _, sc in ipairs(ch.checks) do if not Engine.NeverFires(sc, aura) then return false end end
+        return true
+      end
+      for _, sc in ipairs(ch.checks) do if Engine.NeverFires(sc, aura) then return true end end
+      return false
+    end
+    return (aura[ch.trigger] and ch.variable ~= nil and ch.variable ~= "buffed" and ch.variable ~= "show") and true or false
+  end
+
   function Engine.BorderLive(data, plan)
     local used = plan and plan.lookConds or {}
     local aura = plan and plan.auraTriggers or { [1] = true }
-    -- a check on an engine-driven Aura trigger's state (other than Buffed / Show) never fires: the state is
-    -- the engine's constant one (InertConditions); an Or fires while any of its checks can
-    local function never(ch)
-      if type(ch) ~= "table" then return false end
-      if type(ch.checks) == "table" then
-        if ch.variable == "OR" then
-          if #ch.checks == 0 then return false end
-          for _, sc in ipairs(ch.checks) do if not never(sc) then return false end end
-          return true
-        end
-        for _, sc in ipairs(ch.checks) do if never(sc) then return true end end
-        return false
-      end
-      return (aura[ch.trigger] and ch.variable ~= nil and ch.variable ~= "buffed" and ch.variable ~= "show") and true or false
-    end
     for ci, c in ipairs(type(data.conditions) == "table" and data.conditions or {}) do
-      if type(c) == "table" and not used[ci] and not never(c.check) then
+      if type(c) == "table" and not used[ci] and not Engine.NeverFires(c.check, aura) then
         for _, chg in ipairs(type(c.changes) == "table" and c.changes or {}) do
           local n = type(chg) == "table" and type(chg.property) == "string" and chg.property:match("^sub%.(%d+)%.border_")
           local sub = n and type(data.subRegions) == "table" and data.subRegions[tonumber(n)]
@@ -3529,6 +3549,160 @@ do
       end
     end
     return false
+  end
+
+  -- a condition WA applies itself changes sub-text i (any of its properties; the conditions the engine draws as
+  -- looks, plan.lookConds, do not count): the engine's still copy could not follow it, so the text stays WA's own.
+  -- plan: the display's whole plan (default: the one decided); the plans of its parts have no auraTriggers / lookConds.
+  function Engine.TextLive(data, i, plan)
+    plan = plan or (data and data.uid and decided[data.uid]) or nil
+    local used = plan and plan.lookConds or {}
+    local aura = plan and plan.auraTriggers or { [1] = true }
+    local prefix = ("sub.%d."):format(i)
+    for ci, c in ipairs(type(data.conditions) == "table" and data.conditions or {}) do
+      if type(c) == "table" and not used[ci] and not Engine.NeverFires(c.check, aura) then
+        for _, chg in ipairs(type(c.changes) == "table" and c.changes or {}) do
+          if type(chg) == "table" and type(chg.property) == "string" and chg.property:sub(1, #prefix) == prefix then return true end
+        end
+      end
+    end
+    return false
+  end
+
+  -- a condition WA applies itself (as Engine.TextLive) sets sub-element i's setting prop to a true value
+  function Engine.SubPropOn(data, i, prop, plan)
+    plan = plan or (data and data.uid and decided[data.uid]) or nil
+    local used = plan and plan.lookConds or {}
+    local aura = plan and plan.auraTriggers or { [1] = true }
+    local name = ("sub.%d.%s"):format(i, prop)
+    for ci, c in ipairs(type(data.conditions) == "table" and data.conditions or {}) do
+      if type(c) == "table" and not used[ci] and not Engine.NeverFires(c.check, aura) then
+        for _, chg in ipairs(type(c.changes) == "table" and c.changes or {}) do
+          if type(chg) == "table" and chg.property == name and chg.value then return true end
+        end
+      end
+    end
+    return false
+  end
+
+  -- the display's own custom code reaches its sub-elements (aura_env.region.subRegions...): it may write a static text
+  -- itself (a keybind, a label), which the engine's still copy could not follow, so its static texts stay WA's own. The
+  -- code that runs: a condition's Run Custom Code (one that can fire, as Engine.TextLive), the actions' (On Init, On Load,
+  -- On Unload, On Show, On Hide), the custom text function, the custom triggers and untriggers, and the animations' custom
+  -- functions. plan: the display's whole plan.
+  function Engine.CodeTouchesSubs(data, plan)
+    if type(data) ~= "table" then return false end
+    local function hit(s) return type(s) == "string" and s:find("subRegions", 1, true) ~= nil end
+    plan = plan or (data.uid and decided[data.uid]) or nil
+    local used = plan and plan.lookConds or {}
+    local aura = plan and plan.auraTriggers or { [1] = true }
+    for ci, c in ipairs(type(data.conditions) == "table" and data.conditions or {}) do
+      if type(c) == "table" and not used[ci] and not Engine.NeverFires(c.check, aura) then
+        for _, chg in ipairs(type(c.changes) == "table" and c.changes or {}) do
+          if type(chg) == "table" and chg.property == "customcode" and type(chg.value) == "table" and hit(chg.value.custom) then
+            return true
+          end
+        end
+      end
+    end
+    local a = type(data.actions) == "table" and data.actions or {}
+    local init, start, finish = type(a.init) == "table" and a.init or {}, type(a.start) == "table" and a.start or {},
+                                type(a.finish) == "table" and a.finish or {}
+    if (init.do_custom and hit(init.custom)) or (init.do_custom_load and hit(init.customOnLoad))
+       or (init.do_custom_unload and hit(init.customOnUnload))
+       or (start.do_custom and hit(start.custom)) or (finish.do_custom and hit(finish.custom)) or hit(data.customText) then
+      return true
+    end
+    -- custom triggers (custom, customDuration, customName, ...) and their untriggers
+    for _, tr in ipairs(type(data.triggers) == "table" and data.triggers or {}) do
+      local t = type(tr) == "table" and type(tr.trigger) == "table" and tr.trigger or nil
+      local un = t and t.type == "custom" and (t.custom_type == "status" or (t.custom_type == "event" and t.custom_hide == "custom"))
+                 and type(tr.untrigger) == "table" and tr.untrigger or nil
+      for _, part in ipairs({ t or false, un or false }) do
+        for k, v in pairs(part or {}) do
+          if type(k) == "string" and k:sub(1, 6) == "custom" and hit(v) then return true end
+        end
+      end
+    end
+    -- a custom animation's custom functions (WA runs one only when its kind is on and set to custom)
+    for _, anim in pairs(type(data.animation) == "table" and data.animation or {}) do
+      if type(anim) == "table" and anim.type == "custom" then
+        for _, kind in ipairs({ "alpha", "translate", "scale", "rotate", "color" }) do
+          if anim["use_" .. kind] and anim[kind .. "Type"] == "custom" and hit(anim[kind .. "Func"]) then return true end
+        end
+      end
+    end
+    return false
+  end
+
+  -- The marked sets (att.mirrored, dynHidden, emptySet, emptyOnly: MirrorTexts): index ri in region.subRegions -> the
+  -- display's own data entry it was marked for (data index i), or true when the display has no data at hand.
+  function Engine.SubTag(region, i)
+    local base = region and region.id and WA.GetData(region.id)
+    local t = base and type(base.subRegions) == "table" and base.subRegions[i]
+    return type(t) == "table" and t or true
+  end
+
+  -- the frame WA has now for a marked entry: where its data entry is now (WA's modify can drop or move entries while
+  -- the engine stays on), else the same sub-element at its place (a replaced list), nil once it is gone (WA's modify
+  -- has just shown or hidden it by its data)
+  function Engine.MarkedSub(region, ri, tag)
+    local subs = region and region.subRegions
+    if type(subs) ~= "table" then return nil end
+    if tag == true then return subs[ri] end
+    local data = region.id and WA.GetData(region.id)
+    local list = data and data.subRegions
+    if type(list) ~= "table" then return subs[ri] end
+    local n, atRi = 0, nil
+    for _, s in ipairs(list) do
+      if type(s) == "table" and Private.subRegionTypes[s.type] then
+        n = n + 1
+        if s == tag then return subs[n] end
+        if n == ri then atRi = s end
+      end
+    end
+    -- the list was replaced (Paste Settings, an import update copy every entry): the one at the same place, if it is the
+    -- same sub-element (Engine.SameSub)
+    if atRi and Engine.SameSub(atRi, tag) then return subs[ri] end
+    return nil
+  end
+
+  -- the same sub-element in a replaced list: its kind, words, place and rotation, and whether it is on (sizes, colours and
+  -- fonts may come with the paste)
+  function Engine.SameSub(a, b)
+    return a.type == b.type and a.text_text == b.text_text and a.anchor_point == b.anchor_point and a.rotateText == b.rotateText
+           and Engine.SubOn(a) == Engine.SubOn(b)
+  end
+
+  -- whether set holds the entry (the same data entry, wherever it is now)
+  function Engine.InMarked(set, ri, tag)
+    if type(set) ~= "table" then return false end
+    if tag == true then return set[ri] ~= nil end
+    if set[ri] == tag then return true end
+    for _, t in pairs(set) do if t == tag then return true end end
+    return false
+  end
+
+  -- a marked entry that WA shows by its data (handing back never shows one that is off now)
+  function Engine.SubOn(tag)
+    if type(tag) ~= "table" then return true end
+    if tag.type == "subtext" then return tag.text_visible ~= false end
+    if tag.type == "subborder" then return tag.border_visible ~= false end
+    if tag.type == "subglow" then return tag.glow and true or false end
+    return true
+  end
+
+  -- What a look hid that the next look of the display leaves to WA again: given back (shown where WA's data has it on).
+  -- WA's modify shows its sub-regions, but OnLayout, inside that same modify, hid them again with the set from before it
+  -- (an edit while the engine stays on), and nothing in WA shows them afterwards. old: the set the look started from.
+  function Engine.HandBack(att, region, old)
+    if type(old) ~= "table" or old == att.mirrored then return end
+    for ri, tag in pairs(old) do
+      if not Engine.InMarked(att.mirrored, ri, tag) then
+        local live = Engine.MarkedSub(region, ri, tag)
+        if live and live.SetShown and Engine.SubOn(tag) then live:SetShown(true) end
+      end
+    end
   end
 
   -- looks that change a border (only: and nothing else)
@@ -3543,13 +3717,14 @@ do
     return any
   end
 
-  -- a display the game packs or sorts in a Dynamic Group (WA's own sub-elements are hidden there)
-  function Engine.InDynRow(data)
+  -- a display the game packs or sorts in a Dynamic Group (WA's own sub-elements are hidden there): its group's plan
+  function Engine.DynRowPlan(data)
     local gdata = data.parent and WA.GetData(data.parent)
-    if not (gdata and gdata.regionType == "dynamicgroup" and Engine.DynPlan) then return false end
+    if not (gdata and gdata.regionType == "dynamicgroup" and Engine.DynPlan) then return nil end
     local ok, gp = pcall(Engine.DynPlan, gdata)
-    return ok and type(gp) == "table" or false
+    return ok and type(gp) == "table" and gp or nil
   end
+  function Engine.InDynRow(data) return Engine.DynRowPlan(data) ~= nil end
 
   -- whether a Found icon draws its border itself (see above)
   function Engine.OwnBorder(data, plan)
@@ -3815,6 +3990,7 @@ local function ApplyBarLook(att, region, data, plan)
   s.icon:SetVertexColor(ic[1] or 1, ic[2] or 1, ic[3] or 1, ic[4] or 1)
   pcall(s.icon.SetDesaturation, s.icon, data.desaturate and 1 or 0)
   MirrorTexts(att, region, data, true, plan)
+  Engine.HidePlainSubs(att, region); Engine.DrawPlainSubs(att, region, data, s.texts, "plain")   -- with the aura
   ApplyFoundGlow(att, region, data, plan)
   pcall(att.button.EnableMouseMotion, att.button, data.useTooltip and true or false)
 end
@@ -4136,6 +4312,7 @@ local function ApplyTexLook(att, region, data, plan)
     end
   end
   MirrorTexts(att, region, data, true, plan)
+  Engine.HidePlainSubs(att, region); Engine.DrawPlainSubs(att, region, data, s.texts, "plain")   -- with the aura
   ApplyFoundGlow(att, region, data, plan)
   pcall(att.button.EnableMouseMotion, att.button, data.useTooltip and true or false)
 end
@@ -4165,6 +4342,7 @@ end
 local function ApplyPicLook(att, region, data, plan)
   CopyPictureLook(att.shadows.pic, region, data)
   MirrorTexts(att, region, data, true, plan)
+  Engine.HidePlainSubs(att, region); Engine.DrawPlainSubs(att, region, data, att.shadows.texts, "plain")   -- with the aura
   ApplyFoundGlow(att, region, data, plan)
   pcall(att.button.EnableMouseMotion, att.button, data.useTooltip and true or false)
 end
@@ -4413,29 +4591,48 @@ do
     return cc
   end
 
-  -- %n / %i of the one spell a display tracks: its name and icon (plain data, safe time)
+  -- %n / %i of the one spell a display tracks: its name and icon (plain data, safe time), as WA writes them: Name(s)
+  -- keeps a typed or shift-clicked spell as its ID, which WA shows by the spell's name (BuffTrigger2), and %i is WA's
+  -- 12 px icon, cropped as its own (Prototypes.lua dynamic_texts.i)
   local function StaticSymbol(key, tp, plan)
     local sp = tp.single
-    local id = (sp and sp.id) or (plan and plan.firstId)
+    local num = sp and sp.name and tonumber(sp.name)
+    local id = (sp and sp.id) or num or (plan and plan.firstId)
     if key == "n" then
-      if sp and sp.name then return sp.name end
+      if sp and sp.name and not num then return sp.name end
       local ok, nm = pcall(C_Spell.GetSpellName, id)
       if ok and type(nm) == "string" and not issecretvalue(nm) then return nm end
+      if num then return sp.name end
     elseif key == "i" then
       local ok, tex = pcall(C_Spell.GetSpellTexture, id)
-      if ok and tex and not issecretvalue(tex) then return ("|T%s:0|t"):format(tostring(tex)) end
+      if ok and tex and not issecretvalue(tex) then return ("|T%s:12:12:0:0:64:64:4:60:4:60|t"):format(tostring(tex)) end
     end
     return ""
   end
 
-  -- The display text with its static parts filled in (raid markers like WA); dyn(key) supplies the rest.
-  local function TextWith(tp, plan, dyn)
+  -- WA's String format of a sub-text's %n (Abbreviate, Pad: Types.lua format_types.string) on the static name; sym: the
+  -- placeholder as written ("n", "1.n")
+  function Engine.NameFormat(sub, sym, name)
+    local base = "text_text_format_" .. tostring(sym)
+    if type(sub) ~= "table" or sub[base .. "_format"] ~= "string" then return name end
+    if sub[base .. "_abbreviate"] and WA.WA_Utf8Sub then name = WA.WA_Utf8Sub(name, tonumber(sub[base .. "_abbreviate_max"]) or 8) end
+    if sub[base .. "_pad"] and WA.PadString then
+      name = WA.PadString(name, sub[base .. "_pad_mode"] or "left", tonumber(sub[base .. "_pad_max"]) or 8)
+    end
+    return name
+  end
+
+  -- The display text with its static parts filled in (raid markers like WA); dyn(key) supplies the rest. sub: a sub-text's
+  -- settings, for its %n format (Engine.NameFormat).
+  local function TextWith(tp, plan, dyn, sub)
     local out = {}
     for _, part in ipairs(tp.parts) do
       if part.lit then
         out[#out + 1] = WA.ReplaceRaidMarkerSymbols and WA.ReplaceRaidMarkerSymbols(part.lit) or part.lit
       elseif part.key == "n" or part.key == "i" then
-        out[#out + 1] = StaticSymbol(part.key, tp, plan)
+        local v = StaticSymbol(part.key, tp, plan)
+        if sub and part.key == "n" then v = Engine.NameFormat(sub, part.sym or "n", v) end
+        out[#out + 1] = v
       else
         out[#out + 1] = dyn(part.key, part)
       end
@@ -4756,6 +4953,290 @@ do
     fs:Show()
   end
 
+  ---------------------------------------------------------------------------------------- plain sub-texts
+  -- A sub-text with no aura value in it (TextPlan kind "plain": words, raid markers, %n / %i of the one tracked
+  -- spell; on an icon also a lone %n of the one tracked spell, which icons have no name text of the game for)
+  -- stayed on WA's region, which is shown whenever the other triggers allow (the Aura trigger's state is the
+  -- engine's constant one), so it showed while the engine drew nothing. It is drawn by the engine now, in the
+  -- part that shows the display (the slot button, the Missing clip, a time-left part's own slot, the animations'
+  -- copies), so it shows and hides with the display; WA's own is hidden (att.mirrored, as the %p / %s texts).
+  -- Left to WA: a rotated text, one a condition WA applies itself changes (Engine.TextLive) or the display's custom
+  -- code may write (Engine.CodeTouchesSubs), one placed farther than PLAIN_FAR from the display (past what the clips
+  -- reach), in a display drawn by time-left parts one with { } or % (the game's format string) or another escape than
+  -- an icon, Show On: Always (WA's icon is always there) and a group trigger's copies. A lone %n of the one tracked
+  -- spell on a bar or texture: the Found slot gives the first one to the game's name text (MirrorTexts,
+  -- Engine.NameTextIndex) and draws any other as a static text, as the parts without a name text do (the Missing
+  -- clip, the animations' copies). The words as WA writes them (SubText.lua
+  -- ConfigureTextUpdate, ReplacePlaceHolders): a typed "\n" a line break (first, before the placeholders fill in),
+  -- "%%" a %, raid markers as icons. plan: the display's whole plan (default: the one decided). part: "slot" (also
+  -- nil: the Found slot, a time-left part's), "clip" (the Missing clip) or "copy" (an animation's copy).
+  Engine.PLAIN_FAR = 150
+  -- the sub-text a bar's or texture's Found slot gives to the game's name text: the first shown lone '%n' without a
+  -- role (MirrorTexts' rule), or nil
+  function Engine.NameTextIndex(data)
+    local roles = Engine.SubTextRoles(data)
+    for i, sub in ipairs(type(data.subRegions) == "table" and data.subRegions or {}) do
+      if type(sub) == "table" and sub.type == "subtext" and not roles[i] and sub.text_visible ~= false
+         and Trim(tostring(sub.text_text or "")) == "%n" then
+        return i
+      end
+    end
+    return nil
+  end
+  function Engine.PlainSubText(data, i, sub, plan, part)
+    if not (type(sub) == "table" and sub.type == "subtext" and sub.text_visible ~= false) then return nil end
+    if (sub.rotateText or "NONE") ~= "NONE" then return nil end
+    if math.abs(tonumber(sub.text_anchorXOffset) or 0) > Engine.PLAIN_FAR
+       or math.abs(tonumber(sub.text_anchorYOffset) or 0) > Engine.PLAIN_FAR then
+      return nil
+    end
+    local raw = tostring(sub.text_text or "")
+    if Trim(raw) == "" then return nil end
+    local typed = raw:gsub("\\n", "\n")
+    local tp = TextPlan(data, typed)
+    local named = tp and tp.kind == "name" and tp.single
+                  and (data.regionType == "icon" or (part ~= nil and part ~= "slot") or Engine.NameTextIndex(data) ~= i)
+    if not (tp and (tp.kind == "plain" or named)) then return nil end
+    local full = plan or (data.uid and decided[data.uid]) or nil
+    if Engine.TextLive(data, i, full) or Engine.CodeTouchesSubs(data, full) then return nil end
+    local s = TextWith(tp, full, function() return "" end, sub)
+    -- a time-left part's icon writes it as a duration text's format string, which reads { } itself (a % is not tried
+    -- there, nor a colour code, an atlas or a line break: words and icons, |T...|t, only)
+    if full and full.parts and not full.parts.found and #full.parts.remaining > 0
+       and tostring(s):gsub("|T.-|t", ""):find("[{}%%\n|]") then
+      return nil
+    end
+    return s
+  end
+
+  -- the display's plain sub-texts in a part (data: WA's own or a look's; part: as Engine.PlainSubText's): { i, ri, sub,
+  -- live, text }; region.subRegions is data.subRegions without the unknown types (RegionPrototype), walked as
+  -- MirrorTexts walks it (ri: the index there)
+  function Engine.PlainSubs(region, data, part)
+    local out, ri = {}, 0
+    for i, sub in ipairs(type(data.subRegions) == "table" and data.subRegions or {}) do
+      if Private.subRegionTypes[sub.type] then
+        ri = ri + 1
+        local text = Engine.PlainSubText(data, i, sub, nil, part)
+        if text then out[#out + 1] = { i = i, ri = ri, sub = sub, live = region.subRegions and region.subRegions[ri], text = text } end
+      end
+    end
+    return out
+  end
+
+  -- how far past the display a Missing clip reaches for its plain sub-texts (EnsureGroup): as the stack gates,
+  -- STACK_MARGIN-like room (a text more than PLAIN_FAR away stays WA's own); nothing else in the clip hangs outside
+  -- the host, so a wide clip draws nothing more
+  Engine.PLAIN_REACH = 300
+  function Engine.PlainReach(data)
+    if type(data) ~= "table" then return 0 end
+    for i, sub in ipairs(type(data.subRegions) == "table" and data.subRegions or {}) do
+      if Engine.PlainSubText(data, i, sub, nil, "clip") then return Engine.PLAIN_REACH end
+    end
+    return 0
+  end
+
+  -- The status line's words on the display's static sub-texts: the ones drawn with the display, and every other
+  -- text left to WeakAuras and why (shown whenever WeakAuras shows the display). Not a text another note covers
+  -- (one with a role, Engine.SubTextRoles; time and stacks the engine cannot draw, Engine.SubTextNotes), nor the lone
+  -- %n a bar's or texture's Found slot gives to the game's name text (Engine.NameTextIndex) where the display has no
+  -- Missing part; with one, that %n is drawn only while the aura is present when the Missing part cannot draw it.
+  -- Nothing for Show On: Always (WA's icon is always there, and so are its texts). In a packed or sorted Dynamic Group
+  -- WA's own texts are hidden (Dyn.Note): the ones the engine does not draw are named as hidden there. A sorted row
+  -- draws every frame from its first child, by that child's settings (its conditions, its code), and no text with the
+  -- spell's name or icon when its children track different spells. Last, WA's other sub-elements (Engine.DECOR), which
+  -- WA draws itself. plan: the display's whole plan.
+  function Engine.PlainNotes(data, plan)
+    local out, drawn = {}, {}
+    if not plan or plan.mode == "always" then return out end
+    local own, ownPlan = data, plan
+    local gp = not plan.group and Engine.DynRowPlan(data) or nil
+    if gp and gp.sorted and gp.tpl and gp.tpl ~= data.id then
+      local td = WA.GetData(gp.tpl)
+      local tplan = td and td.uid and decided[td.uid]
+      if td and tplan then data, plan = td, tplan end
+    end
+    local icon = data.regionType == "icon"
+    local texts = data.regionType ~= "text" and type(data.subRegions) == "table" and data.subRegions or {}
+    local nameIdx = not icon and #texts > 0 and Engine.NameTextIndex(data) or nil
+    local roles = #texts > 0 and Engine.SubTextRoles(data) or {}
+    for i, sub in ipairs(texts) do
+      local raw = sub.type == "subtext" and sub.text_visible ~= false and Trim(sub.text_text) or ""
+      if raw ~= "" and not roles[i] then
+        local shown = raw:gsub("|", "||")              -- as typed, not read as a colour or a line break
+        local tp, why = TextPlan(data, raw)
+        local keys = Engine.TextKeys(raw)
+        local lone = tp and tp.kind == "name"
+        local row                                         -- the reason is the sorted row's own
+        -- the lone %n the Found slot's name text of the game draws (a bar or texture shown with the aura)
+        local nameText = lone and i == nameIdx and plan.mode ~= "missing"
+        local far = math.abs(tonumber(sub.text_anchorXOffset) or 0) > Engine.PLAIN_FAR
+                    or math.abs(tonumber(sub.text_anchorYOffset) or 0) > Engine.PLAIN_FAR
+        if nameText and not (plan.missingPart or plan.buffed) then
+          why = nil                                      -- the game's name text, with the aura (the Kept words)
+        elseif tp and (tp.kind == "plain" or lone) then
+          if plan.group then why = T("a group trigger's copies do not draw it")
+          elseif (sub.rotateText or "NONE") ~= "NONE" then why = T("it is rotated")
+          elseif Engine.TextLive(data, i, plan) then why = T("a condition WeakAuras applies itself changes it")
+          elseif Engine.CodeTouchesSubs(data, plan) then why = T("the display's custom code reaches its sub-elements and may write it")
+          elseif far then why = T("it is moved more than %d px from its anchor, where the engine's clips could cut it off"):format(Engine.PLAIN_FAR)
+          elseif lone and not tp.single and icon then
+            why = T("the aura's name: icons have no name text of the game, so only the name of one tracked spell is drawn")
+          elseif lone and not tp.single then
+            why = T("only the name of one tracked spell can be drawn, and the display tracks several")
+          elseif not Engine.PlainSubText(data, i, sub, plan, "clip") then
+            why = T("the icon shown while the aura runs out writes its words in the game's time format: it reads { } and % itself, and only words and icons are tried there, not colour codes, atlases or line breaks")
+          elseif gp and gp.sorted and ((gp.manySpells and keys.n) or (gp.manyIcons and keys.i)) then
+            why = T("its children's spells differ, and every frame of the sorted row is drawn from the first child")
+            row = true
+          else
+            why = nil
+            drawn[#drawn + 1] = "'" .. shown .. "'"
+          end
+        elseif tp or ((keys.p or keys.t) and keys.s) then
+          why = nil                                      -- drawn by the engine, or covered by another note
+        end
+        -- a later child of a sorted row: the first child's settings decide
+        if why and not row and data ~= own then
+          why = T("every frame of the sorted row is drawn from its first child '%s', where %s"):format(tostring(gp.tpl), why)
+        end
+        if why and nameText then
+          -- a refresh bar or texture: WA's own is hidden, the name text draws it with the aura, the Missing part cannot
+          out[#out + 1] = T("|cffff9933Note:|r the text '%s' is drawn only while the aura is present (the game's name text); while it is absent, it is not drawn: %s.")
+            :format(shown, why)
+        elseif why and gp then
+          out[#out + 1] = T("|cffff9933Note:|r the text '%s' is hidden while the display is in its Dynamic Group's row, where WeakAuras' own texts are hidden: %s.")
+            :format(shown, why)
+        elseif why then
+          out[#out + 1] = T("|cffff9933Note:|r the text '%s' stays WeakAuras' own (%s), so it shows whenever WeakAuras shows the display, also while the engine draws nothing there.")
+            :format(shown, why)
+        end
+      end
+    end
+    if #drawn > 0 then
+      table.insert(out, 1, T("Static texts (%s) are drawn with the display, so they show only while it does."):format(table.concat(drawn, ", ")))
+    end
+    -- WA's other sub-elements, which WA draws itself on its region, shown whenever WA shows the display: the ones that are
+    -- on, or that a condition of WA's own can turn on (a packed display has none; a sorted row's children keep theirs)
+    local seen, kinds = {}, {}
+    for i, sub in ipairs(type(own.subRegions) == "table" and own.subRegions or {}) do
+      local d = type(sub) == "table" and Engine.DECOR[sub.type]
+      if d and not seen[d[1]] and (sub[d[2]] ~= false or Engine.SubPropOn(own, i, d[2], ownPlan)) then
+        seen[d[1]] = true
+        kinds[#kinds + 1] = T(d[1])
+      end
+    end
+    if #kinds > 0 then
+      out[#out + 1] = T("|cffff9933Note:|r WeakAuras draws the display's %s sub-elements itself, so they show whenever WeakAuras shows the display, also while the engine draws nothing there.")
+        :format(table.concat(kinds, ", "))
+    end
+    return out
+  end
+  -- WA's sub-element types the engine leaves to WA: { name, the setting that switches one off }
+  Engine.DECOR = { subtexture = { "Texture", "textureVisible" }, submodel = { "Model", "model_visible" },
+                   substopmotion = { "Stop Motion", "stopmotionVisible" },
+                   subcirculartexture = { "Circular Texture", "circularTextureVisible" },
+                   sublineartexture = { "Linear Texture", "linearTextureVisible" }, subtick = { "Tick", "tick_visible" } }
+
+  -- WA's own plain sub-texts join o.mirrored (OnLayout hides them, TurnOff gives them back): the ones WA shows, from
+  -- the display's own data, so a look that turns one off or on never hands back one that WA had off. Not for a group
+  -- trigger's copies (o.copyOf): those draw none, and WA's own stays on the display, as before. part: the one drawn
+  -- (Engine.PlainSubText's).
+  function Engine.HidePlainSubs(o, region, part)
+    if o.copyOf then return end
+    local base = region.id and WA.GetData(region.id)
+    if not base then return end
+    o.mirrored = o.mirrored or {}
+    for _, p in ipairs(Engine.PlainSubs(region, base, part)) do
+      if p.live then o.mirrored[p.ri] = Engine.SubTag(region, p.i) end
+    end
+  end
+
+  -- points WA hangs a sub-text by on its own frames, moved onto layer (an animation's copy, which moves on its own):
+  -- WA hangs it on its icon or on the icon's inner / outer frame, all on the display's centre, so the same point of
+  -- the layer, shifted by half the size difference. WA zooms its region (its own Start or Main, such as Grow or
+  -- Pulse: Icon:Scale) and the frames on it with it: their sizes as at rest (one zoomed to nearly nothing is read
+  -- as it is).
+  function Engine.LayerAnchors(region, pts, layer)
+    local okW, w, h = pcall(function() return region:GetWidth(), region:GetHeight() end)
+    local zx, zy = tonumber(region.scalex) or 1, tonumber(region.scaley) or 1
+    if not (zx >= 0.1 and zy >= 0.1) then zx, zy = 1, 1 end
+    for _, p in ipairs(pts) do
+      local rel = p[2]
+      if rel ~= region and okW and type(rel) == "table" and rel.GetWidth then
+        local okR, rw, rh = pcall(function() return rel:GetWidth(), rel:GetHeight() end)
+        if okR and type(rw) == "number" and type(rh) == "number" and type(w) == "number" and type(h) == "number"
+           and not (issecretvalue(rw) or issecretvalue(rh) or issecretvalue(w) or issecretvalue(h)) then
+          local rp = tostring(p[3]):upper()
+          p[4] = (p[4] or 0) + ((rp:find("RIGHT") and 1) or (rp:find("LEFT") and -1) or 0) * (rw - w) / 2 / zx
+          p[5] = (p[5] or 0) + ((rp:find("TOP") and 1) or (rp:find("BOTTOM") and -1) or 0) * (rh - h) / 2 / zy
+        end
+      end
+      p[2] = layer
+    end
+    return pts
+  end
+
+  -- a plain sub-text's width and word wrap, as WA sets its own (SubText.lua modify)
+  function Engine.PlainWidth(fs, sub)
+    local fixed = sub.text_automaticWidth == "Fixed"
+    local wrap = (not fixed) or sub.text_wordWrap == "WordWrap"
+    pcall(fs.SetWidth, fs, fixed and (tonumber(sub.text_fixedWidth) or 64) or 0)
+    pcall(fs.SetWordWrap, fs, wrap)
+    pcall(fs.SetNonSpaceWrap, fs, wrap)
+  end
+
+  -- o's copies of the plain sub-texts in parent (key: one set per place, "plain" on the slot button, "uplain" in
+  -- the Missing clip), styled as WA styles its own (font, size, outline, colour, shadow, justify, width and word
+  -- wrap) and hung where WA hangs it: on WA's frames (o.anchors, so a packed Dynamic Group child moves them onto
+  -- its host and a sorted row onto its frames, as the %p / %s texts), or at the same place of layer (the Missing
+  -- clip's on the host, an animation's on its copy; never on WA's frames). parent nil (and a group trigger's
+  -- copy, Engine.HidePlainSubs): all hidden. Safe time only (or a frame's initializeFrame); created in place
+  -- (nothing may be moved into the aura buttons or their clips). The copies are our own texts, never handed to a
+  -- button, so Show / Hide / SetAlpha stay ours. One the game refuses is left out (said once), not the look.
+  -- o.noSpellTexts / o.noIconTexts: a sorted row's frame or row copy, drawn from the first child for auras of spells
+  -- with other names / icons, so no text with the spell's name (%n) / icon (%i); WA's own stays hidden in the row. The part
+  -- (Engine.PlainSubText's)
+  -- by the place: "uplain" the Missing clip, another on a layer an animation's copy, else the Found slot.
+  function Engine.DrawPlainSubs(o, region, data, parent, key, layer)
+    if o.copyOf then parent = nil end
+    local store = o.shadows or o
+    local pool = store[key] or {}
+    store[key] = pool
+    local used = {}
+    local part = (key == "uplain" and "clip") or (layer and "copy") or "slot"
+    for _, p in ipairs(parent and Engine.PlainSubs(region, data, part) or {}) do
+      local keys = (o.noSpellTexts or o.noIconTexts) and Engine.TextKeys(p.sub.text_text) or {}
+      if not ((keys.n and o.noSpellTexts) or (keys.i and o.noIconTexts)) then
+        local fs = pool[p.i]
+        local ok, err = pcall(function()
+          if not fs then fs = parent:CreateFontString(nil, "OVERLAY", "GameFontHighlight"); pool[p.i] = fs end
+          StyleShadowText(region, fs, p.sub, true, (not layer) and o or nil, layer)
+          Engine.PlainWidth(fs, p.sub)
+          fs:SetText("")                                -- as WA: the justify takes only when the text changes
+          fs:SetText(p.text)
+          fs:SetAlpha(1)
+          fs:Show()
+        end)
+        if ok then
+          used[p.i] = true
+          -- WA's own copy of a text the Found slot draws is hidden too, where WA's own data has it on: HidePlainSubs goes by
+          -- that data, and a look can draw a lone %n by its own (another one takes the game's name text there)
+          local bsub = part == "slot" and not o.copyOf and p.live and region.id and WA.GetData(region.id)
+          bsub = bsub and type(bsub.subRegions) == "table" and bsub.subRegions[p.i]
+          if type(bsub) == "table" and Engine.SubOn(bsub) then
+            o.mirrored = o.mirrored or {}
+            o.mirrored[p.ri] = Engine.SubTag(region, p.i)
+          end
+        elseif not o.plainWarned then
+          o.plainWarned = true
+          WA.prettyPrint(("%s: engine static text failed: %s"):format(tostring(region.id), tostring(err)))
+        end
+      end
+    end
+    for i, f in pairs(pool) do if not used[i] then pcall(f.Hide, f) end end
+  end
+
   -- plain text in the Missing clip; created in place, like everything in these clips
   function StyleUnderlayText(att, region, data, plan)
     local s = att.shadows
@@ -4851,6 +5332,11 @@ local function ApplySlotLook(att, region, data, plan)
   local base = found and region.id and WA.GetData(region.id) or data
   local hideWA = found and ((base == data and own) or (base ~= data and Engine.OwnBorder(base, plan)))
   MirrorTexts(att, region, data, true, plan)
+  -- the plain sub-texts on the button, with the aura (beside the %p / %s texts); Show On: Always keeps WA's own
+  -- (its icon is always there)
+  local always = plan.mode == "always"
+  if not always then Engine.HidePlainSubs(att, region) end
+  Engine.DrawPlainSubs(att, region, data, (not always) and (att.body or att.button) or nil, "plain")
   if found then HideStaticDecor(att, region, data, hideWA) end
   pcall(att.button.EnableMouseMotion, att.button, data.useTooltip and true or false)
 end
@@ -4914,6 +5400,8 @@ local function ApplyUnderlayLook(att, region, data, plan, noGlow)
     StyleGlowTexture(att.shadows.mglow, att.host, w, h, (not noGlow and not animated) and GlowSpec(data) or nil)
   end
   MirrorTexts(att, region, data, false)
+  -- the plain sub-texts in the clip, with the display for the absent aura (on the host, at WA's place)
+  Engine.HidePlainSubs(att, region, "clip"); Engine.DrawPlainSubs(att, region, data, att.shadows.clip, "uplain", att.host)
   HideStaticDecor(att, region, data, att.isPic or att.isMotion or att.isModel)   -- a Texture's border would frame an empty spot
 end
 
@@ -5315,7 +5803,8 @@ do
     if ap.start then
       local isText = data.regionType == "text"
       local copy = isText and T("on a copy of the text")
-                   or T("on a copy of the display that keeps only a lone stack count (%s) of its texts")
+                   or (plan and plan.group and T("on a copy of the display that keeps only a lone stack count (%s) of its texts"))
+                   or T("on a copy of the display that keeps, of its texts, only the static ones the engine draws and a lone stack count (%s)")
       local takeOver = isText and T("the text itself takes over")
                        or T("the display itself takes over with all its texts and a static glow (an animated glow shows at once)")
       said[#said + 1] = T("Start is played by the game when the aura is put on, also in combat (not when you switch to a target or meet someone who already has it; not for auras without a duration), %s; after %d s %s. After each refresh of the aura (also a stack that refreshes it) the copy stands in again for %d s, and if the game redraws its auras within the first %d s (it does when you enter or leave combat), the animation starts again.")
@@ -5324,7 +5813,7 @@ do
       local x = ap.rowStart.x
       -- the copy carries the frame's icon, swipe, border and a lone %s (Engine.StyleRowCopy), so those move
       -- with it; the frame's static glow waits for the frame
-      said[#said + 1] = T("Start is played by the game on each frame of the sorted row when that frame's aura is put on, also in combat (not when you switch to a target or meet someone who already has it; not for auras without a duration; not when the row only re-sorts), on a copy of the frame (its icon, swipe and border, and a lone stack count %%s); after %d s the frame itself takes over (its static glow too; an animated glow and the %%p text show at once in their places). After each refresh the copy stands in again for %d s, and if the game redraws its auras within the first %d s (it does when you enter or leave combat), the animation starts again. All children of the group have this Start.")
+      said[#said + 1] = T("Start is played by the game on each frame of the sorted row when that frame's aura is put on, also in combat (not when you switch to a target or meet someone who already has it; not for auras without a duration; not when the row only re-sorts), on a copy of the frame (its icon, swipe and border, the static texts the engine draws and a lone stack count %%s); after %d s the frame itself takes over (its static glow too; an animated glow and the %%p text show at once in their places). After each refresh the copy stands in again for %d s, and if the game redraws its auras within the first %d s (it does when you enter or leave combat), the animation starts again. All children of the group have this Start.")
         :format(x, x, x)
     elseif ap.startWhy then
       said[#said + 1] = T("Start: %s."):format(ap.startWhy)
@@ -5544,6 +6033,10 @@ do
       -- the display's border moves with the copy (the display's own is shut while the copy plays)
       Engine.StyleBorders(rig, rig.layer, rig.icon, rig.cd, region, o.borderOn and Engine.BorderSpecs(data) or nil)
     end
+    -- the plain sub-texts move with the copy (Engine.DrawPlainSubs; not a group trigger's copy, and Show On: Always
+    -- keeps WA's own)
+    Engine.DrawPlainSubs(rig, region, data, (not o.copyOf and plan and plan.mode ~= "always") and rig.layer or nil,
+                         "plain", rig.layer)
     if not rig.count then return end
     -- a lone %s sub-text as the display draws it (MirrorTexts), hung on the copy so it moves with it; a
     -- text with time and stacks together waits for the display (its time is the display's duration text)
@@ -5552,28 +6045,7 @@ do
       if role == "s" then sub = data.subRegions[i] end
     end
     if not sub then rig.count:SetAlpha(0); return end
-    local pts = StyleShadowText(region, rig.count, sub, true, nil)
-    local okW, w, h = pcall(function() return region:GetWidth(), region:GetHeight() end)
-    -- WA zooms its region (its own Start or Main, such as Grow or Pulse: Icon:Scale) and the frames on it
-    -- with it: their sizes as at rest (one zoomed to nearly nothing is read as it is)
-    local zx, zy = tonumber(region.scalex) or 1, tonumber(region.scaley) or 1
-    if not (zx >= 0.1 and zy >= 0.1) then zx, zy = 1, 1 end
-    for _, p in ipairs(pts) do
-      -- WA hangs it on its icon or on the icon's inner / outer frame, all on the display's centre: the same
-      -- point of the copy, shifted by half the size difference
-      local rel = p[2]
-      if rel ~= region and okW and type(rel) == "table" and rel.GetWidth then
-        local okR, rw, rh = pcall(function() return rel:GetWidth(), rel:GetHeight() end)
-        if okR and type(rw) == "number" and type(rh) == "number" and type(w) == "number" and type(h) == "number"
-           and not (issecretvalue(rw) or issecretvalue(rh) or issecretvalue(w) or issecretvalue(h)) then
-          local rp = tostring(p[3]):upper()
-          p[4] = (p[4] or 0) + ((rp:find("RIGHT") and 1) or (rp:find("LEFT") and -1) or 0) * (rw - w) / 2 / zx
-          p[5] = (p[5] or 0) + ((rp:find("TOP") and 1) or (rp:find("BOTTOM") and -1) or 0) * (rh - h) / 2 / zy
-        end
-      end
-      p[2] = rig.layer
-    end
-    Engine.SetAnchors(nil, rig.count, pts)
+    Engine.SetAnchors(nil, rig.count, Engine.LayerAnchors(region, StyleShadowText(region, rig.count, sub, true, nil), rig.layer))
     rig.count:SetAlpha(1)                       -- Shown is secret on a count text; Alpha is ours
   end
 
@@ -5728,6 +6200,8 @@ do
         Engine.StyleBorders(rig, rig.layer, t, nil, region, o.underBorderOn and Engine.BorderSpecs(data) or nil)
       end
     end
+    -- the plain sub-texts go with the copy, as the Missing clip draws them (not a group trigger's copy's)
+    Engine.DrawPlainSubs(rig, region, data, (not o.copyOf) and rig.layer or nil, "plain", rig.layer)
   end
 
   -- o: the display's attachment or a member's copy, with its Missing group built (EnsureGroup). on = o
@@ -5760,8 +6234,9 @@ end
 
 local function SetMirroredShown(att, shown)
   if not att.mirrored then return end
-  for sub in pairs(att.mirrored) do
-    if sub.SetShown then sub:SetShown(shown) end
+  for ri, tag in pairs(att.mirrored) do
+    local sub = Engine.MarkedSub(att.region, ri, tag)   -- the frame WA has for it now (MirrorTexts)
+    if sub and sub.SetShown and (not shown or Engine.SubOn(tag)) then sub:SetShown(shown) end
   end
 end
 
@@ -5963,8 +6438,8 @@ local function BuildLateSlot(att, key, part, x, total, region)
 end
 
 -- Slot keys: feR<i> = the icon of Remaining Time part i, feG<i> = its static glow, feT<i> = its %p countdown,
--- feL<i> = its late clip (animated glow).
-local LEVEL_OF = { R = 0, G = 1, T = 2, L = 3 }
+-- feL<i> = its late clip (animated glow), feP<i>.<n> = plain sub-text n (Engine.PlainSubs) of the part's icon.
+local LEVEL_OF = { R = 0, G = 1, T = 2, L = 3, P = 2 }
 local function EnsureComposite(att, region, data, plan)
   local c = att.container
   att.data = data
@@ -6019,6 +6494,11 @@ local function EnsureComposite(att, region, data, plan)
       keys[#keys + 1] = "feG" .. i
     end
     if withText then keys[#keys + 1] = "feT" .. i end
+    -- each plain sub-text of the part's icon: the duration text of a slot of its own (ApplyCompositeLook), so it
+    -- shows only while the icon does, by the part's curve
+    if not plan.parts.found then
+      for _, p in ipairs(Engine.PlainSubs(region, data)) do keys[#keys + 1] = ("feP%d.%d"):format(i, p.i) end
+    end
     for _, key in ipairs(keys) do
       used[key] = true
       local rs = att.rslots[key]
@@ -6081,7 +6561,7 @@ function Engine.HostLevels(a, h)
   end
 end
 
--- WA's own elements of a display that the engine leaves to WA (a plain text, the border) at base + index + 1,
+-- WA's own elements of a display that the engine leaves to WA (a text it does not draw, the border) at base + index + 1,
 -- above the host; with stacked copies of a group trigger as far above the top copy's band (Engine.BandTop),
 -- so they stay above every copy as they were above the one copy before.
 function Engine.SubRegionLevels(att, region, base)
@@ -6169,8 +6649,32 @@ local function ApplyCompositeLook(att, region, data, plan)
         textColor = { curve = RemainCurve(rp.op, rp.x, tc[1] or 1, tc[2] or 1, tc[3] or 1, tc[4] or 1), property = property },
       })
     end
+    -- the plain sub-texts of the part's icon: their words as the format string, in their colour by the curve
+    for _, p in ipairs(plan.parts.found and {} or Engine.PlainSubs(region, data)) do
+      local key = ("feP%d.%d"):format(i, p.i)
+      local rp2 = att.rslotsUsed[key] and att.rslots[key]
+      if rp2 then
+        local ok, err = pcall(function()
+          StyleShadowText(region, rp2.fs, p.sub, false, att)
+          Engine.PlainWidth(rp2.fs, p.sub)
+          local tc = p.sub.text_color or { 1, 1, 1, 1 }
+          rp2.button:SetDurationText(rp2.fs, {
+            textFormat = { formatString = p.text, components = {} },
+            textColor = { curve = RemainCurve(rp.op, rp.x, tc[1] or 1, tc[2] or 1, tc[3] or 1, tc[4] or 1), property = property },
+          })
+        end)
+        if not ok then                                   -- left out (said once), not the look
+          pcall(function() att.container:SetAuraSlotEnabled(key, false) end)
+          if not att.plainWarned then
+            att.plainWarned = true
+            WA.prettyPrint(("%s: engine static text failed: %s"):format(tostring(region.id), tostring(err)))
+          end
+        end
+      end
+    end
   end
   if not plan.parts.found then MirrorTexts(att, region, data, false) end   -- WA's own %p/%s/%n would read aura state: hidden
+  Engine.HidePlainSubs(att, region)                                         -- the parts draw WA's plain texts
   HideStaticDecor(att, region, data, true, true)  -- WA's glow (the clips have it) and the border: hidden
 end
 
@@ -6472,8 +6976,8 @@ end
 -- Whatever hangs on an aura container must carry its ban on layout scripts (DisableUntrustedLayoutScripts-
 -- Template). Our hosts do and everything of ours is created inside them; WA's own frames are refused
 -- ("Anchoring disallowed as dependent object would inherit forbidden aspects", /fddyn chain). So a packed
--- child shows what the engine draws (icon, bar or texture, %p/%s/%n texts, glow), our copies that sat on
--- WA's frames move onto the host, and WA's other texts and the border are hidden.
+-- child shows what the engine draws (icon, bar or texture, %p/%s/%n and static texts, glow), our copies that sat
+-- on WA's frames move onto the host, and WA's other texts and the border are hidden.
 local Dyn = {}
 do
   local GROW = {
@@ -6902,14 +7406,15 @@ do
     att.dynHidden = att.dynHidden or {}
     att.mirrored = att.mirrored or {}
     local ri = 0
-    for _, sub in ipairs(data.subRegions or {}) do
+    for i, sub in ipairs(data.subRegions or {}) do
       if Private.subRegionTypes[sub.type] then
         ri = ri + 1
         local live = region.subRegions and region.subRegions[ri]
         local flag = HIDE_ON[sub.type]
         if live and flag and sub[flag] ~= false and (sub.type ~= "subglow" or sub.glow) then
-          att.mirrored[live] = true
-          att.dynHidden[live] = true
+          local tag = Engine.SubTag(region, i)
+          att.mirrored[ri] = tag
+          att.dynHidden[ri] = tag
         end
       end
     end
@@ -7008,11 +7513,11 @@ do
 
   -- what a packed child does not show: an icon keeps its border (the engine's, in the aura button)
   function Dyn.PackedHidden(data)
-    if data.regionType ~= "icon" then return T("While packed, its border and texts other than %p/%s/%n are hidden.") end
+    if data.regionType ~= "icon" then return T("While packed, its border and texts other than %p/%s/%n and the static texts the engine draws are hidden.") end
     if #Engine.BorderSpecs(data) > 0 then
-      return T("While packed, it shows its border and its %p/%s/%n texts; other texts are hidden.")
+      return T("While packed, it shows its border, its %p/%s texts and the static texts the engine draws; other texts are hidden.")
     end
-    return T("While packed, its texts other than %p/%s/%n are hidden.")
+    return T("While packed, its texts other than %p/%s and the static texts the engine draws are hidden.")
   end
   function Dyn.Note(data)
     local gdata = ParentOf(data)
@@ -7027,9 +7532,9 @@ do
     if gp and gp.sorted then
       local s = T("|cff33ff99Dynamic Group:|r sorted by the time left by the game (%s first), in combat too: the group is drawn as one row of its auras in the look of '%s' (%s). This display itself is not drawn while it is in the row."):format(
         gp.dir == "descending" and T("the most time left") or T("the least time left"), tostring(gp.tpl),
-        gp.kind == "aurabar" and T("the border and texts other than %p/%s/%n are hidden")
-          or (#Engine.BorderSpecs(WA.GetData(gp.tpl) or {}) > 0 and T("its border on every frame; texts other than %p/%s are hidden"))
-          or T("texts other than %p/%s are hidden"))
+        gp.kind == "aurabar" and T("the border and texts other than %p/%s/%n and the static texts the engine draws are hidden")
+          or (#Engine.BorderSpecs(WA.GetData(gp.tpl) or {}) > 0 and T("its border on every frame; texts other than %p/%s and the static texts the engine draws are hidden"))
+          or T("texts other than %p/%s and the static texts the engine draws are hidden"))
       if gp.time then
         s = s .. " " .. T("Its 'Remaining Duration' conditions are drawn per frame: below %s s and from %s s up, each frame takes its own look (colour and glow), in combat too."):format(tostring(gp.time.x), tostring(gp.time.x))
       end
@@ -7059,8 +7564,9 @@ do
     if att.sortHidden then att.sortHidden = nil; if att.host then att.host:SetAlpha(1) end end
     if att.rebased then Unbase(att) end
     if att.dynHidden then
-      for live in pairs(att.dynHidden) do
-        if not (att.mirrored and att.mirrored[live]) and live.SetShown then live:SetShown(true) end
+      for ri, tag in pairs(att.dynHidden) do
+        local live = Engine.MarkedSub(region, ri, tag)
+        if live and not Engine.InMarked(att.mirrored, ri, tag) and live.SetShown and Engine.SubOn(tag) then live:SetShown(true) end
       end
       att.dynHidden = nil
     end
@@ -7165,6 +7671,8 @@ do
     if #ids == 0 then return nil, T("it has no loaded children") end
     local tplLook, unit, filterString, otherKey, w, h, first, kind, borderLooks
     local union, unionList = {}, {}
+    -- the frames show more than one spell's name, or icon (Engine.DrawPlainSubs)
+    local rowSpell, rowIcon, manySpells, manyIcons = nil, nil, false, false
     for _, id in ipairs(ids) do
       local cd = WA.GetData(id)
       if not cd then return nil, T("a child is missing") end
@@ -7206,6 +7714,23 @@ do
       for sid in pairs(p.candidate and p.candidate.includeSpellIDs or {}) do
         if not union[sid] then union[sid] = true; unionList[#unionList + 1] = sid end
       end
+      -- the one spell the child tracks, by its name (Name(s) stands for all of a spell's ranks, and keeps a typed or
+      -- shift-clicked spell as its ID): another one, or none, means the frames show more than one spell
+      local sp = Engine.SingleSpell(cd)
+      local num = sp and (sp.id or tonumber(sp.name))
+      local nm = sp and sp.name and not tonumber(sp.name) and sp.name or nil
+      if not nm and num then
+        local okN, name = pcall(C_Spell.GetSpellName, num)
+        nm = (okN and type(name) == "string" and not issecretvalue(name)) and name or ("#" .. tostring(num))
+      end
+      local key = nm and nm:lower() or nil
+      if not key or (rowSpell and key ~= rowSpell) then manySpells = true end
+      rowSpell = rowSpell or key
+      -- %i: the icon StaticSymbol draws (the spell's, else the child's first one)
+      local okT, tex = pcall(C_Spell.GetSpellTexture, num or p.firstId)
+      local icon = key and (key .. "|" .. tostring((okT and tex and not issecretvalue(tex)) and tex or "")) or nil
+      if not icon or (rowIcon and icon ~= rowIcon) then manyIcons = true end
+      rowIcon = rowIcon or icon
     end
     table.sort(unionList)
     -- every frame is styled from the first child: a time text that names its spell (%n) or shows its icon
@@ -7234,11 +7759,17 @@ do
       notes = notes or {}
       notes[#notes + 1] = T("a Stacks condition changes the border; a sorted row draws every frame with the first child's border")
     end
-    -- the row's signature (a new one builds the row again), the Start's part below
+    -- the row's signature (a new one builds the row again), the Start's part below; with which of the first child's
+    -- sub-texts its frames draw as static texts (the child's conditions and custom code decide it: Engine.PlainSubText)
+    local plainSig = {}
+    for i, sub in ipairs(fd and type(fd.subRegions) == "table" and fd.subRegions or {}) do
+      plainSig[#plainSig + 1] = Engine.PlainSubText(fd, i, sub) and "1" or "0"
+    end
     local sig = table.concat({ "sorted", tostring(gdata.sort), grow, tostring(space), tostring(limit),
                                tostring(gdata.selfPoint), table.concat(ids, "\1"), table.concat(unionList, ","),
                                tplLook, unit, filterString, otherKey, time and time.key or "",
-                               first.durColor and first.durColor.key or "" }, "|")
+                               first.durColor and first.durColor.key or "", tostring(manySpells), tostring(manyIcons),
+                               table.concat(plainSig) }, "|")
     -- the row's Start (Engine.RowStart): each frame's one duration text becomes its elapsed gate, so the time
     -- looks and a time-and-stacks text, which need it too, keep it off (so far), and a lone %p goes on the
     -- text twin; nor on this very row (its signature with the Start) after the game refused it when it built
@@ -7280,7 +7811,7 @@ do
              ids = ids, tpl = ids[1], unit = unit, filterString = filterString, candidate = candidate,
              w = w0, h = h0, space = space, limit = limit, selfPoint = gdata.selfPoint or "CENTER",
              glow = glow, time = time, notes = notes, start = start, startWhy = startWhy, twin = twin,
-             sig = sig }
+             manySpells = manySpells, manyIcons = manyIcons, sig = sig }
   end
 
   -- flow per grow: axis, growth (horizontal, vertical) and the corner the first frame takes
@@ -7668,6 +8199,7 @@ do
     if not ctx then return false end
     -- a copy row's frame (Dyn.SortedStartTwin): hung on its own copy, read no place of WA's; a failure never
     -- keeps the row from its look
+    fr.noSpellTexts, fr.noIconTexts = ctx.manySpells or nil, ctx.manyIcons or nil
     if fr.rowCopy then
       local ok, err = pcall(Engine.StyleRowCopy, fr, ctx)
       if not ok then Dyn.SayRowStart(st, "style", err) end
@@ -7730,7 +8262,8 @@ do
     if twin or gp.start then tplPlan = setmetatable({ twinNoP = true }, { __index = tplPlan }) end
     st.ctx = { data = tplData, region = tplRegion, plan = tplPlan, twinPlan = twinPlan, gl = gl, gb = gb,
                kx = 1 / zx, ky = 1 / zy, overlay = gp.time and gp.time.overlay, rects = {},
-               borderOn = st.startOK and Engine.OwnBorder(tplData, tplPlan) or nil }   -- the copies' border
+               borderOn = st.startOK and Engine.OwnBorder(tplData, tplPlan) or nil,    -- the copies' border
+               manySpells = gp.manySpells, manyIcons = gp.manyIcons }   -- static texts left out (Engine.DrawPlainSubs)
     local again = false
     local all = {}
     for _, fr in ipairs(st.frames) do all[#all + 1] = fr end
@@ -7967,7 +8500,7 @@ do
           pcall(Engine.ApplyStartAnim, v, region, ldata, Engine.LookPlan(plan, look), plan.unit, true)
           Engine.LookAlpha(v, data, ldata)
           att.mirrored = att.mirrored or {}
-          for live in pairs(v.mirrored or {}) do att.mirrored[live] = true end
+          for ri, tag in pairs(v.mirrored or {}) do att.mirrored[ri] = tag end
           v.host:Show()
         else
           v.host:Hide()
@@ -8330,17 +8863,19 @@ do
     att.mirrored = att.mirrored or {}
     if empty and not att.emptyOnly then
       local only = {}
-      for live in pairs(att.emptySet) do
-        if not att.mirrored[live] then
-          att.mirrored[live], only[live] = true, true
-          if live.SetShown then live:SetShown(false) end
+      for ri, tag in pairs(att.emptySet) do
+        local live = Engine.MarkedSub(att.region, ri, tag)
+        if not att.mirrored[ri] then
+          att.mirrored[ri], only[ri] = tag, tag
+          if live and live.SetShown then live:SetShown(false) end
         end
       end
       att.emptyOnly = only
     elseif not empty and att.emptyOnly then
-      for live in pairs(att.emptyOnly) do
-        att.mirrored[live] = nil
-        if live.SetShown then live:SetShown(true) end
+      for ri, tag in pairs(att.emptyOnly) do
+        local live = Engine.MarkedSub(att.region, ri, tag)
+        att.mirrored[ri] = nil
+        if live and live.SetShown and Engine.SubOn(tag) then live:SetShown(true) end
       end
       att.emptyOnly = nil
     end
@@ -8472,7 +9007,7 @@ do
         Engine.CopyLevels(cp)
         if (cp.aOn or 1) ~= aOn then cp.gates.ge:SetAlpha(aOn); cp.aOn = aOn end       -- the slot, its glow clip
         if cp.shadows.clip and (cp.aOff or 1) ~= aOff then cp.shadows.clip:SetAlpha(aOff); cp.aOff = aOff end
-        for live in pairs(cp.mirrored or {}) do att.mirrored[live] = true end
+        for ri, tag in pairs(cp.mirrored or {}) do att.mirrored[ri] = tag end
       end
       cp.ok = ok and true or false
     end
@@ -8488,8 +9023,12 @@ do
     if att.copyRoot then att.copyRoot:SetShown(layout == "frame") end
     Engine.PlaceCopies(att)
     Engine.GateCopies(att)
-    for live in pairs(wasEmpty or {}) do
-      if att.emptySet[live] and not att.mirrored[live] and live.SetShown then live:SetShown(true) end
+    for ri, tag in pairs(wasEmpty or {}) do
+      local live = Engine.MarkedSub(region, ri, tag)
+      if live and Engine.InMarked(att.emptySet, ri, tag) and not Engine.InMarked(att.mirrored, ri, tag) and live.SetShown
+         and Engine.SubOn(tag) then
+        live:SetShown(true)
+      end
     end
     Engine.SubRegionLevels(att, region, Private.frameLevels and Private.frameLevels[region.id] or 5)
     if t0 then CopyStats(#units, debugprofilestop() - t0) end
@@ -8626,6 +9165,14 @@ local function TurnOff(att, region, data, mode)
   elseif att.isText then SetTextVisuals(region, true)
   elseif region.icon then region.icon:Show() end
   SetMirroredShown(att, true)
+  -- what the look this apply started from hid, if a part of the new one was set up already (Engine.HandBack)
+  if att.handBack and att.handBack ~= att.mirrored then
+    local old = att.mirrored
+    att.mirrored = att.handBack
+    SetMirroredShown(att, true)
+    att.mirrored = old
+  end
+  att.handBack = nil
   ClearSounds(att)
   if region.tooltipFrame and data then region.tooltipFrame:EnableMouseMotion(data.useTooltip and true or false) end
   att.mode, att.active, att.sig, att.kind = mode, false, nil, nil
@@ -8644,6 +9191,9 @@ local function ApplyUnguarded(region)
     TurnOff(att, region, data, mode)
     return
   end
+  -- what the look so far hid, given back at the end where the new one does not (Engine.HandBack); not after TurnOff,
+  -- which gave all of it back, and WA's own code or conditions may have hidden some since (On Init at the options' close)
+  att.handBack = att.active and att.mirrored or nil
 
   if not att.host then att.host, att.container, att.gates = BuildHost(region) end
   if att.isText then FitTextHost(att, region, data, plan) end
@@ -8731,8 +9281,10 @@ local function ApplyUnguarded(region)
     if okLook then
       okLook, err = pcall(ApplySlotLook, att, region, ldata, g[2] and plan or setmetatable({ noGlow = true }, { __index = plan }))
     end
-    -- the live look's MirrorTexts started att.mirrored afresh: WA's own decor of the base look is hidden again
+    -- the live look's MirrorTexts started att.mirrored afresh: WA's own decor of the base look is hidden again, and
+    -- the plain sub-texts the Missing clip draws (a lone %n of a bar or texture there)
     if okLook then okLook, err = pcall(HideStaticDecor, att, region, data, att.isPic or att.isMotion or att.isModel) end
+    if okLook then okLook, err = pcall(Engine.HidePlainSubs, att, region, "clip") end
   elseif kind == "slot" then okLook, err = pcall(ApplySlotLook, att, region, ldata, plan)
   elseif kind == "group" then okLook, err = pcall(ApplyUnderlayLook, att, region, data, plan)
   elseif kind == "copies" then okLook = true       -- each copy took its look in Engine.ApplyCopies
@@ -8821,6 +9373,8 @@ local function ApplyUnguarded(region)
   else
     RemoveGate(att)
   end
+  Engine.HandBack(att, region, att.handBack)
+  att.handBack = nil
   Engine.OnLayout(region)
   pcall(c.UpdateAllAuras, c)
   if att.pclipShown then pcall(att.container2.UpdateAllAuras, att.container2) end
@@ -8948,12 +9502,18 @@ local function ComputeSig(region, data, plan)
     if region.text and kind == "plain" then parts[#parts + 1] = PlainText(region, data) end
     if kind == "pair" then parts[#parts + 1] = Engine.TextChainPoint(data) end   -- selfPoint, the group's
   end
-  for _, sub in ipairs(data.subRegions or {}) do
+  for si, sub in ipairs(data.subRegions or {}) do
     if sub.type == "subtext" then
       parts[#parts + 1] = table.concat({ tostring(sub.text_text), tostring(sub.text_visible), tostring(sub.text_font),
         tostring(sub.text_fontSize), tostring(sub.text_fontType), tostring(sub.anchor_point), tostring(sub.text_selfPoint),
         tostring(sub.text_anchorXOffset), tostring(sub.text_anchorYOffset), tostring(sub.text_justify),
-        sub.text_color and table.concat(sub.text_color, ",") or "", Engine.TimeFormatKey(sub, "text_text_format_") }, "/")
+        sub.text_color and table.concat(sub.text_color, ",") or "", Engine.TimeFormatKey(sub, "text_text_format_"),
+        -- what a copy takes from WA besides (Engine.DrawPlainSubs), and whether a condition or the display's custom code
+        -- keeps it WA's (Engine.TextLive, Engine.CodeTouchesSubs)
+        tostring(sub.text_automaticWidth), tostring(sub.text_fixedWidth), tostring(sub.text_wordWrap), tostring(sub.rotateText),
+        sub.text_shadowColor and table.concat(sub.text_shadowColor, ",") or "", tostring(sub.text_shadowXOffset),
+        tostring(sub.text_shadowYOffset), Engine.TextLive(data, si) and "live" or "",
+        Engine.CodeTouchesSubs(data) and "code" or "" }, "/")
     elseif sub.type == "subglow" then
       parts[#parts + 1] = table.concat({ "glow", tostring(sub.glow), tostring(sub.useGlowColor),
         sub.glowColor and table.concat(sub.glowColor, ",") or "", tostring(sub.glowScale),
