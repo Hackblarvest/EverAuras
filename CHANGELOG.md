@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.9.14-beta (2026-11-15)
+
+- **Static texts now come and go with their display.** A text without the aura's values on an engine-driven
+  display, such as a letter like "E", a label or a raid marker, stayed on screen while the display itself was
+  gone: a *missing debuff* icon left its "E" behind once the debuff was on. The engine now draws these texts
+  with the display (Icons, Textures, Progress Bars and Progress Textures, also in Dynamic Groups and on *Start*
+  and *Finish* animations), so they show only while it does. So is a lone `%n` of the one tracked spell where the
+  game's own name text does not draw it: on Icons, on a Texture for a missing buff, or a second one on a bar or
+  texture.
+  Thanks to MamboWez for the report ([issue #3](https://github.com/Hackblarvest/EverAuras/issues/3)).
+- Some static texts stay WeakAuras' own and still show whenever WeakAuras shows the display, as before: a rotated
+  text, one that a condition of WeakAuras' own changes or that the display's own custom code may write, one moved
+  more than 150 px from its anchor, on an icon shown while the aura runs out one with a colour code, an atlas, a
+  line break, `{ }` or `%`, and the texts of displays with a group trigger (party or raid). In a packed or sorted
+  Dynamic Group they are hidden, as before, and so is a static text with the spell's name or icon (`%n`, `%i`) in a
+  group sorted by the time left whose children track different spells, where every frame is drawn from the first
+  child (a Progress Bar's own name text still names each aura). The Display tab names each one.
+- **`%n` and `%i` as WeakAuras writes them.** A spell entered in *Name(s)* by its ID (typed, or shift-clicked)
+  could show its number where a text has `%n`; it shows its name now. `%i` shows the spell's icon at WeakAuras'
+  size (12 px, its edges trimmed) instead of the text's height. A static sub-text's `%n` keeps WeakAuras' *String*
+  format (*Abbreviate*, *Pad*).
+- Sub-texts with a *SLUG* outline no longer get a drop shadow (WeakAuras draws none).
+- **Progress Textures and Stop Motions no longer show at the wrong time.** The fix that 0.9.11 brought to
+  Textures now covers them too: a *Main* or *Start* animation of WeakAuras' own, or a *Color* condition, could
+  show WeakAuras' own texture again without the aura (or, on *Aura(s) Missing*, while the aura was up). A
+  see-through background stays see-through.
+- A display with a text that WeakAuras keeps (a rotated one, for instance) could, after WeakAuras set the display
+  up again, hide that text and show WeakAuras' own time text in its place, and an edit while auras are secret
+  outside combat (in a battleground, for instance) could leave a text of the display hidden. Fixed.
+
 ## 0.9.13-beta (2026-11-10)
 
 - **Displays no longer disappear when EverAuras learns something new.** Out of combat EverAuras learns from the
