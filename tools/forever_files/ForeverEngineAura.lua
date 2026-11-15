@@ -3827,28 +3827,91 @@ end
 -- into the fill instead. Full circles: the game's cooldown swipe on the same button, drawn with the
 -- display's texture. Its edge only ever moves clockwise, so it draws 'Anticlockwise' (and 'Clockwise' +
 -- 'Inverse'); the other two, and part circles, are arc pieces revealed by the same bar (Engine.StyleArc).
--- The background is drawn whole. WA's own textures are hidden (alpha, which WA never touches on them) while the display is engine-driven.
+-- The background is drawn whole. WA's own textures are hidden while the display is engine-driven (SetTexVisuals).
 local TEX_FILL = { HORIZONTAL = { "HORIZONTAL", false }, HORIZONTAL_INVERSE = { "HORIZONTAL", true },
                    VERTICAL = { "VERTICAL", false }, VERTICAL_INVERSE = { "VERTICAL", true } }
 
-local function SetTexVisuals(region, shown)
-  local a = shown and 1 or 0
-  for _, lin in ipairs({ region.foreground, region.background }) do
-    if lin and lin.texture then lin.texture:SetAlpha(a) end
+-- WA's own Progress Texture textures are hidden by alpha, not by their Shown state: WA shows and hides them
+-- itself (orientation, its progress and secret-progress paths). But SetVertexColor sets the alpha too, and WA
+-- recolours them (Color, ColorAnim, SetBackgroundColor) on colour conditions and whenever one of its
+-- animations starts, loops or ends, which showed them again without the aura. So each texture gets a
+-- SetVertexColor hook once, which puts the alpha back to 0 while the engine holds the texture and keeps the
+-- alpha WA asked for; handing a texture back restores that alpha, not 1 (a background is see-through). WA also
+-- makes overlay textures later, without a layout pass: those are held as WA makes them (HoldMade, below).
+local SetTexVisuals
+do
+  -- a number the client lets us read (a colour condition on a secret boolean hands WA secret colours in combat)
+  local function Plain(v)
+    return type(v) == "number" and not (issecretvalue and issecretvalue(v))
   end
-  for _, lin in ipairs(region.extraTextures or {}) do
-    if lin.texture then lin.texture:SetAlpha(a) end
+
+  -- the engine's own fields on WA's textures (read raw: they are the engine's, never inherited)
+  local function OnVertexColor(tex, r, g, b, a)
+    if rawget(tex, "eaEngineHidden") then
+      tex:SetAlpha(0)                                  -- first: nothing below may keep it shown
+      if type(a) == "nil" then tex.eaEngineAlpha = 1 elseif Plain(a) then tex.eaEngineAlpha = a end
+    end
   end
-  for _, spin in ipairs({ region.foregroundSpinner, region.backgroundSpinner }) do
-    for _, tex in ipairs(spin and spin.textures or {}) do tex:SetAlpha(a) end
+
+  local function Hold(tex, shown)
+    if type(tex) ~= "table" or not tex.SetAlpha then return end
+    if shown then
+      if rawget(tex, "eaEngineHidden") then
+        tex.eaEngineHidden = nil
+        local a = rawget(tex, "eaEngineAlpha")
+        tex:SetAlpha(Plain(a) and a or 1)
+      end
+      return
+    end
+    if not rawget(tex, "eaEngineHooked") and tex.SetVertexColor then
+      tex.eaEngineHooked = true
+      hooksecurefunc(tex, "SetVertexColor", function(...) pcall(OnVertexColor, ...) end)
+    end
+    if not rawget(tex, "eaEngineHidden") then
+      local a = tex.GetAlpha and tex:GetAlpha()
+      tex.eaEngineAlpha = Plain(a) and a or 1
+      tex.eaEngineHidden = true
+    end
+    tex:SetAlpha(0)
   end
-  for _, spin in ipairs(region.extraSpinners or {}) do
-    for _, tex in ipairs(spin.textures or {}) do tex:SetAlpha(a) end
+
+  function SetTexVisuals(region, shown)
+    for _, lin in ipairs({ region.foreground, region.background }) do
+      if lin then Hold(lin.texture, shown) end
+    end
+    for _, lin in ipairs(region.extraTextures or {}) do Hold(lin.texture, shown) end
+    for _, spin in ipairs({ region.foregroundSpinner, region.backgroundSpinner }) do
+      for _, tex in ipairs(spin and spin.textures or {}) do Hold(tex, shown) end
+    end
+    for _, spin in ipairs(region.extraSpinners or {}) do
+      for _, tex in ipairs(spin.textures or {}) do Hold(tex, shown) end
+    end
+    -- upstream's own secret-progress drawing (f23a183): when a gate trigger before the Aura trigger has
+    -- secret progress (Power, Health, a cooldown in combat), WA would draw its fill there too. A frame:
+    -- WA never sets its alpha.
+    local stf = region.secretTextureFrame
+    if type(stf) == "table" and stf.SetAlpha then stf:SetAlpha(shown and 1 or 0) end
   end
-  -- upstream's own secret-progress drawing (f23a183): when a gate trigger before the Aura trigger has
-  -- secret progress (Power, Health, a cooldown in combat), WA would draw its fill there too
-  local stf = region.secretTextureFrame
-  if type(stf) == "table" and stf.SetAlpha then stf:SetAlpha(a) end
+
+  -- WA makes a display's overlay textures when it first needs them (a gate's state that brings more overlays,
+  -- its progress readable again after a fight, an Orientation condition), with no layout pass after: a texture
+  -- made for an engine-driven Progress Texture is held as WA makes it, before WA shows and colours it. Other
+  -- callers (sub-elements, the engine's own arc background) pass a frame that is no engine-driven region.
+  local function HoldMade(base)
+    local create = type(base) == "table" and base.create
+    if type(create) ~= "function" then return end
+    base.create = function(frame, ...)
+      local made = create(frame, ...)
+      local att = attachments[frame]
+      if att and att.active and att.isTex and type(made) == "table" then
+        pcall(Hold, made.texture, false)
+        for _, tex in ipairs(made.textures or {}) do pcall(Hold, tex, false) end
+      end
+      return made
+    end
+  end
+  HoldMade(Private.LinearProgressTextureBase)
+  HoldMade(Private.CircularProgressTextureBase)
 end
 
 -- the swipe runs the right way round: WA's arc shrinks towards its start when it drains clockwise
@@ -4017,10 +4080,11 @@ do
       texture = data.sameTexture and data.foregroundTexture or data.backgroundTexture,
       blendMode = data.blendMode or "BLEND", desaturated = data.desaturateBackground and true or false,
       auraRotation = rad, width = w, height = h, offset = tonumber(data.backgroundOffset) or 2 })
-    local bc = data.backgroundColor or { 0.5, 0.5, 0.5, 0.5 }
-    s.arcBg:SetColor(bc[1] or 1, bc[2] or 1, bc[3] or 1, bc[4] or 1)
     s.arcBg:SetProgress(a1, a2)
     ShowArc(s, n, true)
+    -- coloured after ShowArc: its SetAlpha(1) would overwrite the background colour's alpha (one alpha per texture)
+    local bc = data.backgroundColor or { 0.5, 0.5, 0.5, 0.5 }
+    s.arcBg:SetColor(bc[1] or 1, bc[2] or 1, bc[3] or 1, bc[4] or 1)
   end
 end
 
@@ -4045,7 +4109,7 @@ local function ApplyTexLook(att, region, data, plan)
   local pieces = Engine.UsesArcPieces(data)
   s.texClip:SetAlpha(circular and 0 or 1)
   s.swipe:SetAlpha((circular and not pieces) and 1 or 0)
-  s.texBg:SetAlpha(pieces and 0 or 1)
+  s.texBg:SetShown(not pieces)            -- not by alpha: StyleTexCopy gave it the background colour's own
   Engine.StyleArc(att, data, pieces)
   if circular and not pieces then
     StyleSwipe(s.swipe, data)
@@ -4159,9 +4223,19 @@ do
     return sh
   end
 
+  -- WA's own sheet and still background: hidden by their Shown state while engine-driven, never by alpha:
+  -- SetVertexColor sets the alpha too, and WA recolours both (Color and ColorAnim on colour conditions and
+  -- whenever one of its animations starts, loops or ends; SetBackgroundColor), which showed them again
+  -- without the aura. WA never shows or hides the sheet; the background only in modify (Hide Background), so
+  -- a handed-back background follows that setting. Modify ends in ApplyFrameLevel, after which Engine.OnLayout
+  -- hides an engine-driven one again.
   function Engine.SetMotionVisuals(region, shown)
-    for _, part in ipairs({ region.foreground, region.background }) do
-      if part and part.texture and part.texture.SetAlpha then part.texture:SetAlpha(shown and 1 or 0) end
+    local fg = region.foreground and region.foreground.texture
+    if fg and fg.SetShown then fg:SetShown(shown) end
+    local bg = region.background and region.background.texture
+    if bg and bg.SetShown then
+      local data = shown and WA.GetData(region.id)
+      bg:SetShown(shown and not (data and data.hideBackground))
     end
   end
 

@@ -60,6 +60,17 @@ def make_decoder():
 
 # Just enough of the client and the addon for ForeverEngineAura.lua to load and classify.
 ENGINE_STUBS = r"""
+  -- the game's hooksecurefunc: the original first, then the hook (on a table: an instance field)
+  hooksecurefunc = function(a, b, c)
+    local t, name, fn = a, b, c
+    if type(a) == "string" then t, name, fn = _G, a, b end
+    local orig = t[name]
+    t[name] = function(...)
+      local r = { orig(...) }
+      fn(...)
+      return unpack(r)
+    end
+  end
   issecretvalue = function() return false end
   InCombatLockdown = function() return false end
   STANDARD_TEXT_FONT = "font"
