@@ -2220,38 +2220,49 @@ function Engine.Explain(data, plan, reasons)
       txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It shows the texture while the aura is present and empties it as the aura runs out (fills it with 'Inverse'); the game checks the time left itself, so it never has to be read. Kept: position, size, groups, textures, colours, desaturate, blend mode, crop, rotation, mirror, 'Compress', the background, %%p/%%s/%%n texts (time and stacks also in one, '%%p (%%s)'), the glow (shown only while the texture is, animated like WeakAuras' own). Not drawn: slanted ends (drawn straight), additional progress and the border (hidden while engine-driven). Not available: conditions and texts that read aura state, and actions on aura gain/loss other than sounds.")
         :format(plan.unit, plan.filterString)
     else
-      local kept = T("border and glow")
+      local kept = Engine.AnyBorder(data, plan) and T("border and glow") or T("glow")
       -- a group trigger's copies on unit frames or in a row draw the border themselves (Engine.OwnBorder,
       -- Engine.CopyBorder), unless a condition WA applies itself changes it: then WeakAuras' own border on the display
       -- itself, which WeakAuras hides when its Dynamic Group groups by unit frame, and which is the first place of a row
       local copyLayout = plan.group and plan.group.clones and Engine.CopyLayout(data, plan) or nil
-      local waBorder = #Engine.BorderSpecs(data) > 0 and (copyLayout == "frame"
+      local waBorder = Engine.AnyBorder(data, plan) and (copyLayout == "frame"
           and T("no border on the members' unit frames, as a condition changes it (WeakAuras' own is on the display itself, which WeakAuras hides when its Dynamic Group groups by unit frame)")
           or copyLayout == "row" and T("the border only at the display's own place, the row's first, as a condition changes it (WeakAuras' own, also while nothing is drawn; the other places have none)"))
         or nil
       if data.regionType == "icon" and allCopies then
         -- each copy draws the border and glow in both parts (the live aura's slot, the Missing clip)
-        local border = (Engine.OwnBorder(data, plan) or #Engine.BorderSpecs(data) == 0)
+        local border = Engine.OwnBorder(data, plan)
           and T("the border (with the aura and without it)")
           or (copyLayout == "frame" and waBorder)
           or T("WeakAuras' own border on the display itself, as a condition changes it (the members' copies have none)")
         kept = T("%s, and the glow: with the aura and without it, and animated like WeakAuras' own"):format(border)
+        if not Engine.AnyBorder(data, plan) then kept = T("the glow: with the aura and without it, and animated like WeakAuras' own") end
       elseif data.regionType == "icon" and plan.mode ~= "always" then
         local border = T("the border (also while nothing is drawn)")
         if plan.mode == "active" and plan.missingPart then
           border = T("the border (also while nothing is drawn)")
         elseif plan.mode == "active" and Engine.OwnBorder(data, plan) then
           border = T("the border (shown only while the icon is)")
+        elseif plan.mode == "active" and not Engine.BorderLive(data, plan) and Engine.AnyBorder(data, plan) then
+          border = T("the border (shown only while the icon is)")       -- switched on by a look (plan.looks) only
         elseif plan.mode == "missing" and Engine.CopyBorder(data, plan, copyLayout) then
           border = T("the border (shown only while the icon is)")       -- each copy's, in its Missing clip
+        elseif plan.mode == "missing" and Engine.MissingBorder(data, plan) then
+          border = T("the border (shown only while the icon is)")       -- in the Missing clip (Engine.MissingBorderLook)
         elseif waBorder then
           border = waBorder
         elseif plan.mode == "active" and #Engine.BorderSpecs(data) > 0 then
           border = T("WeakAuras' own border, as a condition changes it (also while nothing is drawn)")
+        elseif plan.mode == "missing" and not plan.group and #Engine.BorderSpecs(data) > 0 and Engine.BorderLive(data, plan) then
+          border = T("WeakAuras' own border, as a condition changes it (also while nothing is drawn)")
         end
         kept = T("%s, and the glow: shown only while the icon is, and animated like WeakAuras' own"):format(border)
+        -- no border at all (WA's default for a new aura): none to promise, empty frame or not
+        if not Engine.AnyBorder(data, plan) then kept = T("the glow: shown only while the icon is, and animated like WeakAuras' own") end
       elseif data.regionType == "aurabar" then
-        kept = T("the bar colours and gradient, the border (also while nothing is drawn), and the glow: shown only while the bar is, and animated like WeakAuras' own (a glow on the bar's fill goes around the whole bar)")
+        kept = (Engine.AnyBorder(data, plan) and not Engine.InDynRow(data))
+          and T("the bar colours and gradient, the border (also while nothing is drawn), and the glow: shown only while the bar is, and animated like WeakAuras' own (a glow on the bar's fill goes around the whole bar)")
+          or T("the bar colours and gradient, and the glow: shown only while the bar is, and animated like WeakAuras' own (a glow on the bar's fill goes around the whole bar)")
       end
       txt = T("|cff33ff99Engine-driven:|r the game's aura engine draws this aura, also in combat (unit %s, %s). It %s. Kept: position, size, groups, %%n/%%i texts, static colour/desaturate/zoom, %s; cooldown numbers count like the buff frame. Not available: conditions and texts that read aura state (stacks, remaining, active), and actions on aura gain/loss other than sounds.")
         :format(plan.unit, plan.filterString, T(MODE_TEXT[plan.missingPart and "refresh" or allCopies and "always" or plan.mode]), kept)
@@ -3462,9 +3473,10 @@ end
 -- of WA's backdrop (BackdropTemplateM33kAuras: corners, edges between them, its texture coordinates), with
 -- WA's size, offset and colour, sized from plain data at safe time like the arc pieces in the same buttons.
 -- 'Force pixel perfect scale' scales the sizes the way WA scales its frame. A look (conditions on stacks or
--- the time left) gives its own border colour. WA's own border stays where it shows at the right times (a
--- refresh icon, with and without the aura; Missing; Always) and where a condition WA applies itself changes
--- it (Engine.BorderLive), unless the display is in a packed or sorted row, where WA's own is hidden.
+-- the time left) gives its own border colour. A Missing icon draws it in its Missing clip (Engine.MissingBorder).
+-- WA's own border stays on a refresh icon (shown with and without the aura, and framing an empty spot at other
+-- stacks) and on Always (WA's icon is always there), and where a condition WA applies itself changes it
+-- (Engine.BorderLive), unless the display is in a packed or sorted row, where WA's own is hidden.
 do
   local C0 = 0.0625
   local C1 = 1 - C0
@@ -3738,12 +3750,63 @@ do
   -- with the aura (Engine.OwnBorder), and 'Unaffected' on unit frames or in a row (layout: Engine.CopyLayout's).
   -- Not where a condition WA applies itself changes the border (Engine.BorderLive): the copies have no look of
   -- it, so WA's own stays, on the display itself, as for 'All' and 'Affected'. Not at the display's own place
-  -- either, where WA's own frames the copies lying on it, as for a single Missing display.
+  -- either, where WA's own frames the copies lying on it (also while none shows: a known gap).
   function Engine.CopyBorder(data, plan, layout)
     if data.regionType ~= "icon" or not (plan and plan.group) then return false end
     if plan.group.pattern == "all" then return Engine.OwnBorder(data, plan) end
     if plan.mode ~= "missing" or not plan.group.clones or not (layout == "frame" or layout == "row") then return false end
     return #Engine.BorderSpecs(data) > 0 and not Engine.BorderLive(data, plan)
+  end
+
+  -- whether a Missing icon draws WA's border in its Missing clip (Engine.MissingBorderLook), so it shows exactly while
+  -- the icon does: WA's own frames an empty spot while the aura is up. Not a group trigger's (Engine.CopyBorder), a
+  -- refresh icon, nor where a condition WA applies itself changes the border (Engine.BorderLive): WA's own stays
+  -- there. Nor one drawn by time-left parts: ApplyCompositeLook hides WA's own there, and none is drawn (a known gap).
+  function Engine.MissingBorder(data, plan)
+    if data.regionType ~= "icon" or not plan or plan.mode ~= "missing" or plan.group or plan.parts or plan.missingPart then
+      return false
+    end
+    return #Engine.BorderSpecs(data) > 0 and not Engine.BorderLive(data, plan)
+  end
+
+  -- how far past the icon such a border reaches (in the border's own units, Engine.BorderUnit), so the Missing clip
+  -- reaches as far (as a group trigger's copies, Engine.ApplyCopies): 0 for none, at most PLAIN_REACH. Never throws:
+  -- the Missing group's layout is built from it.
+  function Engine.MissingBorderReach(region, data, plan)
+    local ok, reach = pcall(function()
+      local r = 0
+      if Engine.MissingBorder(data, plan) then
+        for _, b in ipairs(Engine.BorderSpecs(data)) do
+          r = math.max(r, math.ceil(math.max(0, b.offset) * Engine.BorderUnit(region, b.pp) - 0.001))
+        end
+      end
+      return r
+    end)
+    if not ok or type(reach) ~= "number" or reach ~= reach or reach < 0 then return 0 end
+    return math.min(reach, Engine.PLAIN_REACH or 300)
+  end
+
+  -- whether the display has a border to show at all, for the Display tab's lists: one of WA's with an edge LibSharedMedia
+  -- knows ('None' and an unknown edge give no file: WA sets no backdrop, Engine.BorderSpecs drops it), switched on, or
+  -- switched on by a condition WA applies itself that can fire (Engine.SubPropOn) or by a look of conditions on stacks or
+  -- the time left (plan.looks). WA's Border has no other condition that could show one. plan: the display's whole plan.
+  function Engine.AnyBorder(data, plan)
+    local subs = type(data.subRegions) == "table" and data.subRegions or {}
+    for i, sub in ipairs(subs) do
+      if type(sub) == "table" and sub.type == "subborder" and sub.border_edge ~= "None" then
+        local okF, file = pcall(LSM.Fetch, LSM, "border", sub.border_edge or "Square Full White")
+        if okF and type(file) == "string" and file ~= "" then
+          if sub.border_visible ~= false or Engine.SubPropOn(data, i, "border_visible", plan) then return true end
+          for _, l in ipairs(type(plan) == "table" and type(plan.looks) == "table" and plan.looks or {}) do
+            for _, chg in ipairs(type(l) == "table" and type(l.changes) == "table" and l.changes or {}) do
+              if type(chg) == "table" and type(chg.path) == "table" and chg.path[1] == i and chg.path[2] == "border_visible"
+                 and chg.value then return true end
+            end
+          end
+        end
+      end
+    end
+    return false
   end
 
   local function NewBorder(parent)
@@ -5307,6 +5370,8 @@ local function ApplySlotLook(att, region, data, plan)
     if att.isModel then Engine.StyleModel(att.shadows.model, data)
     else Engine.StyleMotion(att.shadows.motion, region, data) end
     MirrorTexts(att, region, data, true, plan)
+    -- the plain sub-texts on the slot's texts frame, with the aura, as a Texture's (ApplyPicLook)
+    Engine.HidePlainSubs(att, region); Engine.DrawPlainSubs(att, region, data, att.shadows.texts, "plain")
     ApplyFoundGlow(att, region, data, plan)
     pcall(att.button.EnableMouseMotion, att.button, data.useTooltip and true or false)
     return
@@ -6552,6 +6617,10 @@ function Engine.HostLevels(a, h)
   end
   Engine.SafeLevel(a.aglow, h + 4)
   if a.shadows.clip then Engine.SafeLevel(a.mglowHolder, h + 2) end
+  -- the border in the Missing clip (Engine.CopyUnderBorder), above the clip's icon and texts, under its glow
+  if a.shadows.clip and a.underBorders then
+    for _, b in ipairs(a.underBorders.borders or {}) do Engine.SafeLevel(b.frame, h + 1) end
+  end
   local rig = a.startRig                                     -- the start animation's slot (Engine.ApplyStartAnim)
   if rig then
     Engine.SafeLevel(rig.container, h)
@@ -8830,7 +8899,8 @@ do
   end
 
   -- A copy's border in its Missing clip ('All', 'Unaffected': Engine.CopyBorder), so it shows exactly while the
-  -- display for a member who lacks the aura does. specs: Engine.BorderSpecs, or nil to hide it. While the copies
+  -- display for a member who lacks the aura does; a single Missing icon's too (cp: the display's attachment,
+  -- Engine.MissingBorderLook). specs: Engine.BorderSpecs, or nil to hide it. While the copies
   -- draw it, WA's own border on the display is hidden (Engine.ApplyCopies), and the copy's finish animation
   -- carries it (Engine.ApplyFinishAnim).
   function Engine.CopyUnderBorder(cp, region, specs)
@@ -8839,6 +8909,15 @@ do
       Engine.StyleBorders(cp.underBorders, cp.shadows.clip, cp.host, nil, region, specs)
     end
     cp.underBorderOn = specs and true or nil
+  end
+
+  -- A Missing icon's border, the same way (Engine.MissingBorder): in its Missing clip, with the icon, and on its finish
+  -- animation's copy; WA's own is hidden meanwhile (att.mirrored: TurnOff gives it back, as the next look does when it
+  -- no longer draws one, Engine.HandBack). After the look (ApplyUnderlayLook), which starts att.mirrored afresh.
+  function Engine.MissingBorderLook(att, region, data, plan)
+    local specs = Engine.MissingBorder(data, plan) and Engine.BorderSpecs(data) or nil
+    Engine.CopyUnderBorder(att, region, specs)
+    if specs then HideStaticDecor(att, region, data, true) end
   end
 
   -- WA's own elements on the display that the copies stand in for (the texts with the aura's time or stacks, the
@@ -9237,6 +9316,7 @@ local function ApplyUnguarded(region)
     local w, h = RegionSize(region)
     local m = ClipMargin(w, h, data, GlowSpec(data))
     if att.isText then m = math.max(m, 3) end      -- the outline reaches past the measured text
+    m = math.max(m, Engine.MissingBorderReach(region, data, plan))   -- an icon's border, drawn in the clip
     if not EnsureGroup(att, region, plan, m) then TurnOff(att, region, data, "off"); return end
   elseif kind == "copies" then
     local hadRaid = att.raidBuilt
@@ -9274,6 +9354,9 @@ local function ApplyUnguarded(region)
     Engine.StyleBorders(att.shadows, nil, nil, nil, nil, nil)
     att.borderOn = nil
   end
+  -- one that is no longer a Missing display: its border in the Missing clip goes too, and its finish animation's copy
+  -- draws none (a refresh icon's or a time-left display's clip is the same clip; Engine.MissingBorderLook draws it again)
+  if kind ~= "group" then pcall(Engine.CopyUnderBorder, att, region, nil) end
   if kind == "slot" and plan.missingPart then
     -- the icon for the absent aura first (its MirrorTexts is undone by the live aura's, which keeps the texts)
     local g = att.refreshGlows or { true, true }
@@ -9286,7 +9369,10 @@ local function ApplyUnguarded(region)
     if okLook then okLook, err = pcall(HideStaticDecor, att, region, data, att.isPic or att.isMotion or att.isModel) end
     if okLook then okLook, err = pcall(Engine.HidePlainSubs, att, region, "clip") end
   elseif kind == "slot" then okLook, err = pcall(ApplySlotLook, att, region, ldata, plan)
-  elseif kind == "group" then okLook, err = pcall(ApplyUnderlayLook, att, region, data, plan)
+  elseif kind == "group" then
+    okLook, err = pcall(ApplyUnderlayLook, att, region, data, plan)
+    -- an icon's border in the clip, with the icon (after the look, whose MirrorTexts starts att.mirrored afresh)
+    if okLook then okLook, err = pcall(Engine.MissingBorderLook, att, region, data, plan) end
   elseif kind == "copies" then okLook = true       -- each copy took its look in Engine.ApplyCopies
   else okLook, err = pcall(ApplyCompositeLook, att, region, data, plan) end
   if not okLook and not att.lookWarned then
