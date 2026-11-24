@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.9.15-beta (2026-11-25)
+
+- **The border on *Aura(s) Missing* icons now goes with the icon.** On a *missing buff* icon, WeakAuras' border
+  stayed on screen as an empty frame while the buff was up. The engine now draws it with the icon, with your edge,
+  size, offset, colour and *Force pixel perfect scale*, also on its *Finish* animation, so it shows only while the
+  icon does. WeakAuras' own border stays, as before, on refresh icons (missing or below N stacks), on a group
+  trigger's icon at the display's own place for someone who lacks the aura, and where a condition that WeakAuras
+  applies itself changes the border; there it still frames an empty spot while nothing is drawn. The "missing or
+  about to run out" icon still has no border.
+- **The Display tab no longer promises a border that is not there.** An icon or Progress Bar without a border
+  (WeakAuras' default for a new aura) read "the border (also while nothing is drawn)" on its Display tab, and a
+  *Show On: Always* icon "border and glow"; they now leave the border out, as does a Progress Bar in a packed or
+  sorted Dynamic Group, which has none there.
+- On a Stop Motion or Model, a text without the aura's values, such as an "E" (only possible through an import,
+  as WeakAuras' own options offer none there), now comes and goes with the display, as on the other kinds since
+  0.9.14.
+- **The README now lists far more of what engine-driven displays cannot do yet, sorted by topic.** New in the
+  list, among others: the time, stack and name texts of *Auto-Clone* copies in a Dynamic Group are not drawn at
+  the members' places (in a row they all lie at the first place); in a group sorted by the time left, the row
+  shows every child's aura while any one child's other triggers (such as *In Combat*) allow it; and the borders
+  that still frame an empty spot.
+
 ## 0.9.14-beta (2026-11-15)
 
 - **Static texts now come and go with their display.** On an engine-driven display, a text without the aura's
